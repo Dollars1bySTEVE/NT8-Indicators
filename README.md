@@ -14,6 +14,7 @@ A growing collection of custom NinjaTrader 8 indicators built for real traders. 
 | 1 | [SmartMoneyStructure](#1-smartmoneystructure-bos--choch) | Structure | BOS & CHoCH detection with zones and labels |
 | 2 | [BreakoutLiquiditySweep](#2-breakoutliquiditysweep) | Breakout | EMA breakout with liquidity sweep & absorption detection |
 | 3 | [TimeZoneColors](#3-timezonecolors) | Session | Tokyo / London / New York session background coloring |
+| 4 | [HourlyOpenStats](#4-hourlyopenstats) | Session Analysis | Hourly open lines, range boxes, volume skew, N-day avg comparison |
 
 ---
 
@@ -138,6 +139,82 @@ A growing collection of custom NinjaTrader 8 indicators built for real traders. 
 
 ---
 
+## 4. HourlyOpenStats
+**Institutional-style hourly session analysis** — tracks each hour's open price, range, volume, buy/sell skew, and compares against N-day historical averages in real-time.
+
+*Inspired by professional TradingView setups used by institutional futures traders.*
+
+#### What It Does
+| Feature | Description |
+|---|---|
+| **Hour Open Lines** | Horizontal line at each hour's opening price (yellow DashDot default) |
+| **Hour Range Boxes** | Green (bullish) or red (bearish) semi-transparent box from hour high to low |
+| **Volume Tracking** | Current hour volume + historical average volume per hour |
+| **Buy/Sell Skew** | Up-volume vs down-volume ratio per hour → Bullish / Bearish / Balanced |
+| **% Distributed** | Current hour range as percentage of the N-day average range for that hour |
+| **Stats Panel** | Top-left panel showing current hour vs historical avg, largest, smallest range |
+| **Historical Lookback** | Stores ranges and volumes per hour for the last N days (default 10) |
+| **Label Overlap Prevention** | Only shows labels for the most recent N hours to keep chart clean |
+| **Configurable Panel Position** | Stats panel can be placed TopLeft, TopRight, BottomLeft, BottomRight, or Center |
+
+#### Settings
+
+**Display**
+| Setting | Default | Description |
+|---|---|---|
+| Show Hour Open Lines | True | Toggle horizontal open price lines |
+| Show Hour Range Boxes | True | Toggle high-low range rectangles |
+| Show Hour Labels | True | Toggle "Hour Open X:00" labels with stats |
+| Show Stats Panel | True | Toggle the summary panel |
+| Show Skew Data | True | Toggle buy/sell volume skew |
+| Show Pct Distributed | True | Toggle "Distributed X% of Avg" |
+| Labels: Current Hour Only | False | When on, only the active hour gets a label |
+| Labels: Max Hours to Show | 6 | Number of most recent hours that display labels |
+| Stats Panel Position | TopLeft | Dropdown: TopLeft, TopRight, BottomLeft, BottomRight, Center |
+
+**Analysis**
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| Historical Lookback Days | 1–50 | 10 | How many days of history to average per hour |
+| Start Hour (24hr) | 0–23 | 0 | First hour to track (0 = midnight) |
+| End Hour (24hr) | 1–24 | 24 | Last hour to track (24 = all hours) |
+
+**Appearance**
+| Setting | Default | Description |
+|---|---|---|
+| Hour Open Line Color | Yellow | Color of the hourly open price lines |
+| Bullish Box Color | LimeGreen | Color for hours where price is above open |
+| Bearish Box Color | Crimson | Color for hours where price is below open |
+| Label Text Color | White | Color of all text labels |
+| Bullish Box Opacity % | 10 | Transparency for bullish boxes (3–50%) |
+| Bearish Box Opacity % | 8 | Transparency for bearish boxes (3–50%) |
+| Hour Open Line Width | 2 | Line thickness (1–5) |
+| Open Line Dash Style | DashDot | Solid, Dash, Dot, DashDot, DashDotDot |
+| Label Font | Arial 9pt | Font family and size for labels |
+| Label Y Offset | 18 | Pixels above the box to position labels |
+
+#### Reading the Stats Panel
+| Line | Example | Meaning |
+|---|---|---|
+| N-Day Average Range | "10-Day Average Range" | Lookback window |
+| Hour Avg / Current | "2:00 Avg: (45.25) / Current: (32.50)" | This hour's range vs historical |
+| Largest Range | "2:00 Largest Range: (85.00)" | Biggest range this hour has seen in N days |
+| Smallest Range | "2:00 Smallest Range: (12.50)" | Smallest range this hour has seen in N days |
+| Distributed % | "Distributed 72% of Avg Range" | How much of the expected move has happened |
+| Raw H/L | "Raw H/L: 24873.50 / 24831.50" | Exact high and low prices this hour |
+| Data Skew | "2:00 Data Skew: Bullish (67/33)" | Buy vs sell volume ratio |
+
+#### Skew Interpretation
+| Skew | Threshold | Meaning |
+|---|---|---|
+| Bullish | Up volume > 55% | More buying pressure this hour |
+| Bearish | Down volume > 55% | More selling pressure this hour |
+| Balanced | Neither > 55% | Even distribution of buy/sell volume |
+
+**Tip:** When "Distributed" shows < 50%, the hour likely has more range to develop. When > 100%, the hour has exceeded its typical range — potential exhaustion or unusual volatility.
+
+---
+
 ## 🔧 Installation (All Indicators)
 
 1. **Download** any `.cs` file from the [`Indicators/`](./Indicators/) folder
@@ -168,4 +245,4 @@ Free to use, modify, and share. If you find it useful, give it a ⭐!
 
 ---
 
-*Built with frustration, coffee, and eventually — zero compile errors.* ☕
+*Built with frustration, coffee, Sprite, and eventually — zero compile errors.* ☕🥤
