@@ -1,37 +1,38 @@
-// D1ADR Indicator Code
+using System;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.NinjaScript.Strategies;
+using NinjaTrader.NinjaScript.StrategyGenerator;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.Strategy;
+using NinjaTrader.NinjaScript.StrategyGenerator;
+using NinjaTrader.NinjaScript.Strategy;
+using NinjaTrader.NinjaScript.StrategyGenerator;
 
-// Description: This indicator calculates the daily average daily range (ADR) for any specified period.
-
-public class D1ADR
+namespace NinjaTrader.NinjaScript.Strategies
 {
-    private double totalRange;
-    private int days;
-
-    public D1ADR()
+    public class D1ADR : Indicator
     {
-        totalRange = 0;
-        days = 0;
-    }
+        // Private variables
+        private double averageDailyRange;
 
-    public void Update(double high, double low)
-    {
-        totalRange += (high - low);
-        days++;
-    }
+        // NinjaScriptProperty definitions
+        [NinjaScriptProperty]
+        public double MyProperty { get; set; }
 
-    public double Average()
-    {
-        return days > 0 ? totalRange / days : 0;
-    }
+        protected override void OnStateChange()
+        {
+            // Code executed on state change
+        }
 
-    public void Reset()
-    {
-        totalRange = 0;
-        days = 0;
+        protected override void OnBarUpdate()
+        {
+            // Code executed on bar update
+        }
+
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            // Code executed to render the indicator
+        }
     }
 }
-
-// Usage Example:
-// D1ADR adr = new D1ADR();
-// adr.Update(highPrice, lowPrice);
-// double averageRange = adr.Average();
