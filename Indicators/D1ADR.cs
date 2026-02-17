@@ -118,7 +118,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LondonSessionColor = Brushes.Beige;
                 
                 ShowNYSession = true;
-                NYOpenHour = 9;
+                NYOpenHour = 13;
                 NYOpenMinute = 30;
                 NYSessionColor = Brushes.LightGreen;
                 
@@ -372,9 +372,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             adrFillBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, 
-                ConvertColor(ADRColor, ADRFillOpacity / 100f));
+                ConvertColor(ADRColor, OpacityToAlpha(ADRFillOpacity)));
             awrFillBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, 
-                ConvertColor(AWRColor, AWRFillOpacity / 100f));
+                ConvertColor(AWRColor, OpacityToAlpha(AWRFillOpacity)));
             infoBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, 
                 ConvertColor(LabelColor, 0.8f));
 
@@ -415,6 +415,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
             }
             return new SharpDX.Color4(1f, 1f, 1f, alpha);
+        }
+        
+        private float OpacityToAlpha(int opacityPercent)
+        {
+            return opacityPercent / 100f;
         }
 
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)

@@ -275,7 +275,7 @@ Institutional-grade indicator tracking hourly market statistics including open/h
 | **London Open Minute** | 0 | 0-59 | London session start minute |
 | **London Session Color** | Beige | — | Marker color |
 | **Show NY Session** | true | — | Display NY session marker |
-| **NY Open Hour (UTC)** | 9 | 0-23 | NY session start hour |
+| **NY Open Hour (UTC)** | 13 | 0-23 | NY session start hour (13:30 UTC = 8:30 EST) |
 | **NY Open Minute** | 30 | 0-59 | NY session start minute |
 | **NY Session Color** | LightGreen | — | Marker color |
 | **Session Line Width** | 1 | 1-5 | Vertical marker thickness |
