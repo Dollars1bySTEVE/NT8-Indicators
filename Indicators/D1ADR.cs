@@ -354,17 +354,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             return pivot - (high - low);
         }
 
-        private double CalculateR3(double high, double low, double s1)
+        private double CalculateR3(double pivot, double high, double low)
         {
             return high + 2 * (pivot - low);
         }
 
-        private double CalculateS3(double high, double low, double r1)
+        private double CalculateS3(double pivot, double high, double low)
         {
             return low - 2 * (high - pivot);
         }
-
-        private double pivot;
         #endregion
 
         #region SharpDX Rendering
