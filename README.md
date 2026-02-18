@@ -84,7 +84,7 @@ Professional-grade **multi-timeframe monitoring dashboard** designed for futures
 #### Panel A: TIME TO CLOSE
 Shows minutes remaining until next candle close for each timeframe.
 
-**Formula:** `((TimeframeMinutes * 60) - SecondsElapsed) / 60 = minutes remaining`
+**Formula:** `TimeframeMinutes - MinutesElapsed = minutes remaining`
 
 **Example Display:**
 ```

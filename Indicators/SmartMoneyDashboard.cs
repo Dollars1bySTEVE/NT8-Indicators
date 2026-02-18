@@ -247,10 +247,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Calculate bars remaining
                 data.BarsRemaining = CalculateBarsRemaining(minutes);
                 
-                // Check if new bar for this timeframe and store previous close
-                if (IsNewBar(minutes) && CurrentBar > 0)
+                // Check if new bar for this timeframe and update previous close
+                if (IsNewBar(minutes) && data.CurrentClose > 0)
                 {
-                    data.PreviousClose = Close[1];
+                    // Store the current close as the previous close for this timeframe
+                    data.PreviousClose = data.CurrentClose;
                 }
                 
                 // Update current close
@@ -269,9 +270,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         
         private int CalculateBarsRemaining(int timeframeMinutes)
         {
-            // Formula: ((TimeframeMinutes * 60) - SecondsElapsed) / 60 = minutes remaining
+            // Calculate minutes remaining until the next timeframe close
+            // by finding the timeframe start time and computing elapsed seconds
             
-            // For higher timeframes, we need to calculate based on the timeframe
+            // Total seconds in this timeframe
             int secondsInTimeframe = timeframeMinutes * 60;
             
             // Get current time and calculate elapsed time in current bar
@@ -343,12 +345,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     
                     signals = (priceUp ? 1 : 0) + (emaUp ? 1 : 0) + (volumeUp ? 1 : 0);
                     
+                    // >= 2 signals = UP trend consensus
+                    // <= 1 signals = DOWN trend consensus (2-3 bearish indicators)
                     if (signals >= 2)
                         data.TrendDirection = "UP";
-                    else if (signals == 0)
-                        data.TrendDirection = "DOWN";
                     else
-                        data.TrendDirection = "NEUTRAL";
+                        data.TrendDirection = "DOWN";
                         
                     data.TrendConfidence = signals;
                     break;
