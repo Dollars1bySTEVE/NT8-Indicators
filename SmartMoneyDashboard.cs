@@ -171,7 +171,7 @@ FEATURES:
                         int dataSeriesIndex = i + 1;
                         
                         // Update real-time percent change using current price from secondary series
-                        if (dataSeriesIndex <= BarsArray.Length - 1 && CurrentBars[dataSeriesIndex] >= 0)
+                        if (dataSeriesIndex < BarsArray.Length && CurrentBars[dataSeriesIndex] >= 0)
                         {
                             double currentPrice = Closes[dataSeriesIndex][0];
                             if (tfData.PreviousClose != 0)
