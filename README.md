@@ -1,18 +1,233 @@
 # NinjaTrader 8 Indicators
 
-Free, professional-grade indicators for NinjaTrader 8 — Smart Money Concepts (BOS/CHoCH), Liquidity Detection, Session Analysis, and Range-Based Tools.
+Free, professional-grade indicators for NinjaTrader 8 — Smart Money Concepts (BOS/CHoCH), Liquidity Detection, Session Analysis, Range-Based Tools, and Multi-Timeframe Dashboards.
 
 ## Table of Contents
 
-1. [SmartMoneyStructure](#1-smartmoneystructure)
-2. [BreakoutLiquiditySweep](#2-breakoutliquiditysweep)
-3. [TimeZoneColors](#3-timezonecolors)
-4. [HourlyOpenStats](#4-hourlyopenstats)
-5. [D1ADR](#5-d1adr)
+1. [SmartMoneyDashboard](#1-smartmoneydashboard) ⭐ NEW
+2. [SmartMoneyStructure](#2-smartmoneystructure)
+3. [BreakoutLiquiditySweep](#3-breakoutliquiditysweep)
+4. [TimeZoneColors](#4-timezonecolors)
+5. [HourlyOpenStats](#5-hourlyopenstats)
+6. [D1ADR](#6-d1adr)
 
 ---
 
-## 1. SmartMoneyStructure
+## 1. SmartMoneyDashboard
+
+### Overview
+Professional-grade **multi-timeframe monitoring dashboard** designed for futures traders (NQ, ES, RTY, YM). Displays real-time **time-to-close**, **percentage change**, and **trend direction** across multiple timeframes in a clean, customizable overlay panel. Works as both chart overlay or standalone dashboard window.
+
+### Key Features
+- ✅ Three information panels: Time to Close, % Change, and Trend Direction
+- ✅ Four trend calculation methods: Price Action, EMA, Volume, Hybrid
+- ✅ Level 1 & Level 2 data integration (with graceful fallback)
+- ✅ Multi-timeframe support (up to 10 simultaneous timeframes)
+- ✅ Futures-optimized with 24/5 market awareness
+- ✅ Pre-configured profiles: Scalper, Day Trader, Swing Trader
+- ✅ Fully customizable colors, fonts, positioning, and opacity
+- ✅ SharpDX rendering for smooth performance
+- ✅ Works as overlay or standalone dashboard window
+
+### Settings
+
+#### 1. Display Toggles
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Enable Dashboard** | true | Master on/off switch for entire dashboard |
+| **Show Time Remaining** | true | Display Panel A (time to close) |
+| **Show % Change Panel** | true | Display Panel B (percentage change) |
+| **Show Trend Box** | true | Display Panel C (trend direction) |
+| **Use Level 1 Data** | true | Standard price/volume analysis (always available) |
+| **Use Level 2 Data** | false | Market depth data if available (broker-dependent) |
+
+#### 2. Timeframe Configuration
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Timeframes Input** | "60,240,1440" | Comma-separated minutes (1H, 4H, Daily) |
+| **Max Timeframes** | 10 | Maximum timeframes to display (1-10) |
+
+**Pre-configured Profiles:**
+- **Scalper**: `1,5,15,60` (1min, 5min, 15min, 1H)
+- **Day Trader**: `15,60,240` (15min, 1H, 4H)
+- **Swing Trader**: `60,240,1440` (1H, 4H, Daily)
+
+#### 3. Layout & Appearance
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| **Panel Position** | TopLeft | — | TopLeft, TopRight, BottomLeft, BottomRight |
+| **Panel Opacity** | 85 | 10-100 | Background transparency (%) |
+| **Font Size** | 10 | 8-14 | Text size in points |
+| **Panel Width** | 300 | 50-400 | Panel width in pixels |
+| **Row Height** | 18 | 10-30 | Height per row in pixels |
+| **Padding X** | 10 | 5-20 | Horizontal padding |
+| **Padding Y** | 10 | 5-20 | Vertical padding |
+
+#### 4. Color Customization
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Bullish Color** | LimeGreen | Color for positive values/trends |
+| **Bearish Color** | Crimson | Color for negative values/trends |
+| **Neutral Color** | DarkGray | Color for neutral/uncertain trends |
+| **Text Color** | White | General text color |
+| **Background Color** | Black | Panel background color |
+
+#### 5. Trend Detection Methods
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| **Trend Method** | Hybrid | — | PriceAction, EMA, Volume, or Hybrid |
+| **Trend EMA Period** | 20 | 1-200 | EMA period for trend calculation |
+| **Trend SMA Period** | 50 | 1-200 | SMA period (used in Hybrid mode) |
+| **Volume Lookback** | 20 | 1-100 | Bars to average for volume comparison |
+
+### Panel Descriptions
+
+#### Panel A: TIME TO CLOSE
+Shows bars remaining until next candle close for each timeframe.
+
+**Formula:** `((TimeframeMinutes * 60) - SecondsElapsed) / 60 = bars remaining`
+
+**Example Display:**
+```
+TIME TO CLOSE
+1H: 47 bars
+4H: 183 bars
+Daily: 923 bars
+```
+
+#### Panel B: % CHANGE
+Real-time percentage change from previous candle close.
+
+**Formula:** `((CurrentClose - PreviousClose) / PreviousClose) * 100`
+
+**Color Coding:**
+- 🟢 Green with ↑ for positive change
+- 🔴 Red with ↓ for negative change
+
+**Example Display:**
+```
+% CHANGE
+1H: +0.23% ↑
+4H: -0.18% ↓
+Daily: +0.87% ↑
+```
+
+#### Panel C: TREND DIRECTION
+Directional bias with user-selectable calculation method.
+
+**Methods:**
+1. **Price Action**: `Close > Previous Close` (fastest, most responsive)
+2. **EMA**: `Close > EMA[period]` (smoother, less noise)
+3. **Volume**: `Volume > Average Volume` (shows conviction)
+4. **Hybrid**: Combination of all three showing consensus (most reliable)
+
+**Color Coding:**
+- 🟢 Green for UP trend
+- 🔴 Red for DOWN trend
+- ⚪ Gray for NEUTRAL (Hybrid mode only)
+
+**Example Display (Hybrid Mode):**
+```
+TREND (Hybrid)
+1H: UP (3/3)
+4H: DOWN (2/3)
+Daily: UP (3/3)
+
+✓ Price
+✓ EMA
+✓ Volume
+```
+
+### Level 1 vs Level 2 Data
+
+**Level 1 (Always Available):**
+- Standard OHLCV data from any broker
+- Price action and volume analysis
+- Accuracy: ~85%
+- No special requirements
+
+**Level 2 (Optional):**
+- Market depth (order book) data
+- Bid/ask imbalance analysis
+- Order accumulation detection
+- Accuracy: ~92%+
+- Requires: Interactive Brokers, Kinetic, or similar
+- **Graceful Fallback**: Shows "Level 2: Not Available (L1 Only)" if unavailable
+
+### Deployment Modes
+
+#### Mode A: Overlay on Main Chart
+1. Open your trading chart (ES, NQ, etc.)
+2. Add SmartMoneyDashboard indicator
+3. Configure position (TopLeft/TopRight/BottomLeft/BottomRight)
+4. Adjust opacity and size as needed
+
+#### Mode B: Standalone Dashboard Window (Recommended)
+1. Create new chart window (File → New → Chart)
+2. Select same instrument or blank chart
+3. Apply SmartMoneyDashboard to that window
+4. Position side-by-side with main trading chart
+5. Professional dashboard layout for dedicated monitoring
+
+### Futures Market Features
+
+**24/5 Market Handling:**
+- Automatically adapts to futures hours (Sunday 6pm ET - Friday 5pm ET)
+- Session-aware calculations
+- Handles overnight sessions correctly
+
+**Optimized Timeframes:**
+- Default: `60,240,1440` (1H, 4H, Daily)
+- Perfect for ES/NQ day trading
+- Adjustable for any trading style
+
+### Performance & Architecture
+
+**Memory Efficient:**
+- Uses `Dictionary<int, TimeframeData>` for fast lookups
+- Minimal memory footprint
+- Updates only on relevant timeframe changes
+
+**Rendering Optimized:**
+- SharpDX Direct2D rendering
+- GPU-accelerated graphics
+- Smooth 60 FPS refresh rate
+- No lag on chart updates
+
+**Calculation Efficiency:**
+- Calculate = `OnEachTick` for real-time updates
+- Smart caching of indicator values (EMA, SMA)
+- Only recalculates when needed
+
+### Use Cases
+
+**Day Trading ES/NQ:**
+- Monitor 1H, 4H, Daily trends simultaneously
+- See time remaining to major timeframe closes
+- Align entries with multi-timeframe trend
+
+**Scalping:**
+- Track 1m, 5m, 15m momentum
+- Quick glance at percentage moves
+- Volume confirmation in real-time
+
+**Swing Trading:**
+- Watch Daily, 4H, 1H alignment
+- Wait for 3/3 Hybrid signals
+- Confirm with Level 2 data (if available)
+
+### Tips & Best Practices
+
+1. **Start with Hybrid Mode**: Most reliable trend signals
+2. **Use Standalone Window**: Cleaner workspace for monitoring
+3. **Adjust Opacity**: 70-85% for subtle overlay, 100% for dedicated window
+4. **Match Timeframes to Style**: Scalper (1,5,15), Day Trader (15,60,240), Swing (60,240,1440)
+5. **Level 2 Optional**: Level 1 works perfectly fine for most traders
+6. **Panel Position**: TopRight avoids interfering with chart tools on left side
+
+---
+
+## 2. SmartMoneyStructure
 
 ### Overview
 Detects **Break of Structure (BOS)** and **Change of Character (CHoCH)** for Smart Money Concepts trading. Identifies when price breaks through swing highs/lows while tracking trend direction to determine whether the break is a continuation (BOS) or reversal (CHoCH) signal.
@@ -60,7 +275,7 @@ Detects **Break of Structure (BOS)** and **Change of Character (CHoCH)** for Sma
 
 ---
 
-## 2. BreakoutLiquiditySweep
+## 3. BreakoutLiquiditySweep
 
 ### Overview
 Multi-timeframe indicator combining **breakout detection**, **liquidity sweep identification**, and **absorption zone analysis**. Uses dual EMAs with volume analysis to detect high-probability trade setups where institutional players may be absorbing supply/demand.
@@ -98,7 +313,7 @@ Multi-timeframe indicator combining **breakout detection**, **liquidity sweep id
 
 ---
 
-## 3. TimeZoneColors
+## 4. TimeZoneColors
 
 ### Overview
 Colors chart background based on configurable time windows representing different trading sessions (Tokyo, London, New York). Displays active session name in top-right corner and supports up to 3 simultaneous time regions with customizable colors and opacity.
@@ -142,7 +357,7 @@ Each region has fully customizable:
 
 ---
 
-## 4. HourlyOpenStats
+## 5. HourlyOpenStats
 
 ### Overview
 Institutional-grade indicator tracking hourly market statistics including open/high/low prices, volume breakdown (bullish/bearish), and directional skew. Compares current hourly performance against N-day historical averages to identify patterns and breakout strength.
@@ -209,7 +424,7 @@ Institutional-grade indicator tracking hourly market statistics including open/h
 
 ---
 
-## 5. D1ADR
+## 6. D1ADR
 
 ### Overview
 **Daily Average Range (ADR)** and **Weekly Average Range (AWR)** indicator with **Pivot Points**, **Session Opens**, and **Real-Time Info Box**. Displays expected daily/weekly movement ranges using historical averages, marks key session times, and optionally shows classical pivot levels. Includes visual fill zones with SharpDX rendering for lightweight performance.
