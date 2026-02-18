@@ -38,7 +38,6 @@ Professional-grade **multi-timeframe monitoring dashboard** designed for futures
 | **Show Time Remaining** | true | Display Panel A (time to close) |
 | **Show % Change Panel** | true | Display Panel B (percentage change) |
 | **Show Trend Box** | true | Display Panel C (trend direction) |
-| **Use Level 1 Data** | true | Standard price/volume analysis (always available) |
 | **Use Level 2 Data** | false | Market depth data if available (broker-dependent) |
 
 #### 2. Timeframe Configuration
@@ -83,16 +82,16 @@ Professional-grade **multi-timeframe monitoring dashboard** designed for futures
 ### Panel Descriptions
 
 #### Panel A: TIME TO CLOSE
-Shows bars remaining until next candle close for each timeframe.
+Shows minutes remaining until next candle close for each timeframe.
 
-**Formula:** `((TimeframeMinutes * 60) - SecondsElapsed) / 60 = bars remaining`
+**Formula:** `((TimeframeMinutes * 60) - SecondsElapsed) / 60 = minutes remaining`
 
 **Example Display:**
 ```
 TIME TO CLOSE
-1H: 47 bars
-4H: 183 bars
-Daily: 923 bars
+1H: 47 min
+4H: 183 min
+Daily: 923 min
 ```
 
 #### Panel B: % CHANGE

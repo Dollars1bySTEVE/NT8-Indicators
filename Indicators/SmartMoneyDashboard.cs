@@ -92,7 +92,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowTimeRemaining = true;
                 ShowPercentPanel = true;
                 ShowTrendBox = true;
-                UseLevel1Data = true;
                 UseLevel2Data = false; // Off by default, requires broker support
                 
                 // Timeframe Configuration
@@ -248,15 +247,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Calculate bars remaining
                 data.BarsRemaining = CalculateBarsRemaining(minutes);
                 
+                // Check if new bar for this timeframe and store previous close
+                if (IsNewBar(minutes) && CurrentBar > 0)
+                {
+                    data.PreviousClose = Close[1];
+                }
+                
                 // Update current close
                 data.CurrentClose = Close[0];
                 
-                // Calculate % change (on candle close for this timeframe)
-                if (IsNewBar(minutes))
-                {
-                    data.PreviousClose = data.CurrentClose;
-                }
-                
+                // Calculate % change
                 if (data.PreviousClose > 0)
                 {
                     data.PercentChange = ((data.CurrentClose - data.PreviousClose) / data.PreviousClose) * 100.0;
@@ -269,8 +269,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         
         private int CalculateBarsRemaining(int timeframeMinutes)
         {
-            // Formula: ((BarsPeriodMinutes * 60) - SecondsElapsedInCurrentBar) / 60
-            int barPeriodSeconds = Bars.BarsPeriod.Value * 60;
+            // Formula: ((TimeframeMinutes * 60) - SecondsElapsed) / 60 = minutes remaining
             
             // For higher timeframes, we need to calculate based on the timeframe
             int secondsInTimeframe = timeframeMinutes * 60;
@@ -283,9 +282,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             int secondsElapsed = (int)elapsed.TotalSeconds;
             
             int secondsRemaining = secondsInTimeframe - secondsElapsed;
-            int barsRemaining = Math.Max(0, secondsRemaining / 60);
+            int minutesRemaining = Math.Max(0, secondsRemaining / 60);
             
-            return barsRemaining;
+            return minutesRemaining;
         }
         
         private DateTime GetTimeframeStart(DateTime currentTime, int minutes)
@@ -346,7 +345,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     
                     if (signals >= 2)
                         data.TrendDirection = "UP";
-                    else if (signals <= 1)
+                    else if (signals == 0)
                         data.TrendDirection = "DOWN";
                     else
                         data.TrendDirection = "NEUTRAL";
@@ -567,7 +566,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 TimeframeData data = kvp.Value;
                 string label = FormatTimeframeLabel(data.Minutes);
-                string text = string.Format("{0}: {1} bars", label, data.BarsRemaining);
+                string text = string.Format("{0}: {1} min", label, data.BarsRemaining);
                 
                 renderTarget.DrawText(
                     text,
@@ -860,11 +859,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowTrendBox { get; set; }
         
         [NinjaScriptProperty]
-        [Display(Name = "Use Level 1 Data", Order = 5, GroupName = "1. Display Toggles")]
-        public bool UseLevel1Data { get; set; }
-        
-        [NinjaScriptProperty]
-        [Display(Name = "Use Level 2 Data (if available)", Order = 6, GroupName = "1. Display Toggles")]
+        [Display(Name = "Use Level 2 Data (if available)", Order = 5, GroupName = "1. Display Toggles")]
         public bool UseLevel2Data { get; set; }
         
         // ==================== Timeframe Configuration ====================
