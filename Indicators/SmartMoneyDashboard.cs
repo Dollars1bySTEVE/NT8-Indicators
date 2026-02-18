@@ -421,36 +421,31 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return;
                 
                 // Create brushes
-                var bgColor = BackgroundColor.ToMediaColor();
-                byte alpha = (byte)((PanelOpacity / 100.0) * 255);
+                float alpha = PanelOpacity / 100f;
                 
                 backgroundBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     renderTarget,
-                    new SharpDX.Color(bgColor.R, bgColor.G, bgColor.B, alpha)
+                    ConvertColor(BackgroundColor, alpha)
                 );
                 
-                var txtColor = TextColor.ToMediaColor();
                 textBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     renderTarget,
-                    new SharpDX.Color(txtColor.R, txtColor.G, txtColor.B, 255)
+                    ConvertColor(TextColor, 1.0f)
                 );
                 
-                var bullColor = BullishColor.ToMediaColor();
                 bullishBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     renderTarget,
-                    new SharpDX.Color(bullColor.R, bullColor.G, bullColor.B, 255)
+                    ConvertColor(BullishColor, 1.0f)
                 );
                 
-                var bearColor = BearishColor.ToMediaColor();
                 bearishBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     renderTarget,
-                    new SharpDX.Color(bearColor.R, bearColor.G, bearColor.B, 255)
+                    ConvertColor(BearishColor, 1.0f)
                 );
                 
-                var neutColor = NeutralColor.ToMediaColor();
                 neutralBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     renderTarget,
-                    new SharpDX.Color(neutColor.R, neutColor.G, neutColor.B, 255)
+                    ConvertColor(NeutralColor, 1.0f)
                 );
                 
                 // Create text formats
@@ -477,6 +472,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Print("Error creating resources: " + ex.Message);
                 resourcesCreated = false;
             }
+        }
+        
+        private SharpDX.Color4 ConvertColor(Brush brush, float alpha)
+        {
+            if (brush is SolidColorBrush solidBrush)
+            {
+                Color c = solidBrush.Color;
+                return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
+            }
+            return new SharpDX.Color4(1f, 1f, 1f, alpha);
         }
         
         private void RenderDashboard(ChartControl chartControl, ChartScale chartScale)
