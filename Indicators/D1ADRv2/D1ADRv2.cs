@@ -64,7 +64,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush awrFillBrush;
         private SharpDX.Direct2D1.SolidColorBrush infoBrush;
         private SharpDX.DirectWrite.TextFormat textFormat;
-        private SharpDX.DirectWrite.TextFormat labelFormat;
         
         private double yesterdayHigh;
         private double yesterdayLow;
@@ -358,8 +357,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowLabels)
             {
-                Draw.Text(this, tagHigh + "Label", false, "ADR High", 0, adrHigh, 0, ADRHighColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, tagLow + "Label", false, "ADR Low", 0, adrLow, 0, ADRLowColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, tagHigh + "Label", false, "ADR High", 0, adrHigh, 0, ADRHighColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, tagLow + "Label", false, "ADR Low", 0, adrLow, 0, ADRLowColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
             }
         }
 
@@ -379,8 +378,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowLabels)
             {
-                Draw.Text(this, tagHigh + "Label", false, "AWR High", 0, awrHigh, 0, AWRHighColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, tagLow + "Label", false, "AWR Low", 0, awrLow, 0, AWRLowColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, tagHigh + "Label", false, "AWR High", 0, awrHigh, 0, AWRHighColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, tagLow + "Label", false, "AWR Low", 0, awrLow, 0, AWRLowColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
             }
         }
 
@@ -394,7 +393,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowLabels)
             {
-                Draw.Text(this, tag + "Label", false, "Daily Open", 0, todayOpen, 0, DailyOpenColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, tag + "Label", false, "Daily Open", 0, todayOpen, 0, DailyOpenColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
             }
         }
 
@@ -437,16 +436,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowLabels)
             {
-                Draw.Text(this, prefix + "_PP_Label", false, "PP", 0, pp, 0, PivotColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_R1_Label", false, "R1", 0, r1, 0, R1Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_S1_Label", false, "S1", 0, s1, 0, S1Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_R2_Label", false, "R2", 0, r2, 0, R2Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_S2_Label", false, "S2", 0, s2, 0, S2Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_PP_Label", false, "PP", 0, pp, 0, PivotColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_R1_Label", false, "R1", 0, r1, 0, R1Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_S1_Label", false, "S1", 0, s1, 0, S1Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_R2_Label", false, "R2", 0, r2, 0, R2Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_S2_Label", false, "S2", 0, s2, 0, S2Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
 
                 if (ShowR3S3)
                 {
-                    Draw.Text(this, prefix + "_R3_Label", false, "R3", 0, r3, 0, R3Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                    Draw.Text(this, prefix + "_S3_Label", false, "S3", 0, s3, 0, S3Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                    Draw.Text(this, prefix + "_R3_Label", false, "R3", 0, r3, 0, R3Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                    Draw.Text(this, prefix + "_S3_Label", false, "S3", 0, s3, 0, S3Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
                 }
             }
 
@@ -494,16 +493,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowLabels)
             {
-                Draw.Text(this, prefix + "_PP_Label", false, "W-PP", 0, pp, 0, PivotColor, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_R1_Label", false, "W-R1", 0, r1, 0, R1Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_S1_Label", false, "W-S1", 0, s1, 0, S1Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_R2_Label", false, "W-R2", 0, r2, 0, R2Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                Draw.Text(this, prefix + "_S2_Label", false, "W-S2", 0, s2, 0, S2Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_PP_Label", false, "W-PP", 0, pp, 0, PivotColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_R1_Label", false, "W-R1", 0, r1, 0, R1Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_S1_Label", false, "W-S1", 0, s1, 0, S1Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_R2_Label", false, "W-R2", 0, r2, 0, R2Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.Text(this, prefix + "_S2_Label", false, "W-S2", 0, s2, 0, S2Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
 
                 if (ShowR3S3)
                 {
-                    Draw.Text(this, prefix + "_R3_Label", false, "W-R3", 0, r3, 0, R3Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
-                    Draw.Text(this, prefix + "_S3_Label", false, "W-S3", 0, s3, 0, S3Color, labelFormat, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                    Draw.Text(this, prefix + "_R3_Label", false, "W-R3", 0, r3, 0, R3Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                    Draw.Text(this, prefix + "_S3_Label", false, "W-S3", 0, s3, 0, S3Color, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
                 }
             }
 
@@ -655,14 +654,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SharpDX.DirectWrite.FontStretch.Normal,
                 12);
 
-            labelFormat = new SharpDX.DirectWrite.TextFormat(
-                NinjaTrader.Core.Globals.DirectWriteFactory,
-                "Arial",
-                SharpDX.DirectWrite.FontWeight.Normal,
-                SharpDX.DirectWrite.FontStyle.Normal,
-                SharpDX.DirectWrite.FontStretch.Normal,
-                LabelFontSize);
-
             resourcesCreated = true;
         }
 
@@ -672,7 +663,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (awrFillBrush != null) { awrFillBrush.Dispose(); awrFillBrush = null; }
             if (infoBrush != null) { infoBrush.Dispose(); infoBrush = null; }
             if (textFormat != null) { textFormat.Dispose(); textFormat = null; }
-            if (labelFormat != null) { labelFormat.Dispose(); labelFormat = null; }
             resourcesCreated = false;
         }
 
