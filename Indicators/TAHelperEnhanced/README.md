@@ -10,17 +10,17 @@ TAHelperEnhanced is a comprehensive technical analysis dashboard for NinjaTrader
 #### Oscillators (11 Indicators)
 | Indicator | Sell Signal | Buy Signal |
 |-----------|-------------|------------|
-| RSI (14) | < 30 | > 70 |
-| Stochastics (14,3,3) | K < 20 | K > 80 |
-| CCI (20) | < -100 | > 100 |
+| RSI (14) | > 70 | < 30 |
+| Stochastics (14,3,3) | K > 80 | K < 20 |
+| CCI (20) | > 100 | < -100 |
 | ADX/DMI (14) | DI- > DI+ & ADX > 25 | DI+ > DI- & ADX > 25 |
 | Awesome Oscillator | < 0 | > 0 |
 | Momentum (10) | < 0 | > 0 |
 | MACD Histogram | Declining | Rising |
-| Stoch RSI (14) | < 20 | > 80 |
-| Williams %R (14) | < -80 | > -20 |
+| Stoch RSI (14) | > 80 | < 20 |
+| Williams %R (14) | > -20 | < -80 |
 | Bull/Bear Power | SMA < 0 | SMA > 0 |
-| Ultimate Oscillator | < 30 | > 70 |
+| Ultimate Oscillator | > 70 | < 30 |
 
 #### Moving Averages (17 Indicators)
 | Indicator | Sell Signal | Buy Signal |

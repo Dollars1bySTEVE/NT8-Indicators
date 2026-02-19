@@ -137,20 +137,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // 1. RSI (14)
             double rsi = RSI(14, 3)[0];
-            if (rsi < 30) oscillatorSell++;
-            else if (rsi > 70) oscillatorBuy++;
+            if (rsi < 30) oscillatorBuy++;
+            else if (rsi > 70) oscillatorSell++;
             else oscillatorNeutral++;
             
             // 2. Stochastics (14,3,3)
             double stochK = Stochastics(3, 14, 3)[0];
-            if (stochK < 20) oscillatorSell++;
-            else if (stochK > 80) oscillatorBuy++;
+            if (stochK < 20) oscillatorBuy++;
+            else if (stochK > 80) oscillatorSell++;
             else oscillatorNeutral++;
             
             // 3. CCI (20)
             double cci = CCI(20)[0];
-            if (cci < -100) oscillatorSell++;
-            else if (cci > 100) oscillatorBuy++;
+            if (cci < -100) oscillatorBuy++;
+            else if (cci > 100) oscillatorSell++;
             else oscillatorNeutral++;
             
             // 4. ADX/DMI (14)
@@ -189,14 +189,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // 8. Stoch RSI (14)
             double stochRSI = StochRSI(14)[0];
-            if (stochRSI < 20) oscillatorSell++;
-            else if (stochRSI > 80) oscillatorBuy++;
+            if (stochRSI < 20) oscillatorBuy++;
+            else if (stochRSI > 80) oscillatorSell++;
             else oscillatorNeutral++;
             
             // 9. Williams %R (14)
             double williamsR = WilliamsR(14)[0];
-            if (williamsR < -80) oscillatorSell++;
-            else if (williamsR > -20) oscillatorBuy++;
+            if (williamsR < -80) oscillatorBuy++;
+            else if (williamsR > -20) oscillatorSell++;
             else oscillatorNeutral++;
             
             // 10. Bull/Bear Power (Close - EMA(13))
@@ -214,8 +214,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // 11. Ultimate Oscillator (simplified version)
             double uo = CalculateUltimateOscillator();
-            if (uo < 30) oscillatorSell++;
-            else if (uo > 70) oscillatorBuy++;
+            if (uo < 30) oscillatorBuy++;
+            else if (uo > 70) oscillatorSell++;
             else oscillatorNeutral++;
         }
         
