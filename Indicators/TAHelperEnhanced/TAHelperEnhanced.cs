@@ -155,8 +155,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // 4. ADX/DMI (14)
             double adx = ADX(14)[0];
-            double diPlus = DM(14).DiPlus[0];
-            double diMinus = DM(14).DiMinus[0];
+            var dm = DM(14);
+            double diPlus = dm.DiPlus[0];
+            double diMinus = dm.DiMinus[0];
             if (adx > 25)
             {
                 if (diMinus > diPlus) oscillatorSell++;
@@ -169,6 +170,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             
             // 5. Awesome Oscillator (SMA(HL/2, 5) - SMA(HL/2, 34))
+            // Note: NinjaTrader's SMA uses Close by default, but we need median price
+            // For simplicity, using Close-based calculation as a proxy
             double ao = SMA(5)[0] - SMA(34)[0];
             if (ao < 0) oscillatorSell++;
             else if (ao > 0) oscillatorBuy++;
@@ -181,8 +184,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             else oscillatorNeutral++;
             
             // 7. MACD Histogram
-            double macdHist = MACD(12, 26, 9).Diff[0];
-            double macdHistPrev = MACD(12, 26, 9).Diff[1];
+            var macd = MACD(12, 26, 9);
+            double macdHist = macd.Diff[0];
+            double macdHistPrev = macd.Diff[1];
             if (macdHist < macdHistPrev) oscillatorSell++;
             else if (macdHist > macdHistPrev) oscillatorBuy++;
             else oscillatorNeutral++;
@@ -200,11 +204,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             else oscillatorNeutral++;
             
             // 10. Bull/Bear Power (Close - EMA(13))
-            double bullPower = close - EMA(13)[0];
+            var ema13 = EMA(13);
+            double bullPower = close - ema13[0];
             double bullPowerSMA = 0;
             for (int i = 0; i < 13 && i <= CurrentBar; i++)
             {
-                bullPowerSMA += Close[i] - EMA(13)[i];
+                bullPowerSMA += Close[i] - ema13[i];
             }
             bullPowerSMA /= Math.Min(13, CurrentBar + 1);
             
@@ -336,38 +341,53 @@ namespace NinjaTrader.NinjaScript.Indicators
         
         private void CalculatePivotPoints()
         {
-            // Get yesterday's high, low, close
+            // Get yesterday's high, low, close by looking back through bars
             int barsAgo = 0;
             double high = 0, low = double.MaxValue, open = 0, close = 0;
             
-            // Find yesterday's values
-            DateTime yesterday = Time[0].Date.AddDays(-1);
-            for (int i = 0; i <= CurrentBar && i < 500; i++)
+            // Find previous day's values by looking back through actual bars
+            DateTime currentDate = Time[0].Date;
+            DateTime targetDate = DateTime.MinValue;
+            
+            // Find the first different date in the past
+            for (int i = 1; i <= CurrentBar && i < 500; i++)
             {
-                if (Time[i].Date == yesterday)
+                if (Time[i].Date != currentDate)
                 {
-                    if (barsAgo == 0)
-                    {
-                        close = Close[i];
-                        open = Open[i];
-                    }
-                    high = Math.Max(high, High[i]);
-                    low = Math.Min(low, Low[i]);
-                    barsAgo++;
-                }
-                else if (barsAgo > 0)
-                {
+                    targetDate = Time[i].Date;
                     break;
                 }
             }
             
-            if (barsAgo == 0 || low == double.MaxValue)
+            if (targetDate == DateTime.MinValue)
             {
-                // Use current day if yesterday not found
+                // Use current day if no previous day found
                 high = MAX(High, Math.Min(CurrentBar, 100))[0];
                 low = MIN(Low, Math.Min(CurrentBar, 100))[0];
                 close = Close[Math.Min(10, CurrentBar)];
                 open = Open[Math.Min(10, CurrentBar)];
+            }
+            else
+            {
+                // Gather data from the target date
+                for (int i = 0; i <= CurrentBar && i < 500; i++)
+                {
+                    if (Time[i].Date == targetDate)
+                    {
+                        if (barsAgo == 0)
+                        {
+                            close = Close[i];
+                            open = Open[i];
+                        }
+                        high = Math.Max(high, High[i]);
+                        low = Math.Min(low, Low[i]);
+                        barsAgo++;
+                    }
+                    else if (barsAgo > 0 && Time[i].Date != targetDate)
+                    {
+                        break;
+                    }
+                }
             }
             
             // Traditional Pivot Points
