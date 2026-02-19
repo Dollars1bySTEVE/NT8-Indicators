@@ -22,7 +22,7 @@ D1ADRv2 (Daily Average Daily Range v2) is an enhanced version of the D1ADR indic
 ## Installation
 1. Download `D1ADRv2.cs` from this repository
 2. Open NinjaTrader 8
-3. Go to `Tools` > `Import` > `NinjaScript Add-On...`
+3. Go to `Tools` > `Import` > `NinjaScript...`
 4. Select the downloaded file and click Open
 5. The indicator will compile automatically
 
