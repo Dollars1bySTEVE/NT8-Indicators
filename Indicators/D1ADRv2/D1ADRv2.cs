@@ -545,7 +545,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 
                 if (ShowLabels)
                 {
-                    Draw.Text(this, tag + "Label", false, "Asia", 0, High[0] + TickSize * 5, LabelColor);
+                    Draw.Text(this, tag + "Label", false, "Asia", 0, High[0] + TickSize * 5, 0, LabelColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
                 }
             }
             
@@ -566,7 +566,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 
                 if (ShowLabels)
                 {
-                    Draw.Text(this, tag + "Label", false, "London", 0, High[0] + TickSize * 5, LabelColor);
+                    Draw.Text(this, tag + "Label", false, "London", 0, High[0] + TickSize * 5, 0, LabelColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
                 }
             }
             
@@ -587,7 +587,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 
                 if (ShowLabels)
                 {
-                    Draw.Text(this, tag + "Label", false, "NY", 0, High[0] + TickSize * 5, LabelColor);
+                    Draw.Text(this, tag + "Label", false, "NY", 0, High[0] + TickSize * 5, 0, LabelColor, new SimpleFont("Arial", LabelFontSize), TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
                 }
             }
         }
