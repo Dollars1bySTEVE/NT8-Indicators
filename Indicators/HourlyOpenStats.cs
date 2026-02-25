@@ -370,7 +370,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 Draw.Rectangle(this, tagBase + "_box", false,
                     barsBack, hd.High, 0, hd.Low,
-                    Brushes.Transparent, boxBrush, 0);
+                    Brushes.Transparent, boxBrush, 100);
             }
 
             // 2. Hour Open Line — on top of the box
