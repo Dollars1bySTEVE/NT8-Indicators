@@ -42,6 +42,15 @@
 - **How it Works:** Visually represents market activity across different time zones.
 - **Documentation Link:** [TimeZoneColors Documentation](#)
 
+## Market Structure Volume Profiles
+- **Original Concept:** [KioseffTrading](https://www.tradingview.com/u/KioseffTrading/) on TradingView — [Original Script](https://www.tradingview.com/v/shy8kACw/)
+- **NinjaTrader 8 Port:** Dollars1bySTEVE
+- **Key Features:** Combines ICT/Smart Money Concepts market structure (BoS/CHoCH) with volume profile analysis per swing. Shows Point of Control (POC), Value Area (VAH/VAL), and Cumulative Volume Delta (CVD).
+- **Best Use Cases:** ICT/SMC traders who want to see the volume story behind each structural break. Works on all timeframes from 1-minute scalping to daily swing trading.
+- **Complexity Level:** Advanced.
+- **How it Works:** Detects swing highs/lows to identify Break of Structure (BoS) and Change of Character (CHoCH) events, then builds a volume profile histogram for each swing showing where the most trading activity occurred. CVD tracks net buy/sell pressure with configurable resets on structure events.
+- **Documentation Link:** [MarketStructureVolumeProfiles Documentation](Indicators/MarketStructureVolumeProfiles.md)
+
 ## Setup Instructions
 To set up the indicators, follow these steps:
 1. Install the indicator package in NinjaTrader.
