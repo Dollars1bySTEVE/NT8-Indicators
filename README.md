@@ -553,3 +553,77 @@ Free and open-source. Use at your own risk. No warranty provided.
 
 **Dollars1bySTEVE**  
 Repository: [github.com/Dollars1bySTEVE/NT8-Indicators](https://github.com/Dollars1bySTEVE/NT8-Indicators)
+# NT8 Indicators Overview
+
+## SmartMoneyDashboard
+- **Key Features:** A dashboard that consolidates market insights and key trading metrics.
+- **Best Use Cases:** Ideal for traders looking to analyze market trends and make informed decisions.
+- **Complexity Level:** Intermediate.
+- **How it Works:** Integrates with various data sources to provide a real-time overview of market conditions.
+- **Documentation Link:** [SmartMoneyDashboard Documentation](#)
+
+## SmartMoneyStructure
+- **Key Features:** Analyzes price structures to identify potential trading opportunities.
+- **Best Use Cases:** Suitable for structure-based trading strategies.
+- **Complexity Level:** Intermediate.
+- **How it Works:** Evaluates price movements to create actionable insights for traders.
+- **Documentation Link:** [SmartMoneyStructure Documentation](#)
+
+## D1ADR
+- **Key Features:** Daily Average True Range indicator over a 1-day period for better risk management.
+- **Best Use Cases:** Best for swing traders who require volatility measures.
+- **Complexity Level:** Beginner.
+- **How it Works:** Calculates the average true range over the past day for volatility analysis.
+- **Documentation Link:** [D1ADR Documentation](#)
+
+## HourlyOpenStats
+- **Key Features:** Provides analysis of hourly price movements and opens.
+- **Best Use Cases:** Helps intraday traders understand hourly price behavior.
+- **Complexity Level:** Beginner.
+- **How it Works:** Tracks price openings and closes hourly to provide statistical insights.
+- **Documentation Link:** [HourlyOpenStats Documentation](#)
+
+## BreakoutLiquiditySweep
+- **Key Features:** Monitors liquidity pools and potential breakout points.
+- **Best Use Cases:** Useful for identifying breakout scenarios in trending markets.
+- **Complexity Level:** Advanced.
+- **How it Works:** Analyzes order flows to identify potential breakout situations.
+- **Documentation Link:** [BreakoutLiquiditySweep Documentation](#)
+
+## TimeZoneColors
+- **Key Features:** Color-coded time zone representation to enhance trading visibility.
+- **Best Use Cases:** Great for traders who work across multiple time zones.
+- **Complexity Level:** Beginner.
+- **How it Works:** Visually represents market activity across different time zones.
+- **Documentation Link:** [TimeZoneColors Documentation](#)
+
+## Market Structure Volume Profiles
+- **Original Concept:** [KioseffTrading](https://www.tradingview.com/u/KioseffTrading/) on TradingView — [Original Script](https://www.tradingview.com/v/shy8kACw/)
+- **NinjaTrader 8 Port:** Dollars1bySTEVE
+- **Key Features:** Combines ICT/Smart Money Concepts market structure (BoS/CHoCH) with volume profile analysis per swing. Shows Point of Control (POC), Value Area (VAH/VAL), and Cumulative Volume Delta (CVD).
+- **Best Use Cases:** ICT/SMC traders who want to see the volume story behind each structural break. Works on all timeframes from 1-minute scalping to daily swing trading.
+- **Complexity Level:** Advanced.
+- **How it Works:** Detects swing highs/lows to identify Break of Structure (BoS) and Change of Character (CHoCH) events, then builds a volume profile histogram for each swing showing where the most trading activity occurred. CVD tracks net buy/sell pressure with configurable resets on structure events.
+- **Documentation Link:** [MarketStructureVolumeProfiles Documentation](Indicators/MarketStructureVolumeProfiles.md)
+
+## Setup Instructions
+To set up the indicators, follow these steps:
+1. Install the indicator package in NinjaTrader.
+2. Configure the settings as per your trading strategy.
+3. Refer to the individual documentation for detailed installation guides.
+
+## Trading Strategies
+Each indicator can be strategically used in various trading scenarios:
+- Combine SmartMoneyDashboard with D1ADR for trend analysis.
+- Utilize BreakoutLiquiditySweep alongside SmartMoneyStructure for optimized entries.
+
+## Usage Examples
+- **Example 1:** Using SmartMoneyDashboard to identify bullish market conditions…  
+- **Example 2:** Trading strategies involving HourlyOpenStats and TimeZoneColors…
+
+---
+
+*This README provides a comprehensive overview of the NT8 Indicators and their functionalities.*  
+*For more specific implementations and advanced configuration, please consult the dedicated documentation links provided above.*  
+
+---
