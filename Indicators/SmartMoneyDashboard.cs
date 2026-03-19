@@ -18,25 +18,24 @@ using NinjaTrader.Core.FloatingPoint;
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
+    public enum TrendCalculationMethod
+    {
+        PriceAction,
+        EMA,
+        Volume,
+        Hybrid
+    }
+
+    public enum PanelPositionType
+    {
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight
+    }
+
     public class SmartMoneyDashboard : Indicator
     {
-        #region Enums
-        public enum TrendCalculationMethod
-        {
-            PriceAction,
-            EMA,
-            Volume,
-            Hybrid
-        }
-        
-        public enum PanelPositionType
-        {
-            TopLeft,
-            TopRight,
-            BottomLeft,
-            BottomRight
-        }
-        #endregion
         
         #region Private Classes
         private class TimeframeData
@@ -444,7 +443,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             try
             {
                 // Get RenderTarget
-                var renderTarget = chartControl.RenderTarget;
+                var renderTarget = RenderTarget;
                 if (renderTarget == null || renderTarget.IsDisposed)
                     return;
                 
@@ -517,7 +516,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!resourcesCreated)
                 return;
                 
-            var renderTarget = chartControl.RenderTarget;
+            var renderTarget = RenderTarget;
             if (renderTarget == null || renderTarget.IsDisposed)
                 return;
             
@@ -814,18 +813,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                     break;
                     
                 case PanelPositionType.TopRight:
-                    x = chartControl.CanvasRight - width - 10;
+                    x = (float)ChartPanel.W - width - 10;
                     y = 10;
                     break;
                     
                 case PanelPositionType.BottomLeft:
                     x = 10;
-                    y = chartControl.CanvasBottom - height - 10;
+                    y = (float)ChartPanel.H - height - 10;
                     break;
                     
                 case PanelPositionType.BottomRight:
-                    x = chartControl.CanvasRight - width - 10;
-                    y = chartControl.CanvasBottom - height - 10;
+                    x = (float)ChartPanel.W - width - 10;
+                    y = (float)ChartPanel.H - height - 10;
                     break;
             }
             
