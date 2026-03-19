@@ -77,8 +77,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.DirectWrite.TextFormat textFormat;
         private SharpDX.DirectWrite.TextFormat headerFormat;
         
-        // Level 2 data availability
+        // Level 2 data — detected live via OnMarketDepth
         private bool level2Available = false;
+        private double bestBidPrice;
+        private double bestAskPrice;
+        private long bestBidSize;
+        private long bestAskSize;
+        private long totalBidDepth;
+        private long totalAskDepth;
+        private int depthLevelsReceived;
+        private string level2StatusText = "Waiting for data...";
         
         // Track whether any data has been populated
         private bool dataReady = false;
@@ -190,8 +198,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Cache smallest timeframe key for efficient render-time access
                 smallestTimeframeKey = timeframeMinutes.Count > 0 ? timeframeMinutes[0] : 0;
                 
-                // Check for Level 2 data availability
-                CheckLevel2Availability();
+                // Initialize Level 2 status
+                if (UseLevel2Data)
+                {
+                    level2Available = false;
+                    level2StatusText = "Waiting for L2 data...";
+                }
             }
             else if (State == State.Terminated)
             {
@@ -261,6 +273,62 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Mark data as ready and force the chart to repaint
             dataReady = true;
             ForceRefresh();
+        }
+        #endregion
+        
+        #region OnMarketDepth - Level 2 Detection
+        protected override void OnMarketDepth(MarketDepthEventArgs marketDepthUpdate)
+        {
+            // Only process if the user has enabled Level 2
+            if (!UseLevel2Data)
+                return;
+            
+            // If we receive ANY market depth event, Level 2 is confirmed available
+            if (!level2Available)
+            {
+                level2Available = true;
+                level2StatusText = "Level 2: Active";
+            }
+            
+            // Track best bid/ask (position 0 = inside/top of book)
+            if (marketDepthUpdate.MarketDataType == MarketDataType.Ask)
+            {
+                if (marketDepthUpdate.Position == 0)
+                {
+                    bestAskPrice = marketDepthUpdate.Price;
+                    bestAskSize = marketDepthUpdate.Volume;
+                }
+                
+                // Accumulate total ask depth across all visible levels
+                // We recalculate on each update cycle
+                if (marketDepthUpdate.Operation == Operation.Add || marketDepthUpdate.Operation == Operation.Update)
+                {
+                    depthLevelsReceived++;
+                }
+            }
+            else if (marketDepthUpdate.MarketDataType == MarketDataType.Bid)
+            {
+                if (marketDepthUpdate.Position == 0)
+                {
+                    bestBidPrice = marketDepthUpdate.Price;
+                    bestBidSize = marketDepthUpdate.Volume;
+                }
+                
+                if (marketDepthUpdate.Operation == Operation.Add || marketDepthUpdate.Operation == Operation.Update)
+                {
+                    depthLevelsReceived++;
+                }
+            }
+            
+            // Build the Level 2 status text with live bid/ask info
+            if (level2Available && bestBidPrice > 0 && bestAskPrice > 0)
+            {
+                double spread = bestAskPrice - bestBidPrice;
+                level2StatusText = string.Format("L2: Bid {0:F2} x{1} | Ask {2:F2} x{3} | Sprd {4:F2}",
+                    bestBidPrice, bestBidSize,
+                    bestAskPrice, bestAskSize,
+                    spread);
+            }
         }
         #endregion
         
@@ -440,28 +508,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
         #endregion
         
-        #region Level 2 Data
-        private void CheckLevel2Availability()
-        {
-            // Level 2 data availability check
-            // This is a simplified check - in real implementation, you would check broker capabilities
-            try
-            {
-                // Check if market depth is available
-                if (Bars != null && Bars.Instrument != null)
-                {
-                    // Most brokers don't expose Level 2 through standard NT8 API
-                    // This would require custom broker adapter
-                    level2Available = false;
-                }
-            }
-            catch
-            {
-                level2Available = false;
-            }
-        }
-        #endregion
-        
         #region Rendering
         private void CreateResources(ChartControl chartControl)
         {
@@ -559,15 +605,46 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Draw Level 2 status if enabled
             if (UseLevel2Data)
             {
-                string level2Status = level2Available ? "Level 2: Active" : "Level 2: Not Available (L1 Only)";
                 var statusBrush = level2Available ? bullishBrush : neutralBrush;
                 renderTarget.DrawText(
-                    level2Status,
+                    level2StatusText,
                     textFormat,
                     new SharpDX.RectangleF(xOffset, yOffset, panelRect.Width - PaddingX * 2, RowHeight),
                     statusBrush
                 );
                 yOffset += RowHeight;
+                
+                // If Level 2 is active, show bid/ask imbalance ratio
+                if (level2Available && bestBidSize > 0 && bestAskSize > 0)
+                {
+                    double ratio = (double)bestBidSize / bestAskSize;
+                    string pressureText;
+                    SharpDX.Direct2D1.SolidColorBrush pressureBrush;
+                    
+                    if (ratio > 1.5)
+                    {
+                        pressureText = string.Format("Bid Pressure: {0:F2}x (Buyers dominant)", ratio);
+                        pressureBrush = bullishBrush;
+                    }
+                    else if (ratio < 0.67)
+                    {
+                        pressureText = string.Format("Ask Pressure: {0:F2}x (Sellers dominant)", 1.0 / ratio);
+                        pressureBrush = bearishBrush;
+                    }
+                    else
+                    {
+                        pressureText = string.Format("Balanced: {0:F2}x ratio", ratio);
+                        pressureBrush = neutralBrush;
+                    }
+                    
+                    renderTarget.DrawText(
+                        pressureText,
+                        textFormat,
+                        new SharpDX.RectangleF(xOffset, yOffset, panelRect.Width - PaddingX * 2, RowHeight),
+                        pressureBrush
+                    );
+                    yOffset += RowHeight;
+                }
             }
             
             yOffset += 5; // Extra spacing
@@ -753,7 +830,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // Level 2 status if enabled
             if (UseLevel2Data)
-                height += RowHeight;
+            {
+                height += RowHeight; // Status line
+                // Extra row for bid/ask pressure when Level 2 is active
+                if (level2Available)
+                    height += RowHeight;
+            }
             
             height += 5; // Extra spacing
             
@@ -898,7 +980,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         
         [NinjaScriptProperty]
         [Display(Name = "Use Level 2 Data", Order = 5, GroupName = "1. Display Toggles",
-            Description = "[Future Feature] Enable Level 2 market depth data integration when supported by broker")]
+            Description = "Enable Level 2 market depth data — shows live bid/ask, spread, and order flow pressure when your broker provides L2 data")]
         public bool UseLevel2Data { get; set; }
         
         // ==================== Timeframe Configuration ====================
