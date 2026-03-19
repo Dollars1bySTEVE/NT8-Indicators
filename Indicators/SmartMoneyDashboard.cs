@@ -49,15 +49,22 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int BarsRemaining;
             public double PercentChange;
             public string TrendDirection;
-            public int TrendConfidence; // For hybrid mode (0-3)
+            public int TrendConfidence; // For hybrid mode (0-4)
+            // Hybrid signal breakdown (stored so render thread can read without recalculating)
+            public bool SignalPrice;
+            public bool SignalEMA;
+            public bool SignalSMA;
+            public bool SignalVolume;
         }
         #endregion
         
         #region Private Fields
         private Dictionary<int, TimeframeData> timeframeDataDict;
         private List<int> timeframeMinutes;
-        private EMA emaIndicator;
-        private SMA smaIndicator;
+        private Dictionary<int, int> bipIndexMap;       // timeframe minutes -> BarsInProgress index
+        private Dictionary<int, EMA> emaForBip;         // bip -> EMA indicator per series
+        private Dictionary<int, SMA> smaForBip;         // bip -> SMA indicator per series
+        private int smallestTimeframeKey;               // cached key of the first (smallest) timeframe
         
         // SharpDX resources
         private bool resourcesCreated;
@@ -125,15 +132,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Parse timeframes
                 ParseTimeframes();
                 
-                // Add EMAs if needed for trend detection
-                if (TrendMethod == TrendCalculationMethod.EMA || TrendMethod == TrendCalculationMethod.Hybrid)
-                {
-                    emaIndicator = EMA(TrendEMAPeriod);
-                }
+                // Add a secondary data series for each timeframe and create per-series indicators
+                bipIndexMap = new Dictionary<int, int>();
+                emaForBip   = new Dictionary<int, EMA>();
+                smaForBip   = new Dictionary<int, SMA>();
                 
-                if (TrendMethod == TrendCalculationMethod.Hybrid)
+                int bipIdx = 1;
+                foreach (int minutes in timeframeMinutes)
                 {
-                    smaIndicator = SMA(TrendSMAPeriod);
+                    AddDataSeries(BarsPeriodType.Minute, minutes);
+                    bipIndexMap[minutes] = bipIdx;
+                    
+                    if (TrendMethod == TrendCalculationMethod.EMA || TrendMethod == TrendCalculationMethod.Hybrid)
+                    {
+                        emaForBip[bipIdx] = EMA(Closes[bipIdx], TrendEMAPeriod);
+                    }
+                    
+                    if (TrendMethod == TrendCalculationMethod.Hybrid)
+                    {
+                        smaForBip[bipIdx] = SMA(Closes[bipIdx], TrendSMAPeriod);
+                    }
+                    
+                    bipIdx++;
                 }
             }
             else if (State == State.DataLoaded)
@@ -157,6 +177,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     };
                 }
                 
+                // Cache smallest timeframe key for efficient render-time access
+                smallestTimeframeKey = timeframeMinutes.Count > 0 ? timeframeMinutes[0] : 0;
+                
                 // Check for Level 2 data availability
                 CheckLevel2Availability();
             }
@@ -170,14 +193,54 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region OnBarUpdate
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < Math.Max(TrendEMAPeriod, VolumeLookback))
-                return;
-                
             if (!EnableDashboard)
                 return;
             
-            // Update all timeframes
-            UpdateTimeframeData();
+            // Primary chart update (BarsInProgress == 0) — timeframe tracking is driven by secondary series
+            if (BarsInProgress == 0)
+                return;
+            
+            // Find which timeframe this BarsInProgress corresponds to
+            int minutes = 0;
+            foreach (var kvp in bipIndexMap)
+            {
+                if (kvp.Value == BarsInProgress)
+                {
+                    minutes = kvp.Key;
+                    break;
+                }
+            }
+            
+            if (minutes == 0 || !timeframeDataDict.ContainsKey(minutes))
+                return;
+            
+            int bip = BarsInProgress;
+            // Ensure enough bars for all enabled calculations (EMA, SMA, and volume lookback)
+            int minBars = Math.Max(2, Math.Max(Math.Max(TrendEMAPeriod, TrendSMAPeriod), VolumeLookback));
+            
+            if (BarsArray[bip].Count < minBars)
+                return;
+            
+            TimeframeData data = timeframeDataDict[minutes];
+            
+            // Update close prices from this series
+            data.CurrentClose = Closes[bip][0];
+            if (BarsArray[bip].Count > 1)
+                data.PreviousClose = Closes[bip][1];   // Use the last completed bar's close
+            else if (data.PreviousClose == 0)
+                data.PreviousClose = Closes[bip][0];   // Edge case: no prior bar yet, seed with current
+            
+            // Calculate % change
+            if (data.PreviousClose > 0)
+            {
+                data.PercentChange = ((data.CurrentClose - data.PreviousClose) / data.PreviousClose) * 100.0;
+            }
+            
+            // Calculate bars remaining for this timeframe
+            data.BarsRemaining = CalculateBarsRemainingForSeries(bip, minutes);
+            
+            // Calculate trend direction using the correct data series
+            CalculateTrendForSeries(data, bip);
         }
         #endregion
         
@@ -196,6 +259,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 RenderDashboard(chartControl, chartScale);
             }
+        }
+        
+        // Fix #1: recreate SharpDX resources whenever the render target is replaced (e.g. chart resize)
+        public override void OnRenderTargetChanged()
+        {
+            DisposeResources();
+            resourcesCreated = false;
         }
         #endregion
         
@@ -234,158 +304,115 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
         #endregion
         
-        #region Update Timeframe Data
-        private void UpdateTimeframeData()
+        #region Timeframe Helpers
+        private int CalculateBarsRemainingForSeries(int bip, int minutes)
         {
-            foreach (int minutes in timeframeMinutes)
-            {
-                if (!timeframeDataDict.ContainsKey(minutes))
-                    continue;
-                    
-                TimeframeData data = timeframeDataDict[minutes];
-                
-                // Calculate bars remaining
-                data.BarsRemaining = CalculateBarsRemaining(minutes);
-                
-                // Check if new bar for this timeframe and update previous close
-                if (IsNewBar(minutes) && data.CurrentClose > 0)
-                {
-                    // Store the current close as the previous close for this timeframe
-                    data.PreviousClose = data.CurrentClose;
-                }
-                
-                // Update current close
-                data.CurrentClose = Close[0];
-                
-                // Calculate % change
-                if (data.PreviousClose > 0)
-                {
-                    data.PercentChange = ((data.CurrentClose - data.PreviousClose) / data.PreviousClose) * 100.0;
-                }
-                
-                // Calculate trend direction
-                CalculateTrend(data);
-            }
-        }
-        
-        private int CalculateBarsRemaining(int timeframeMinutes)
-        {
-            // Calculate minutes remaining until the next timeframe close
-            // by finding the timeframe start time and computing elapsed seconds
-            
-            // Total seconds in this timeframe
-            int secondsInTimeframe = timeframeMinutes * 60;
-            
-            // Get current time and calculate elapsed time in current bar
-            DateTime currentTime = Time[0];
-            DateTime timeframeStart = GetTimeframeStart(currentTime, timeframeMinutes);
-            
+            DateTime currentTime = Times[bip][0];
+            DateTime timeframeStart = GetTimeframeStart(currentTime, minutes);
             TimeSpan elapsed = currentTime - timeframeStart;
             int secondsElapsed = (int)elapsed.TotalSeconds;
-            
-            int secondsRemaining = secondsInTimeframe - secondsElapsed;
-            int minutesRemaining = Math.Max(0, secondsRemaining / 60);
-            
-            return minutesRemaining;
+            int secondsRemaining = (minutes * 60) - secondsElapsed;
+            return Math.Max(0, secondsRemaining / 60);
         }
         
         private DateTime GetTimeframeStart(DateTime currentTime, int minutes)
         {
-            // Round down to the start of the timeframe period
+            // Fix #4: for daily and above use the calendar-date boundary to avoid session-time drift
+            if (minutes >= 1440)
+            {
+                return currentTime.Date;
+            }
+            
+            // For intraday, round down to the nearest timeframe period
             long ticks = currentTime.Ticks;
             long timeframeTicks = TimeSpan.FromMinutes(minutes).Ticks;
             long startTicks = (ticks / timeframeTicks) * timeframeTicks;
             return new DateTime(startTicks);
         }
-        
-        private bool IsNewBar(int timeframeMinutes)
-        {
-            if (CurrentBar < 1)
-                return false;
-                
-            DateTime current = GetTimeframeStart(Time[0], timeframeMinutes);
-            DateTime previous = GetTimeframeStart(Time[1], timeframeMinutes);
-            
-            return current != previous;
-        }
         #endregion
         
         #region Trend Calculation
-        private void CalculateTrend(TimeframeData data)
+        private void CalculateTrendForSeries(TimeframeData data, int bip)
         {
-            bool priceUp = false;
-            bool emaUp = false;
-            bool volumeUp = false;
             int signals = 0;
             
             switch (TrendMethod)
             {
                 case TrendCalculationMethod.PriceAction:
-                    priceUp = CalculatePriceActionTrend();
-                    data.TrendDirection = priceUp ? "UP" : "DOWN";
+                    data.SignalPrice = CalculatePriceActionTrend(bip);
+                    data.TrendDirection = data.SignalPrice ? "UP" : "DOWN";
                     data.TrendConfidence = 1;
                     break;
                     
                 case TrendCalculationMethod.EMA:
-                    emaUp = CalculateEMATrend();
-                    data.TrendDirection = emaUp ? "UP" : "DOWN";
+                    data.SignalEMA = CalculateEMATrend(bip);
+                    data.TrendDirection = data.SignalEMA ? "UP" : "DOWN";
                     data.TrendConfidence = 1;
                     break;
                     
                 case TrendCalculationMethod.Volume:
-                    volumeUp = CalculateVolumeTrend();
-                    data.TrendDirection = volumeUp ? "UP" : "DOWN";
+                    data.SignalVolume = CalculateVolumeTrend(bip);
+                    data.TrendDirection = data.SignalVolume ? "UP" : "DOWN";
                     data.TrendConfidence = 1;
                     break;
                     
                 case TrendCalculationMethod.Hybrid:
-                    priceUp = CalculatePriceActionTrend();
-                    emaUp = CalculateEMATrend();
-                    volumeUp = CalculateVolumeTrend();
+                    // Fix #3: 4-signal consensus — Price Action, EMA, SMA, Volume; threshold >= 3
+                    data.SignalPrice  = CalculatePriceActionTrend(bip);
+                    data.SignalEMA    = CalculateEMATrend(bip);
+                    data.SignalSMA    = CalculateSMATrend(bip);
+                    data.SignalVolume = CalculateVolumeTrend(bip);
                     
-                    signals = (priceUp ? 1 : 0) + (emaUp ? 1 : 0) + (volumeUp ? 1 : 0);
+                    signals = (data.SignalPrice  ? 1 : 0)
+                            + (data.SignalEMA    ? 1 : 0)
+                            + (data.SignalSMA    ? 1 : 0)
+                            + (data.SignalVolume ? 1 : 0);
                     
-                    // >= 2 signals = UP trend consensus
-                    // <= 1 signals = DOWN trend consensus (2-3 bearish indicators)
-                    if (signals >= 2)
-                        data.TrendDirection = "UP";
-                    else
-                        data.TrendDirection = "DOWN";
-                        
+                    // >= 3 of 4 signals bullish = UP consensus
+                    data.TrendDirection = signals >= 3 ? "UP" : "DOWN";
                     data.TrendConfidence = signals;
                     break;
             }
         }
         
-        private bool CalculatePriceActionTrend()
+        private bool CalculatePriceActionTrend(int bip)
         {
-            if (CurrentBar < 1)
+            if (BarsArray[bip].Count < 2)
                 return false;
-                
-            return Close[0] > Close[1];
+            return Closes[bip][0] > Closes[bip][1];
         }
         
-        private bool CalculateEMATrend()
+        private bool CalculateEMATrend(int bip)
         {
-            if (emaIndicator == null || CurrentBar < TrendEMAPeriod)
+            if (!emaForBip.ContainsKey(bip) || BarsArray[bip].Count < TrendEMAPeriod)
                 return false;
-                
-            return Close[0] > emaIndicator[0];
+            return Closes[bip][0] > emaForBip[bip][0];
         }
         
-        private bool CalculateVolumeTrend()
+        private bool CalculateSMATrend(int bip)
         {
-            if (CurrentBar < VolumeLookback)
+            if (!smaForBip.ContainsKey(bip) || BarsArray[bip].Count < TrendSMAPeriod)
                 return false;
-                
+            return Closes[bip][0] > smaForBip[bip][0];
+        }
+        
+        private bool CalculateVolumeTrend(int bip)
+        {
+            // Need at least VolumeLookback completed historical bars plus the current bar
+            if (BarsArray[bip].Count <= VolumeLookback)
+                return false;
+            
             double avgVolume = 0;
             for (int i = 1; i <= VolumeLookback; i++)
             {
-                avgVolume += Volume[i];
+                avgVolume += Volumes[bip][i];
             }
             avgVolume /= VolumeLookback;
             
-            return Volume[0] > avgVolume;
+            // Fix #6: correlate volume with price direction — high volume on a down bar is bearish
+            bool highVolume = Volumes[bip][0] > avgVolume;
+            bool priceUp    = Closes[bip][0] > Opens[bip][0];
+            return highVolume && priceUp;
         }
         #endregion
         
@@ -502,6 +529,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // Draw background
             renderTarget.FillRectangle(panelRect, backgroundBrush);
+            
+            // Fix #8: add a border outline for visual separation
+            renderTarget.DrawRectangle(panelRect, textBrush, 1.0f);
             
             // Draw content
             float yOffset = panelRect.Top + PaddingY;
@@ -637,7 +667,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 TimeframeData data = kvp.Value;
                 string label = FormatTimeframeLabel(data.Minutes);
                 string confidence = TrendMethod == TrendCalculationMethod.Hybrid 
-                    ? string.Format(" ({0}/3)", data.TrendConfidence)
+                    ? string.Format(" ({0}/4)", data.TrendConfidence)
                     : "";
                     
                 string text = string.Format("{0}: {1}{2}", label, data.TrendDirection, confidence);
@@ -659,24 +689,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                 y += RowHeight;
             }
             
-            // Add detailed hybrid breakdown if hybrid mode
-            if (TrendMethod == TrendCalculationMethod.Hybrid && timeframeDataDict.Count > 0)
+            // Add detailed hybrid breakdown using the first (smallest) timeframe's stored signals
+            if (TrendMethod == TrendCalculationMethod.Hybrid && timeframeDataDict.Count > 0
+                && timeframeDataDict.ContainsKey(smallestTimeframeKey))
             {
                 y += 5;
                 
-                bool priceUp = CalculatePriceActionTrend();
-                bool emaUp = CalculateEMATrend();
-                bool volumeUp = CalculateVolumeTrend();
+                // Use signals stored during OnBarUpdate so we don't recalculate on the render thread
+                var firstData = timeframeDataDict[smallestTimeframeKey];
                 
-                string priceStatus = priceUp ? "✓ Price" : "✗ Price";
-                string emaStatus = emaUp ? "✓ EMA" : "✗ EMA";
-                string volStatus = volumeUp ? "✓ Volume" : "✗ Volume";
+                string priceStatus = firstData.SignalPrice  ? "✓ Price"  : "✗ Price";
+                string emaStatus   = firstData.SignalEMA    ? "✓ EMA"    : "✗ EMA";
+                string smaStatus   = firstData.SignalSMA    ? "✓ SMA"    : "✗ SMA";
+                string volStatus   = firstData.SignalVolume ? "✓ Volume" : "✗ Volume";
                 
                 renderTarget.DrawText(
                     priceStatus,
                     textFormat,
                     new SharpDX.RectangleF(x, y, width, RowHeight),
-                    priceUp ? bullishBrush : bearishBrush
+                    firstData.SignalPrice ? bullishBrush : bearishBrush
                 );
                 y += RowHeight;
                 
@@ -684,7 +715,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     emaStatus,
                     textFormat,
                     new SharpDX.RectangleF(x, y, width, RowHeight),
-                    emaUp ? bullishBrush : bearishBrush
+                    firstData.SignalEMA ? bullishBrush : bearishBrush
+                );
+                y += RowHeight;
+                
+                renderTarget.DrawText(
+                    smaStatus,
+                    textFormat,
+                    new SharpDX.RectangleF(x, y, width, RowHeight),
+                    firstData.SignalSMA ? bullishBrush : bearishBrush
                 );
                 y += RowHeight;
                 
@@ -692,7 +731,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     volStatus,
                     textFormat,
                     new SharpDX.RectangleF(x, y, width, RowHeight),
-                    volumeUp ? bullishBrush : bearishBrush
+                    firstData.SignalVolume ? bullishBrush : bearishBrush
                 );
                 y += RowHeight;
             }
@@ -753,7 +792,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Add hybrid breakdown rows if applicable
                 if (TrendMethod == TrendCalculationMethod.Hybrid)
                 {
-                    height += 5 + (RowHeight * 3); // Price, EMA, Volume status
+                    height += 5 + (RowHeight * 4); // Price, EMA, SMA, Volume status
                 }
                 
                 height += 5; // Spacing
@@ -861,7 +900,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowTrendBox { get; set; }
         
         [NinjaScriptProperty]
-        [Display(Name = "Use Level 2 Data (if available)", Order = 5, GroupName = "1. Display Toggles")]
+        [Display(Name = "Use Level 2 Data", Order = 5, GroupName = "1. Display Toggles",
+            Description = "[Future Feature] Enable Level 2 market depth data integration when supported by broker")]
         public bool UseLevel2Data { get; set; }
         
         // ==================== Timeframe Configuration ====================
