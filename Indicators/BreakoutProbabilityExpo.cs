@@ -16,6 +16,7 @@ using NinjaTrader.Core.FloatingPoint;
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
+    [System.ComponentModel.TypeConverter(typeof(NinjaTrader.Gui.EnumConverter))]
     public enum BPEXStepMode { Auto, Manual }
 
     [Gui.CategoryOrder("Settings", 1)]
@@ -50,7 +51,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Step Mode", Order = 0, GroupName = "Settings")]
-        public BPEXStepMode StepModeSelection { get; set; }
+        public NinjaTrader.NinjaScript.Indicators.BPEXStepMode StepModeSelection { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.001, double.MaxValue)]
