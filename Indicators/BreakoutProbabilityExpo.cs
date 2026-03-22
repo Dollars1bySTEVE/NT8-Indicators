@@ -311,18 +311,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
             base.OnRender(chartControl, chartScale);
-            if (RenderTarget == null || ChartBars == null) return;
+            if (RenderTarget == null || ChartBars == null || ChartBars.Bars == null) return;
             if (CurrentBar < 2) return;
             
             if (!dxResourcesCreated) CreateDxResources();
             
             RenderLevels(chartControl, chartScale);
-            if (ShowStats) RenderStatsPanel(chartControl);
+            if (ShowStats) RenderStatsPanel();
         }
 
         private void RenderLevels(ChartControl cc, ChartScale cs)
         {
-            if (CurrentBar < 2) return;
+            if (CurrentBar < 2 || ChartBars == null) return;
             
             bool priorGreen = Close[1] > Open[1];
             double stepPercent = StepModeSelection == BPEXStepMode.Manual ? ManualPercentageStep : calculatedStep;
@@ -332,8 +332,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             double priorHi = High[1];
             double priorLo = Low[1];
 
-            float xStart = cc.GetXByBarIndex(ChartBars, Math.Max(0, ChartBars.ToIndex - LineLengthBars));
-            float xEnd = ChartPanel.W;
+            // Get visible bar range
+            int fromIdx = ChartBars.FromIndex;
+            int toIdx = ChartBars.ToIndex;
+            
+            // Draw lines from current bar extending right
+            float xStart = cc.GetXByBarIndex(ChartBars, toIdx);
+            float xEnd = xStart + (LineLengthBars * cc.Properties.BarDistance);
+            
+            // Ensure we don't go off chart
+            if (xEnd > ChartPanel.W) xEnd = ChartPanel.W;
 
             for (int i = 0; i < NumLines; i++)
             {
@@ -358,7 +366,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         labelUp, dxLabelTextFormat, 100, 20))
                     {
                         RenderTarget.DrawTextLayout(
-                            new SharpDX.Vector2(xEnd - layout.Metrics.Width - 5, yUp - layout.Metrics.Height - 2),
+                            new SharpDX.Vector2(xEnd + 4, yUp - layout.Metrics.Height / 2f),
                             layout, dxLabelUpBrush);
                     }
 
@@ -387,7 +395,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         labelDn, dxLabelTextFormat, 100, 20))
                     {
                         RenderTarget.DrawTextLayout(
-                            new SharpDX.Vector2(xEnd - layout.Metrics.Width - 5, yDn + 2),
+                            new SharpDX.Vector2(xEnd + 4, yDn - layout.Metrics.Height / 2f),
                             layout, dxLabelDownBrush);
                     }
 
@@ -404,7 +412,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderStatsPanel(ChartControl cc)
+        private void RenderStatsPanel()
         {
             double w = totals[6, 0];
             double l = totals[6, 1];
@@ -475,8 +483,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SharpDX.DirectWrite.FontWeight.Normal,
                 SharpDX.DirectWrite.FontStyle.Normal,
                 SharpDX.DirectWrite.FontStretch.Normal,
-                LabelFontSize);
-
+                LabelFontSize);\n
             dxStatsTextFormat = new SharpDX.DirectWrite.TextFormat(
                 NinjaTrader.Core.Globals.DirectWriteFactory, "Arial",
                 SharpDX.DirectWrite.FontWeight.Bold,
