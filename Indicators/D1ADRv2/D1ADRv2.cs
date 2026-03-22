@@ -19,17 +19,15 @@ using NinjaTrader.NinjaScript.DrawingTools;
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
+    public enum DailyOpenMode
+    {
+        Session,
+        Midnight,
+        Custom
+    }
+
     public class D1ADRv2 : Indicator
     {
-        #region Enums
-        public enum DailyOpenMode
-        {
-            Session,
-            Midnight,
-            Custom
-        }
-        #endregion
-
         #region Private Fields
         private List<double> dailyRanges;
         private List<double> weeklyRanges;
