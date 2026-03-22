@@ -17,15 +17,18 @@ using NinjaTrader.Core.FloatingPoint;
 using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
+// NinjaTrader 8 requires custom enums to be declared OUTSIDE all namespaces
+// so the auto-generated partial class code can resolve them.
+// See: forum.ninjatrader.com threads #1182932, #95909, #1046853
+public enum DailyOpenMode
+{
+    Session,
+    Midnight,
+    Custom
+}
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    public enum DailyOpenMode
-    {
-        Session,
-        Midnight,
-        Custom
-    }
-
     public class D1ADRv2 : Indicator
     {
         #region Private Fields
