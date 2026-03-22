@@ -14,10 +14,11 @@ using NinjaTrader.NinjaScript;
 using NinjaTrader.Core.FloatingPoint;
 #endregion
 
+// IMPORTANT: Enum must be declared OUTSIDE the namespace for NinjaTrader auto-generated code to find it
+public enum BPEXStepMode { Auto, Manual }
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    public enum BPEXStepMode { Auto, Manual }
-
     [Gui.CategoryOrder("Settings", 1)]
     [Gui.CategoryOrder("Auto-Scale Settings", 2)]
     [Gui.CategoryOrder("Colors", 3)]
