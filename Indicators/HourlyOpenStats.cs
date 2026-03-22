@@ -29,11 +29,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double   OpenPrice;
             public double   High;
             public double   Low;
+            public double   ClosePrice;
             public double   TotalVolume;
             public double   UpVolume;
             public double   DownVolume;
             public int      BarCount;
             public int      StartBar;
+            public int      EndBar;
             public DateTime StartTime;
             public bool     IsComplete;
         }
@@ -55,6 +57,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         private HourData                            currentHourData;
         private int                                 lastHour = -1;
         private string                              lastHourKey = "";
+
+        // SharpDX GPU rendering resources (cached, created once per render target)
+        private SharpDX.Direct2D1.SolidColorBrush   dxHourOpenBrush;
+        private SharpDX.Direct2D1.SolidColorBrush   dxBullishBoxBrush;
+        private SharpDX.Direct2D1.SolidColorBrush   dxBearishBoxBrush;
+        private SharpDX.Direct2D1.SolidColorBrush   dxLabelBrush;
+        private SharpDX.Direct2D1.SolidColorBrush   dxPanelBgBrush;
+        private SharpDX.Direct2D1.StrokeStyle        dxOpenLineStrokeStyle;
+        private SharpDX.DirectWrite.TextFormat       dxTextFormat;
+        private bool                                 dxResourcesCreated;
         #endregion
 
         #region Properties — Display
@@ -235,6 +247,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     historicalVolumes[h] = new List<double>();
                 }
             }
+            else if (State == State.Terminated)
+            {
+                DisposeSharpDXResources();
+            }
         }
 
         protected override void OnBarUpdate()
@@ -252,6 +268,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (currentHourData != null && !currentHourData.IsComplete && barHour != lastHour)
                 {
+                    currentHourData.EndBar = CurrentBar - 1;
                     FinalizeHour(currentHourData);
                 }
 
@@ -263,11 +280,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                         OpenPrice   = Open[0],
                         High        = High[0],
                         Low         = Low[0],
+                        ClosePrice  = Close[0],
                         TotalVolume = Volume[0],
                         UpVolume    = Close[0] >= Open[0] ? Volume[0] : 0,
                         DownVolume  = Close[0] < Open[0] ? Volume[0] : 0,
                         BarCount    = 1,
                         StartBar    = CurrentBar,
+                        EndBar      = CurrentBar,
                         StartTime   = Time[0],
                         IsComplete  = false
                     };
@@ -284,6 +303,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 HourData hd = activeHours[hourKey];
                 hd.High         = Math.Max(hd.High, High[0]);
                 hd.Low          = Math.Min(hd.Low, Low[0]);
+                hd.ClosePrice   = Close[0];
                 hd.TotalVolume += Volume[0];
                 hd.BarCount++;
 
@@ -294,9 +314,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 currentHourData = hd;
             }
-
-            if (activeHours.ContainsKey(hourKey))
-                DrawHourVisuals(hourKey, activeHours[hourKey]);
         }
 
         #region Hour Range Check
@@ -353,53 +370,247 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
         #endregion
 
-        #region Draw Hour Visuals
-        private void DrawHourVisuals(string hourKey, HourData hd)
+        #region SharpDX Resource Helpers
+        private SharpDX.Color4 ToColor4(System.Windows.Media.Brush wpfBrush, float alpha)
         {
-            string tagBase = "HOS_" + hourKey;
-            int barsBack = CurrentBar - hd.StartBar;
-            if (barsBack < 0) barsBack = 0;
+            System.Windows.Media.Color c = ((System.Windows.Media.SolidColorBrush)wpfBrush).Color;
+            return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
+        }
 
-            // 1. Hour Range Box (drawn first so open line renders on top)
-            if (ShowHourRangeBoxes && hd.BarCount > 1)
+        private void CreateSharpDXResources(SharpDX.Direct2D1.RenderTarget rt)
+        {
+            if (dxResourcesCreated) return;
+
+            dxHourOpenBrush   = new SharpDX.Direct2D1.SolidColorBrush(rt, ToColor4(HourOpenBrush, 1f));
+            dxBullishBoxBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, ToColor4(BullishBoxBrush, BullishBoxOpacity / 100f));
+            dxBearishBoxBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, ToColor4(BearishBoxBrush, BearishBoxOpacity / 100f));
+            dxLabelBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt, ToColor4(LabelBrush, 1f));
+            dxPanelBgBrush    = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0f, 0f, 0f, 0.6f));
+
+            if (OpenLineDash != DashStyleHelper.Solid)
             {
-                bool bullish = Close[0] >= hd.OpenPrice;
-                Brush baseBrush = bullish ? BullishBoxBrush : BearishBoxBrush;
-                int opacity = bullish ? BullishBoxOpacity : BearishBoxOpacity;
-                Brush boxBrush = ApplyOpacity(baseBrush, opacity);
-
-                Draw.Rectangle(this, tagBase + "_box", false,
-                    barsBack, hd.High, 0, hd.Low,
-                    Brushes.Transparent, boxBrush, 0);
+                SharpDX.Direct2D1.StrokeStyleProperties strokeProps = new SharpDX.Direct2D1.StrokeStyleProperties();
+                switch (OpenLineDash)
+                {
+                    case DashStyleHelper.Dash:       strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dash;       break;
+                    case DashStyleHelper.DashDot:    strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.DashDot;    break;
+                    case DashStyleHelper.DashDotDot: strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.DashDotDot; break;
+                    case DashStyleHelper.Dot:        strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dot;        break;
+                    default:                         strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Solid;      break;
+                }
+                dxOpenLineStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(rt.Factory, strokeProps);
             }
 
-            // 2. Hour Open Line — on top of the box
-            if (ShowHourOpenLines)
+            float   fontSize   = LabelFont != null ? (float)LabelFont.Size : 9f;
+            string  fontFamily = LabelFont != null ? LabelFont.Family     : "Arial";
+
+            dxTextFormat = new SharpDX.DirectWrite.TextFormat(
+                NinjaTrader.Core.Globals.DirectWriteFactory,
+                fontFamily,
+                SharpDX.DirectWrite.FontWeight.Normal,
+                SharpDX.DirectWrite.FontStyle.Normal,
+                SharpDX.DirectWrite.FontStretch.Normal,
+                fontSize);
+
+            dxResourcesCreated = true;
+        }
+
+        private void DisposeSharpDXResources()
+        {
+            if (dxHourOpenBrush      != null) { dxHourOpenBrush.Dispose();      dxHourOpenBrush      = null; }
+            if (dxBullishBoxBrush    != null) { dxBullishBoxBrush.Dispose();    dxBullishBoxBrush    = null; }
+            if (dxBearishBoxBrush    != null) { dxBearishBoxBrush.Dispose();    dxBearishBoxBrush    = null; }
+            if (dxLabelBrush         != null) { dxLabelBrush.Dispose();         dxLabelBrush         = null; }
+            if (dxPanelBgBrush       != null) { dxPanelBgBrush.Dispose();       dxPanelBgBrush       = null; }
+            if (dxOpenLineStrokeStyle != null) { dxOpenLineStrokeStyle.Dispose(); dxOpenLineStrokeStyle = null; }
+            if (dxTextFormat         != null) { dxTextFormat.Dispose();         dxTextFormat         = null; }
+            dxResourcesCreated = false;
+        }
+
+        public override void OnRenderTargetChanged()
+        {
+            DisposeSharpDXResources();
+        }
+        #endregion
+
+        #region OnRender — GPU Rendering
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            base.OnRender(chartControl, chartScale);
+
+            if (activeHours == null || activeHours.Count == 0)
+                return;
+
+            SharpDX.Direct2D1.RenderTarget renderTarget = RenderTarget;
+            if (renderTarget == null)
+                return;
+
+            if (!dxResourcesCreated)
+                CreateSharpDXResources(renderTarget);
+
+            int firstBar = ChartBars.FromIndex;
+            int lastBar  = ChartBars.ToIndex;
+
+            foreach (var kvp in activeHours)
             {
-                Draw.Line(this, tagBase + "_open", false,
-                    barsBack, hd.OpenPrice, 0, hd.OpenPrice,
-                    HourOpenBrush, OpenLineDash, OpenLineWidth);
+                string   hourKey   = kvp.Key;
+                HourData hd        = kvp.Value;
+                int      hourEndBar = hd.IsComplete ? hd.EndBar : CurrentBar;
+
+                // Skip hours entirely outside the visible range
+                if (hourEndBar < firstBar || hd.StartBar > lastBar)
+                    continue;
+
+                int   clampedStart = Math.Max(hd.StartBar, firstBar);
+                int   clampedEnd   = Math.Min(hourEndBar, lastBar);
+                float xStart       = chartControl.GetXByBarIndex(ChartBars, clampedStart);
+                float xEnd         = chartControl.GetXByBarIndex(ChartBars, clampedEnd);
+                float boxWidth     = xEnd - xStart;
+
+                // 1. Hour Range Box
+                if (ShowHourRangeBoxes && hd.BarCount > 1)
+                {
+                    float yHigh     = chartScale.GetYByValue(hd.High);
+                    float yLow      = chartScale.GetYByValue(hd.Low);
+                    float boxHeight = yLow - yHigh;
+
+                    if (boxWidth > 0 && boxHeight > 0)
+                    {
+                        bool   bullish  = hd.ClosePrice >= hd.OpenPrice;
+                        SharpDX.Direct2D1.SolidColorBrush boxBrush = bullish ? dxBullishBoxBrush : dxBearishBoxBrush;
+                        renderTarget.FillRectangle(new SharpDX.RectangleF(xStart, yHigh, boxWidth, boxHeight), boxBrush);
+                    }
+                }
+
+                // 2. Hour Open Line
+                if (ShowHourOpenLines)
+                {
+                    float yOpen = chartScale.GetYByValue(hd.OpenPrice);
+                    var   p1    = new SharpDX.Vector2(xStart, yOpen);
+                    var   p2    = new SharpDX.Vector2(xEnd,   yOpen);
+
+                    if (dxOpenLineStrokeStyle != null)
+                        renderTarget.DrawLine(p1, p2, dxHourOpenBrush, OpenLineWidth, dxOpenLineStrokeStyle);
+                    else
+                        renderTarget.DrawLine(p1, p2, dxHourOpenBrush, OpenLineWidth);
+                }
+
+                // 3. Hour Label
+                if (ShowHourLabels && ShouldShowLabel(hourKey, hd))
+                {
+                    string labelText = BuildLabel(hd);
+                    float  yHigh     = chartScale.GetYByValue(hd.High);
+                    float  labelX    = xStart + 4f;
+                    float  labelY    = yHigh - LabelYOffset;
+
+                    SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+                        NinjaTrader.Core.Globals.DirectWriteFactory,
+                        labelText, dxTextFormat, 200f, 200f);
+                    renderTarget.DrawTextLayout(new SharpDX.Vector2(labelX, labelY), layout, dxLabelBrush);
+                    layout.Dispose();
+                }
             }
 
-            // 3. Hour Label — only for recent hours to prevent overlap
-            if (ShowHourLabels && ShouldShowLabel(hourKey, hd))
+            // 4. Stats Panel — rendered last so it sits on top of everything
+            if (ShowStatsPanel && currentHourData != null && !currentHourData.IsComplete
+                && lastHourKey != "" && activeHours.ContainsKey(lastHourKey))
             {
-                string label = BuildLabel(hd);
+                RenderStatsPanelDX(renderTarget, activeHours[lastHourKey]);
+            }
+        }
+        #endregion
 
-                Draw.Text(this, tagBase + "_label", false, label,
-                    barsBack, hd.High,
-                    LabelYOffset,
-                    LabelBrush,
-                    LabelFont,
-                    TextAlignment.Left,
-                    Brushes.Transparent,
-                    Brushes.Transparent,
-                    0);
+        #region Stats Panel — SharpDX
+        private string BuildStatsPanelText(HourData hd)
+        {
+            HourHistoricalStats stats        = GetStats(hd.Hour);
+            double              currentRange = hd.High - hd.Low;
+
+            StringBuilder sb = new StringBuilder();
+            sb.AppendFormat("{0}-Day Average Range", LookbackDays);
+
+            if (stats.SampleCount > 0)
+            {
+                sb.AppendFormat("\n{0}:00 Avg: ({1:F2}) / Current: ({2:F2})",
+                    hd.Hour, stats.AvgRange, currentRange);
+                sb.AppendFormat("\n{0}:00 Largest Range: ({1:F2})",
+                    hd.Hour, stats.LargestRange);
+                sb.AppendFormat("\n{0}:00 Smallest Range: ({1:F2})",
+                    hd.Hour, stats.SmallestRange);
+
+                if (stats.AvgRange > 0)
+                    sb.AppendFormat("\nDistributed {0:F0}% of Avg Range",
+                        (currentRange / stats.AvgRange) * 100);
+            }
+            else
+            {
+                sb.Append("\nInsufficient historical data");
             }
 
-            // 4. Stats Panel — user-configurable position
-            if (ShowStatsPanel && !hd.IsComplete && hourKey == lastHourKey)
-                DrawStatsPanel(hd);
+            sb.AppendFormat("\nRaw H/L: {0} / {1}",
+                Instrument.MasterInstrument.FormatPrice(hd.High),
+                Instrument.MasterInstrument.FormatPrice(hd.Low));
+
+            if (ShowSkewData && hd.TotalVolume > 0)
+            {
+                double upPct   = (hd.UpVolume   / hd.TotalVolume) * 100;
+                double dnPct   = (hd.DownVolume / hd.TotalVolume) * 100;
+                string skewDir = upPct > 55 ? "Bullish" : (dnPct > 55 ? "Bearish" : "Balanced");
+                sb.AppendFormat("\n{0}:00 Data Skew: {1} ({2:F0}/{3:F0})",
+                    hd.Hour, skewDir, upPct, dnPct);
+            }
+
+            return sb.ToString();
+        }
+
+        private void RenderStatsPanelDX(SharpDX.Direct2D1.RenderTarget rt, HourData hd)
+        {
+            string text = BuildStatsPanelText(hd);
+
+            SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+                NinjaTrader.Core.Globals.DirectWriteFactory,
+                text, dxTextFormat, 260f, 300f);
+
+            float textWidth  = layout.Metrics.Width;
+            float textHeight = layout.Metrics.Height;
+            float padding    = 8f;
+            float margin     = 10f;
+            float panelW     = textWidth  + padding * 2;
+            float panelH     = textHeight + padding * 2;
+
+            float originX = (float)ChartPanel.X;
+            float originY = (float)ChartPanel.Y;
+            float totalW  = (float)ChartPanel.W;
+            float totalH  = (float)ChartPanel.H;
+
+            float panelX, panelY;
+            switch (StatsPanelPosition)
+            {
+                case TextPosition.TopRight:
+                    panelX = originX + totalW - panelW - margin;
+                    panelY = originY + margin;
+                    break;
+                case TextPosition.BottomLeft:
+                    panelX = originX + margin;
+                    panelY = originY + totalH - panelH - margin;
+                    break;
+                case TextPosition.BottomRight:
+                    panelX = originX + totalW - panelW - margin;
+                    panelY = originY + totalH - panelH - margin;
+                    break;
+                case TextPosition.Center:
+                    panelX = originX + (totalW - panelW) / 2f;
+                    panelY = originY + (totalH - panelH) / 2f;
+                    break;
+                default: // TopLeft
+                    panelX = originX + margin;
+                    panelY = originY + margin;
+                    break;
+            }
+
+            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, panelW, panelH), dxPanelBgBrush);
+            rt.DrawTextLayout(new SharpDX.Vector2(panelX + padding, panelY + padding), layout, dxLabelBrush);
+            layout.Dispose();
         }
         #endregion
 
@@ -415,23 +626,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             int idx = sortedKeys.IndexOf(hourKey);
 
             return idx >= 0 && idx < MaxLabelHours;
-        }
-        #endregion
-
-        #region Apply Opacity Helper
-        private Brush ApplyOpacity(Brush baseBrush, int opacityPercent)
-        {
-            byte alpha = (byte)(255 * opacityPercent / 100);
-            System.Windows.Media.SolidColorBrush solidBrush = baseBrush as System.Windows.Media.SolidColorBrush;
-            if (solidBrush != null)
-            {
-                System.Windows.Media.Color c = solidBrush.Color;
-                Brush result = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromArgb(alpha, c.R, c.G, c.B));
-                result.Freeze();
-                return result;
-            }
-            return baseBrush;
         }
         #endregion
 
@@ -467,52 +661,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             return sb.ToString();
-        }
-        #endregion
-
-        #region Draw Stats Panel
-        private void DrawStatsPanel(HourData hd)
-        {
-            HourHistoricalStats stats = GetStats(hd.Hour);
-            double currentRange = hd.High - hd.Low;
-
-            StringBuilder sb = new StringBuilder();
-            sb.AppendFormat("{0}-Day Average Range", LookbackDays);
-
-            if (stats.SampleCount > 0)
-            {
-                sb.AppendFormat("\n{0}:00 Avg: ({1:F2}) / Current: ({2:F2})",
-                    hd.Hour, stats.AvgRange, currentRange);
-                sb.AppendFormat("\n{0}:00 Largest Range: ({1:F2})",
-                    hd.Hour, stats.LargestRange);
-                sb.AppendFormat("\n{0}:00 Smallest Range: ({1:F2})",
-                    hd.Hour, stats.SmallestRange);
-
-                if (stats.AvgRange > 0)
-                    sb.AppendFormat("\nDistributed {0:F0}% of Avg Range",
-                        (currentRange / stats.AvgRange) * 100);
-            }
-            else
-            {
-                sb.Append("\nInsufficient historical data");
-            }
-
-            sb.AppendFormat("\nRaw H/L: {0} / {1}",
-                Instrument.MasterInstrument.FormatPrice(hd.High),
-                Instrument.MasterInstrument.FormatPrice(hd.Low));
-
-            if (ShowSkewData && hd.TotalVolume > 0)
-            {
-                double upPct = (hd.UpVolume / hd.TotalVolume) * 100;
-                double dnPct = (hd.DownVolume / hd.TotalVolume) * 100;
-                string skewDir = upPct > 55 ? "Bullish" : (dnPct > 55 ? "Bearish" : "Balanced");
-                sb.AppendFormat("\n{0}:00 Data Skew: {1} ({2:F0}/{3:F0})",
-                    hd.Hour, skewDir, upPct, dnPct);
-            }
-
-            Draw.TextFixed(this, "HOS_StatsPanel", sb.ToString(),
-                StatsPanelPosition, LabelBrush, LabelFont,
-                Brushes.Transparent, Brushes.Transparent, 0);
         }
         #endregion
     }
