@@ -16,7 +16,6 @@ using NinjaTrader.Core.FloatingPoint;
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    [System.ComponentModel.TypeConverter(typeof(NinjaTrader.Gui.EnumConverter))]
     public enum BPEXStepMode { Auto, Manual }
 
     [Gui.CategoryOrder("Settings", 1)]
