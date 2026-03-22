@@ -50,7 +50,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Step Mode", Order = 0, GroupName = "Settings")]
-        public NinjaTrader.NinjaScript.Indicators.BPEXStepMode StepModeSelection { get; set; }
+        public BPEXStepMode StepModeSelection { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.001, double.MaxValue)]
@@ -200,7 +200,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 StepModeSelection = BPEXStepMode.Auto;
                 ManualPercentageStep = 0.1;
                 NumLines = 5;
-                DisableZero = true;
+                DisableZero = false;
                 ShowStats = true;
                 CalcOnEachTick = false;
                 UseBidAskBreaks = false;
@@ -310,27 +310,29 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
             base.OnRender(chartControl, chartScale);
-            if (RenderTarget == null || ChartBars == null || CurrentBar < ATRPeriod + 2) return;
+            if (RenderTarget == null || ChartBars == null) return;
+            if (CurrentBar < 2) return;
+            
             if (!dxResourcesCreated) CreateDxResources();
+            
             RenderLevels(chartControl, chartScale);
-            if (ShowStats) RenderStatsPanel();
+            if (ShowStats) RenderStatsPanel(chartControl);
         }
 
         private void RenderLevels(ChartControl cc, ChartScale cs)
         {
+            if (CurrentBar < 2) return;
+            
             bool priorGreen = Close[1] > Open[1];
             double stepPercent = StepModeSelection == BPEXStepMode.Manual ? ManualPercentageStep : calculatedStep;
-            if (stepPercent <= 0) stepPercent = Math.Max(ManualPercentageStep, 0.001);
+            if (stepPercent <= 0) stepPercent = 0.1;
+            
             double step = Close[1] * (stepPercent / 100.0);
             double priorHi = High[1];
             double priorLo = Low[1];
 
-            int startBar = ChartBars.ToIndex;
-            int endBar = startBar + LineLengthBars;
-
-            float xStart = cc.GetXByBarIndex(ChartBars, startBar);
-            float xEnd = cc.GetXByBarIndex(ChartBars, endBar);
-            if (xEnd <= xStart) return;
+            float xStart = cc.GetXByBarIndex(ChartBars, Math.Max(0, ChartBars.ToIndex - LineLengthBars));
+            float xEnd = ChartPanel.W;
 
             for (int i = 0; i < NumLines; i++)
             {
@@ -355,7 +357,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         labelUp, dxLabelTextFormat, 100, 20))
                     {
                         RenderTarget.DrawTextLayout(
-                            new SharpDX.Vector2(xEnd + 4, yUp - layout.Metrics.Height / 2f),
+                            new SharpDX.Vector2(xEnd - layout.Metrics.Width - 5, yUp - layout.Metrics.Height - 2),
                             layout, dxLabelUpBrush);
                     }
 
@@ -384,7 +386,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         labelDn, dxLabelTextFormat, 100, 20))
                     {
                         RenderTarget.DrawTextLayout(
-                            new SharpDX.Vector2(xEnd + 4, yDn - layout.Metrics.Height / 2f),
+                            new SharpDX.Vector2(xEnd - layout.Metrics.Width - 5, yDn + 2),
                             layout, dxLabelDownBrush);
                     }
 
@@ -401,7 +403,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderStatsPanel()
+        private void RenderStatsPanel(ChartControl cc)
         {
             double w = totals[6, 0];
             double l = totals[6, 1];
@@ -433,14 +435,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             string text = sb.ToString();
             using (var layout = new SharpDX.DirectWrite.TextLayout(
                 NinjaTrader.Core.Globals.DirectWriteFactory,
-                text, dxStatsTextFormat, 220, 200))
+                text, dxStatsTextFormat, 200, 200))
             {
-                float margin = 10f;
-                float panelW = layout.Metrics.Width + 20;
-                float panelH = layout.Metrics.Height + 15;
-                float x = RenderTarget.Size.Width - panelW - margin;
-                float y = margin;
-                var bgRect = new SharpDX.RectangleF(x - 5, y - 5, panelW, panelH);
+                float x = ChartPanel.W - layout.Metrics.Width - 20;
+                float y = 10;
+                var bgRect = new SharpDX.RectangleF(x - 5, y - 5,
+                    layout.Metrics.Width + 15, layout.Metrics.Height + 10);
                 RenderTarget.FillRectangle(bgRect, dxStatsBgBrush);
                 RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, dxTextBrush);
             }
@@ -457,7 +457,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             dxFillUpBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(UpColor, RegionOpacityPct / 100f));
             dxFillDownBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(DownColor, RegionOpacityPct / 100f));
             dxTextBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(1f, 1f, 1f, 1f));
-            dxStatsBgBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.7f));
+            dxStatsBgBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.75f));
 
             var strokeProps = new SharpDX.Direct2D1.StrokeStyleProperties();
             switch (LineDash)
