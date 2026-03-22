@@ -332,15 +332,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             double priorHi = High[1];
             double priorLo = Low[1];
 
-            // Get visible bar range
             int fromIdx = ChartBars.FromIndex;
             int toIdx = ChartBars.ToIndex;
             
-            // Draw lines from current bar extending right
             float xStart = cc.GetXByBarIndex(ChartBars, toIdx);
             float xEnd = xStart + (LineLengthBars * cc.Properties.BarDistance);
             
-            // Ensure we don't go off chart
             if (xEnd > ChartPanel.W) xEnd = ChartPanel.W;
 
             for (int i = 0; i < NumLines; i++)
@@ -483,7 +480,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SharpDX.DirectWrite.FontWeight.Normal,
                 SharpDX.DirectWrite.FontStyle.Normal,
                 SharpDX.DirectWrite.FontStretch.Normal,
-                LabelFontSize);\n
+                LabelFontSize);
+
             dxStatsTextFormat = new SharpDX.DirectWrite.TextFormat(
                 NinjaTrader.Core.Globals.DirectWriteFactory, "Arial",
                 SharpDX.DirectWrite.FontWeight.Bold,
