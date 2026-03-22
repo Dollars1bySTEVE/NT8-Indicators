@@ -3,24 +3,21 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.Linq;
 using System.Text;
-using System.Windows;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
-using NinjaTrader.Gui.SuperDom;
-using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.Core.FloatingPoint;
-using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
+    public enum BPEXStepMode { Auto, Manual }
+
     [Gui.CategoryOrder("Settings", 1)]
     [Gui.CategoryOrder("Auto-Scale Settings", 2)]
     [Gui.CategoryOrder("Colors", 3)]
@@ -28,15 +25,28 @@ namespace NinjaTrader.NinjaScript.Indicators
     [Gui.CategoryOrder("Alerts", 5)]
     public class BreakoutProbabilityExpo : Indicator
     {
-        public enum BPEXStepMode { Auto, Manual }
-        
         private int[,] totals;
         private double[,] vals;
         private const int MaxLevels = 5;
+        private int lastCountedBar = -1;
         private DateTime lastAlertTime = DateTime.MinValue;
-        private Brush frozenUpColor, frozenDownColor, frozenLabelUpColor, frozenLabelDownColor;
         private ATR atrIndicator;
         private double calculatedStep;
+
+        #region SharpDX Resources
+        private bool dxResourcesCreated;
+        private SharpDX.Direct2D1.SolidColorBrush dxUpBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxDownBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxLabelUpBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxLabelDownBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxFillUpBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxFillDownBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxTextBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxStatsBgBrush;
+        private SharpDX.Direct2D1.StrokeStyle dxLineStrokeStyle;
+        private SharpDX.DirectWrite.TextFormat dxLabelTextFormat;
+        private SharpDX.DirectWrite.TextFormat dxStatsTextFormat;
+        #endregion
 
         [NinjaScriptProperty]
         [Display(Name = "Step Mode", Order = 0, GroupName = "Settings")]
@@ -178,14 +188,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Alert Rearm Seconds", Order = 6, GroupName = "Alerts")]
         public int AlertRearmSeconds { get; set; }
 
-        private string TagLineUp(int i) => "BPEX_LnUp" + i;
-        private string TagLineDn(int i) => "BPEX_LnDn" + i;
-        private string TagLblUp(int i) => "BPEX_LbUp" + i;
-        private string TagLblDn(int i) => "BPEX_LbDn" + i;
-        private string TagRegUp(int i) => "BPEX_RgUp" + i;
-        private string TagRegDn(int i) => "BPEX_RgDn" + i;
-        private const string TagStats = "BPEX_Stats";
-
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -235,12 +237,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 totals = new int[7, 4];
                 vals = new double[5, 4];
                 atrIndicator = ATR(ATRPeriod);
-                frozenUpColor = CloneAndFreeze(UpColor);
-                frozenDownColor = CloneAndFreeze(DownColor);
-                frozenLabelUpColor = CloneAndFreeze(LabelUpColor);
-                frozenLabelDownColor = CloneAndFreeze(LabelDownColor);
             }
-            else if (State == State.Terminated) { ClearAllDrawings(); }
+            else if (State == State.Terminated)
+            {
+                DisposeDxResources();
+            }
         }
 
         private double CalculateAutoStep()
@@ -261,37 +262,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             return calculatedStep;
         }
 
-        private Brush CloneAndFreeze(Brush b)
-        {
-            if (b == null) return Brushes.Transparent;
-            Brush c = b.Clone();
-            if (c.CanFreeze) c.Freeze();
-            return c;
-        }
-
-        private Brush WithOpacity(Brush b, int pct)
-        {
-            if (b == null) return Brushes.Transparent;
-            Brush c = b.Clone();
-            c.Opacity = pct / 100.0;
-            if (c.CanFreeze) c.Freeze();
-            return c;
-        }
-
-        private void ClearAllDrawings()
-        {
-            for (int i = 0; i < MaxLevels; i++)
-            {
-                RemoveDrawObject(TagLineUp(i));
-                RemoveDrawObject(TagLineDn(i));
-                RemoveDrawObject(TagLblUp(i));
-                RemoveDrawObject(TagLblDn(i));
-                RemoveDrawObject(TagRegUp(i));
-                RemoveDrawObject(TagRegDn(i));
-            }
-            RemoveDrawObject(TagStats);
-        }
-
         private void UpdatePct(int r, int c, int num, int den)
         {
             vals[r, c] = den > 0 ? Math.Round(100.0 * num / den, 2) : 0.0;
@@ -300,12 +270,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnBarUpdate()
         {
             if (CurrentBar < ATRPeriod + 2) return;
+            if (CurrentBar == lastCountedBar) return;
+            lastCountedBar = CurrentBar;
+
             bool priorGreen = Close[1] > Open[1];
             bool priorRed = Close[1] < Open[1];
             double stepPercent = GetCurrentStep();
-            double step = Close[0] * (stepPercent / 100.0);
+            double step = Close[1] * (stepPercent / 100.0);
+
             if (priorGreen) totals[5, 0]++;
             if (priorRed) totals[5, 1]++;
+
             double currHigh = High[0];
             double currLow = Low[0];
             if (UseBidAskBreaks && Calculate == Calculate.OnEachTick)
@@ -315,6 +290,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!double.IsNaN(bid) && bid > 0) currLow = Math.Min(currLow, bid);
                 if (!double.IsNaN(ask) && ask > 0) currHigh = Math.Max(currHigh, ask);
             }
+
             for (int i = 0; i < MaxLevels; i++)
             {
                 double offset = step * i;
@@ -325,18 +301,35 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (priorRed && brokeHi) { totals[i, 2]++; UpdatePct(i, 2, totals[i, 2], totals[5, 1]); }
                 if (priorRed && brokeLo) { totals[i, 3]++; UpdatePct(i, 3, totals[i, 3], totals[5, 1]); }
             }
-            DrawLevels(priorGreen, step);
+
             UpdateBacktest(priorGreen, currHigh, currLow);
             if (EnableAlerts) DoAlerts(priorGreen);
-            if (ShowStats) DrawStats();
         }
 
-        private void DrawLevels(bool priorGreen, double step)
+        #region SharpDX GPU Rendering
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
+            base.OnRender(chartControl, chartScale);
+            if (RenderTarget == null || ChartBars == null || CurrentBar < ATRPeriod + 2) return;
+            if (!dxResourcesCreated) CreateDxResources();
+            RenderLevels(chartControl, chartScale);
+            if (ShowStats) RenderStatsPanel();
+        }
+
+        private void RenderLevels(ChartControl cc, ChartScale cs)
+        {
+            bool priorGreen = Close[1] > Open[1];
+            double stepPercent = StepModeSelection == BPEXStepMode.Manual ? ManualPercentageStep : calculatedStep;
+            double step = Close[1] * (stepPercent / 100.0);
             double priorHi = High[1];
             double priorLo = Low[1];
-            int barsBack = Math.Min(LineLengthBars, CurrentBar);
-            SimpleFont font = new SimpleFont("Arial", LabelFontSize);
+
+            int endBar = ChartBars.ToIndex;
+            int startBar = Math.Max(ChartBars.FromIndex, endBar - LineLengthBars);
+
+            float xStart = cc.GetXByBarIndex(ChartBars, startBar);
+            float xEnd = cc.GetXByBarIndex(ChartBars, endBar);
+
             for (int i = 0; i < NumLines; i++)
             {
                 double pctUp = priorGreen ? vals[i, 0] : vals[i, 2];
@@ -345,75 +338,205 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double priceDn = priorLo - (step * i);
                 bool hideUp = DisableZero && pctUp <= 0;
                 bool hideDn = DisableZero && pctDn <= 0;
+
                 if (!hideUp)
                 {
-                    Draw.Line(this, TagLineUp(i), false, barsBack, priceUp, 0, priceUp, frozenUpColor, LineDash, LineWidth);
-                    Draw.Text(this, TagLblUp(i), false, pctUp.ToString("0.00") + "%", 0, priceUp, 0, frozenLabelUpColor, font, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                    float yUp = cs.GetYByValue(priceUp);
+                    RenderTarget.DrawLine(
+                        new SharpDX.Vector2(xStart, yUp),
+                        new SharpDX.Vector2(xEnd, yUp),
+                        dxUpBrush, LineWidth, dxLineStrokeStyle);
+
+                    string labelUp = pctUp.ToString("0.00") + "%";
+                    using (var layout = new SharpDX.DirectWrite.TextLayout(
+                        NinjaTrader.Core.Globals.DirectWriteFactory,
+                        labelUp, dxLabelTextFormat, 100, 20))
+                    {
+                        RenderTarget.DrawTextLayout(
+                            new SharpDX.Vector2(xEnd + 4, yUp - layout.Metrics.Height / 2f),
+                            layout, dxLabelUpBrush);
+                    }
+
                     if (FillRegions && i < NumLines - 1)
                     {
                         double nextPriceUp = priorHi + (step * (i + 1));
-                        int opacity = Math.Max(5, RegionOpacityPct - (i * 2));
-                        Brush fill = WithOpacity(UpColor, opacity);
-                        Draw.Rectangle(this, TagRegUp(i), false, barsBack, nextPriceUp, 0, priceUp, Brushes.Transparent, fill, opacity);
+                        float yNextUp = cs.GetYByValue(nextPriceUp);
+                        var rect = new SharpDX.RectangleF(
+                            xStart, Math.Min(yUp, yNextUp),
+                            xEnd - xStart, Math.Abs(yNextUp - yUp));
+                        RenderTarget.FillRectangle(rect, dxFillUpBrush);
                     }
                 }
-                else { RemoveDrawObject(TagLineUp(i)); RemoveDrawObject(TagLblUp(i)); RemoveDrawObject(TagRegUp(i)); }
+
                 if (!hideDn)
                 {
-                    Draw.Line(this, TagLineDn(i), false, barsBack, priceDn, 0, priceDn, frozenDownColor, LineDash, LineWidth);
-                    Draw.Text(this, TagLblDn(i), false, pctDn.ToString("0.00") + "%", 0, priceDn, 0, frozenLabelDownColor, font, TextAlignment.Left, Brushes.Transparent, Brushes.Transparent, 0);
+                    float yDn = cs.GetYByValue(priceDn);
+                    RenderTarget.DrawLine(
+                        new SharpDX.Vector2(xStart, yDn),
+                        new SharpDX.Vector2(xEnd, yDn),
+                        dxDownBrush, LineWidth, dxLineStrokeStyle);
+
+                    string labelDn = pctDn.ToString("0.00") + "%";
+                    using (var layout = new SharpDX.DirectWrite.TextLayout(
+                        NinjaTrader.Core.Globals.DirectWriteFactory,
+                        labelDn, dxLabelTextFormat, 100, 20))
+                    {
+                        RenderTarget.DrawTextLayout(
+                            new SharpDX.Vector2(xEnd + 4, yDn - layout.Metrics.Height / 2f),
+                            layout, dxLabelDownBrush);
+                    }
+
                     if (FillRegions && i < NumLines - 1)
                     {
                         double nextPriceDn = priorLo - (step * (i + 1));
-                        int opacity = Math.Max(5, RegionOpacityPct - (i * 2));
-                        Brush fill = WithOpacity(DownColor, opacity);
-                        Draw.Rectangle(this, TagRegDn(i), false, barsBack, priceDn, 0, nextPriceDn, Brushes.Transparent, fill, opacity);
+                        float yNextDn = cs.GetYByValue(nextPriceDn);
+                        var rect = new SharpDX.RectangleF(
+                            xStart, Math.Min(yDn, yNextDn),
+                            xEnd - xStart, Math.Abs(yNextDn - yDn));
+                        RenderTarget.FillRectangle(rect, dxFillDownBrush);
                     }
                 }
-                else { RemoveDrawObject(TagLineDn(i)); RemoveDrawObject(TagLblDn(i)); RemoveDrawObject(TagRegDn(i)); }
             }
         }
 
-        private void DrawStats()
+        private void RenderStatsPanel()
         {
-            if (ChartControl == null) return;
             double w = totals[6, 0];
             double l = totals[6, 1];
             double total = w + l;
             double wr = total > 0 ? Math.Round(100.0 * w / total, 2) : 0;
-            StringBuilder sb = new StringBuilder();
+
+            var sb = new StringBuilder();
             sb.AppendLine("WIN: " + w);
             sb.AppendLine("LOSS: " + l);
             sb.AppendLine("Profitability: " + wr.ToString("0.00") + "%");
+
             if (ShowCalculatedStep)
             {
                 sb.AppendLine("─────────────");
                 sb.AppendLine("Mode: " + StepModeSelection);
                 if (StepModeSelection == BPEXStepMode.Auto)
                 {
-                    string atrVal = (atrIndicator != null && CurrentBar >= ATRPeriod) ? atrIndicator[0].ToString("0.00") : "N/A";
+                    string atrVal = (atrIndicator != null && CurrentBar >= ATRPeriod)
+                        ? atrIndicator[0].ToString("0.00") : "N/A";
                     sb.AppendLine("ATR(" + ATRPeriod + "): " + atrVal);
                     sb.AppendLine("Step: " + calculatedStep.ToString("0.0000") + "%");
                 }
-                else { sb.AppendLine("Step: " + ManualPercentageStep.ToString("0.0000") + "%"); }
+                else
+                {
+                    sb.AppendLine("Step: " + ManualPercentageStep.ToString("0.0000") + "%");
+                }
             }
-            Brush textBrush = ChartControl.Properties.ChartText ?? Brushes.White;
-            SimpleFont sf = new SimpleFont("Arial", StatsFontSize);
-            sf.Bold = true;
-            Draw.TextFixed(this, TagStats, sb.ToString(), TextPosition.TopLeft, textBrush, sf, Brushes.Transparent, Brushes.Transparent, 0);
+
+            string text = sb.ToString();
+            using (var layout = new SharpDX.DirectWrite.TextLayout(
+                NinjaTrader.Core.Globals.DirectWriteFactory,
+                text, dxStatsTextFormat, 200, 150))
+            {
+                float x = 10;
+                float y = 30;
+                var bgRect = new SharpDX.RectangleF(x - 5, y - 5,
+                    layout.Metrics.Width + 20, layout.Metrics.Height + 15);
+                RenderTarget.FillRectangle(bgRect, dxStatsBgBrush);
+                RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, dxTextBrush);
+            }
         }
+
+        private void CreateDxResources()
+        {
+            if (dxResourcesCreated) return;
+
+            dxUpBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(UpColor, 1f));
+            dxDownBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(DownColor, 1f));
+            dxLabelUpBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(LabelUpColor, 1f));
+            dxLabelDownBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(LabelDownColor, 1f));
+            dxFillUpBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(UpColor, RegionOpacityPct / 100f));
+            dxFillDownBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, ToColor4(DownColor, RegionOpacityPct / 100f));
+            dxTextBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(1f, 1f, 1f, 1f));
+            dxStatsBgBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.7f));
+
+            var strokeProps = new SharpDX.Direct2D1.StrokeStyleProperties();
+            switch (LineDash)
+            {
+                case DashStyleHelper.Dash:    strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dash;    break;
+                case DashStyleHelper.Dot:     strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dot;     break;
+                case DashStyleHelper.DashDot: strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.DashDot; break;
+                default:                      strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Solid;   break;
+            }
+            dxLineStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(RenderTarget.Factory, strokeProps);
+
+            dxLabelTextFormat = new SharpDX.DirectWrite.TextFormat(
+                NinjaTrader.Core.Globals.DirectWriteFactory, "Arial",
+                SharpDX.DirectWrite.FontWeight.Normal,
+                SharpDX.DirectWrite.FontStyle.Normal,
+                SharpDX.DirectWrite.FontStretch.Normal,
+                LabelFontSize);
+
+            dxStatsTextFormat = new SharpDX.DirectWrite.TextFormat(
+                NinjaTrader.Core.Globals.DirectWriteFactory, "Arial",
+                SharpDX.DirectWrite.FontWeight.Bold,
+                SharpDX.DirectWrite.FontStyle.Normal,
+                SharpDX.DirectWrite.FontStretch.Normal,
+                StatsFontSize);
+
+            dxResourcesCreated = true;
+        }
+
+        private static void SafeDispose<T>(ref T obj) where T : class, IDisposable
+        {
+            if (obj != null) { obj.Dispose(); obj = null; }
+        }
+
+        private void DisposeDxResources()
+        {
+            SafeDispose(ref dxUpBrush);
+            SafeDispose(ref dxDownBrush);
+            SafeDispose(ref dxLabelUpBrush);
+            SafeDispose(ref dxLabelDownBrush);
+            SafeDispose(ref dxFillUpBrush);
+            SafeDispose(ref dxFillDownBrush);
+            SafeDispose(ref dxTextBrush);
+            SafeDispose(ref dxStatsBgBrush);
+            SafeDispose(ref dxLineStrokeStyle);
+            SafeDispose(ref dxLabelTextFormat);
+            SafeDispose(ref dxStatsTextFormat);
+            dxResourcesCreated = false;
+        }
+
+        public override void OnRenderTargetChanged()
+        {
+            DisposeDxResources();
+        }
+
+        private SharpDX.Color4 ToColor4(Brush wpfBrush, float alpha)
+        {
+            if (wpfBrush is SolidColorBrush scb)
+            {
+                var c = scb.Color;
+                return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
+            }
+            return new SharpDX.Color4(1f, 1f, 1f, alpha);
+        }
+        #endregion
 
         private void UpdateBacktest(bool priorGreen, double currHigh, double currLow)
         {
-            double a1 = vals[0, 0], b1 = vals[0, 1];
-            double a2 = vals[0, 2], b2 = vals[0, 3];
-            bool biasHigh = priorGreen ? (a1 >= b1) : (a2 >= b2);
+            if (CurrentBar <= ATRPeriod + 2) return;
+
+            double upProb = priorGreen ? vals[0, 0] : vals[0, 2];
+            double dnProb = priorGreen ? vals[0, 1] : vals[0, 3];
+            bool biasHigh = upProb > dnProb;
+
             double target = biasHigh ? High[1] : Low[1];
-            if (CurrentBar > 1)
-            {
-                bool win = biasHigh ? (currHigh >= target) : (currLow <= target);
-                if (win) totals[6, 0]++; else totals[6, 1]++;
-            }
+            double stop   = biasHigh ? Low[1]  : High[1];
+
+            bool hitTarget = biasHigh ? (currHigh >= target) : (currLow <= target);
+            bool hitStop   = biasHigh ? (currLow  <= stop)   : (currHigh >= stop);
+
+            if (hitTarget && !hitStop)
+                totals[6, 0]++;
+            else if (hitStop)
+                totals[6, 1]++;
         }
 
         private void DoAlerts(bool priorGreen)
