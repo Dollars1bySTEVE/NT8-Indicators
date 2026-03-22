@@ -320,15 +320,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             bool priorGreen = Close[1] > Open[1];
             double stepPercent = StepModeSelection == BPEXStepMode.Manual ? ManualPercentageStep : calculatedStep;
+            if (stepPercent <= 0) stepPercent = Math.Max(ManualPercentageStep, 0.001);
             double step = Close[1] * (stepPercent / 100.0);
             double priorHi = High[1];
             double priorLo = Low[1];
 
-            int endBar = ChartBars.ToIndex;
-            int startBar = Math.Max(ChartBars.FromIndex, endBar - LineLengthBars);
+            int startBar = ChartBars.ToIndex;
+            int endBar = startBar + LineLengthBars;
 
             float xStart = cc.GetXByBarIndex(ChartBars, startBar);
             float xEnd = cc.GetXByBarIndex(ChartBars, endBar);
+            if (xEnd <= xStart) return;
 
             for (int i = 0; i < NumLines; i++)
             {
@@ -431,12 +433,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             string text = sb.ToString();
             using (var layout = new SharpDX.DirectWrite.TextLayout(
                 NinjaTrader.Core.Globals.DirectWriteFactory,
-                text, dxStatsTextFormat, 200, 150))
+                text, dxStatsTextFormat, 220, 200))
             {
-                float x = 10;
-                float y = 30;
-                var bgRect = new SharpDX.RectangleF(x - 5, y - 5,
-                    layout.Metrics.Width + 20, layout.Metrics.Height + 15);
+                float margin = 10f;
+                float panelW = layout.Metrics.Width + 20;
+                float panelH = layout.Metrics.Height + 15;
+                float x = RenderTarget.Size.Width - panelW - margin;
+                float y = margin;
+                var bgRect = new SharpDX.RectangleF(x - 5, y - 5, panelW, panelH);
                 RenderTarget.FillRectangle(bgRect, dxStatsBgBrush);
                 RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, dxTextBrush);
             }
