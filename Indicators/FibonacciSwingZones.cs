@@ -1,6 +1,6 @@
-// FibonacciRetracementMystery.cs
+// FibonacciSwingZones.cs
 // GPU-Rendered Fibonacci Retracement Indicator for NinjaTrader 8
-// "Fibonacci Mystery" — ninZaFibonacciMystery
+// "Fibonacci Swing Zones" — ninZaFibonacciSwingZones
 //
 // Complete production-ready implementation featuring:
 //   • Smart Swing Detection (①②③ sequential points via MA-based trend)
@@ -45,15 +45,15 @@ using SharpDX.DirectWrite;
 
 // ── Enums declared OUTSIDE namespace (NT8 compiler resolution requirement) ────────────────────
 
-/// <summary>Direction of a Mystery Fibonacci zone.</summary>
-public enum MysteryZoneDirection
+/// <summary>Direction of a Fibonacci swing zone.</summary>
+public enum FibSwingZoneDirection
 {
     Bullish,   // downtrend→uptrend: lowest swing low (100%) → first swing high (0%)
     Bearish    // uptrend→downtrend: highest swing high (100%) → first swing low (0%)
 }
 
-/// <summary>Lifecycle phase of a Mystery zone.</summary>
-public enum MysteryZonePhase
+/// <summary>Lifecycle phase of a Fibonacci swing zone.</summary>
+public enum FibSwingZonePhase
 {
     Active,    // current zone — full opacity (0-100 bars)
     Previous,  // one zone back — 30% opacity
@@ -62,14 +62,14 @@ public enum MysteryZonePhase
 }
 
 /// <summary>Return signal direction.</summary>
-public enum MysterySignalDirection
+public enum FibSwingSignalDirection
 {
     Bullish,
     Bearish
 }
 
 /// <summary>Display mode for swing point markers.</summary>
-public enum MysterySwingDisplayMode
+public enum FibSwingDisplayMode
 {
     Smart,   // only on transitions
     Always,  // every confirmed swing
@@ -77,7 +77,7 @@ public enum MysterySwingDisplayMode
 }
 
 /// <summary>Zone fill display style.</summary>
-public enum MysteryZoneDisplayMode
+public enum FibSwingZoneDisplayMode
 {
     Gradient,
     Solid
@@ -88,32 +88,32 @@ public enum MysteryZoneDisplayMode
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
-    /// GPU-Rendered "Fibonacci Mystery" indicator (ninZaFibonacciMystery).
+    /// GPU-Rendered "Fibonacci Swing Zones" indicator (ninZaFibonacciSwingZones).
     ///
     /// Detects trend transitions via a Moving Average, anchors Fibonacci zones to ①②③
     /// sequential swing points, renders diagonal converging trapezoids, fires Return signals
     /// at configurable Fib levels, and shows a stepped trend curve — all via SharpDX GPU.
     /// </summary>
-    public class FibonacciRetracementMystery : Indicator
+    public class FibonacciSwingZones : Indicator
     {
         // ── Internal data structures ─────────────────────────────────────────────────────────
 
-        private class MysterySwingPoint
+        private class FibSwingPoint
         {
             public int    BarIndex;
             public double Price;
             public bool   IsHigh;
         }
 
-        private class MysteryReturnSignal
+        private class FibSwingReturnSignal
         {
             public int                  BarIndex;
             public double               Price;
             public double               FibRatio;
-            public MysterySignalDirection Direction;
+            public FibSwingSignalDirection Direction;
         }
 
-        private class MysteryFibZone
+        private class FibSwingZone
         {
             // ① point — the extreme swing price and its bar
             public int    AnchorBar;
@@ -123,18 +123,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int    ReversalBar;
             public double ReversalPrice;
 
-            public MysteryZoneDirection Direction;
-            public MysteryZonePhase     Phase;
+            public FibSwingZoneDirection Direction;
+            public FibSwingZonePhase     Phase;
             public int                  EndBar;           // updated to current bar each tick
-            public List<MysteryReturnSignal> Signals;
+            public List<FibSwingReturnSignal> Signals;
             public int                  LastSignalBar;    // throttle: bar index of last signal
 
             // Fib level broken tracking (ratio → broken)
             public Dictionary<double, bool> LevelBroken;
 
-            public MysteryFibZone()
+            public FibSwingZone()
             {
-                Signals      = new List<MysteryReturnSignal>();
+                Signals      = new List<FibSwingReturnSignal>();
                 LevelBroken  = new Dictionary<double, bool>();
                 LastSignalBar = -999;
             }
@@ -161,9 +161,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // ── Private fields ────────────────────────────────────────────────────────────────────
 
-        private List<MysterySwingPoint> swingHighs;
-        private List<MysterySwingPoint> swingLows;
-        private List<MysteryFibZone>    zones;
+        private List<FibSwingPoint> swingHighs;
+        private List<FibSwingPoint> swingLows;
+        private List<FibSwingZone>    zones;
 
         // MA trend detection
         private SMA   maTrend;
@@ -367,7 +367,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Swing Display Mode", Order = 1, GroupName = "07. Swing Points",
                  Description = "When to show swing point markers: Smart (transitions only), Always, Never.")]
-        public MysterySwingDisplayMode SwingDisplayMode { get; set; }
+        public FibSwingDisplayMode SwingDisplayMode { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Swing High Color", Order = 2, GroupName = "07. Swing Points",
@@ -400,7 +400,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Zone Display Mode", Order = 1, GroupName = "09. Fibonacci Zones",
                  Description = "How to fill Fibonacci zones: Gradient (top-to-bottom) or Solid.")]
-        public MysteryZoneDisplayMode ZoneDisplayMode { get; set; }
+        public FibSwingZoneDisplayMode ZoneDisplayMode { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Active Bullish Zone Color", Order = 2, GroupName = "09. Fibonacci Zones",
@@ -598,8 +598,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description              = @"GPU-Rendered Fibonacci Mystery — Smart swing detection with diagonal trapezoid zones, dotted Fib levels, Return signals, and stepped trend curve.";
-                Name                     = "ninZaFibonacciMystery";
+                Description              = @"GPU-Rendered Fibonacci Swing Zones — Smart swing detection with diagonal trapezoid zones, dotted Fib levels, Return signals, and stepped trend curve.";
+                Name                     = "ninZaFibonacciSwingZones";
                 Calculate                = Calculate.OnBarClose;
                 IsOverlay                = true;
                 DisplayInDataBox         = false;
@@ -646,7 +646,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BackgroundOpacity = 20;
 
                 // ── 07. Swing Points defaults
-                SwingDisplayMode = MysterySwingDisplayMode.Smart;
+                SwingDisplayMode = FibSwingDisplayMode.Smart;
                 SwingHighColor   = Brushes.HotPink;
                 SwingLowColor    = Brushes.DodgerBlue;
 
@@ -655,7 +655,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 InactiveLinesAreDashed = true;
 
                 // ── 09. Fibonacci Zones defaults
-                ZoneDisplayMode       = MysteryZoneDisplayMode.Gradient;
+                ZoneDisplayMode       = FibSwingZoneDisplayMode.Gradient;
                 ActiveBullishZoneColor = Brushes.Turquoise;
                 ActiveBearishZoneColor = Brushes.HotPink;
                 ActiveZoneOpacity     = 70;
@@ -707,9 +707,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.DataLoaded)
             {
-                swingHighs       = new List<MysterySwingPoint>();
-                swingLows        = new List<MysterySwingPoint>();
-                zones            = new List<MysteryFibZone>();
+                swingHighs       = new List<FibSwingPoint>();
+                swingLows        = new List<FibSwingPoint>();
+                zones            = new List<FibSwingZone>();
                 trendInitialized = false;
                 lastTrendUp      = true;
                 stepLevel        = 0.0;
@@ -827,7 +827,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (swingHighs.Count > 0 && pivot - swingHighs[swingHighs.Count - 1].BarIndex < NeighborhoodBars)
                 return;
 
-            swingHighs.Add(new MysterySwingPoint { BarIndex = pivot, Price = pivotHigh, IsHigh = true });
+            swingHighs.Add(new FibSwingPoint { BarIndex = pivot, Price = pivotHigh, IsHigh = true });
         }
 
         private void DetectSwingLows()
@@ -849,7 +849,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (swingLows.Count > 0 && pivot - swingLows[swingLows.Count - 1].BarIndex < NeighborhoodBars)
                 return;
 
-            swingLows.Add(new MysterySwingPoint { BarIndex = pivot, Price = pivotLow, IsHigh = false });
+            swingLows.Add(new FibSwingPoint { BarIndex = pivot, Price = pivotLow, IsHigh = false });
         }
 
         // ── Trend Change → Zone Creation ────────────────────────────────────────────────────
@@ -862,13 +862,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // downtrend → uptrend: anchor = lowest recent swing low (①), reversal = most recent swing high (②)
                 if (swingLows.Count == 0 || swingHighs.Count == 0) return;
 
-                MysterySwingPoint anchorLow = FindMostRecentSwingLow();
-                MysterySwingPoint reversalHigh = swingHighs[swingHighs.Count - 1];
+                FibSwingPoint anchorLow = FindMostRecentSwingLow();
+                FibSwingPoint reversalHigh = swingHighs[swingHighs.Count - 1];
 
                 if (anchorLow == null || reversalHigh == null) return;
                 if (reversalHigh.BarIndex <= anchorLow.BarIndex) return;
 
-                CreateZone(MysteryZoneDirection.Bullish, anchorLow.BarIndex, anchorLow.Price,
+                CreateZone(FibSwingZoneDirection.Bullish, anchorLow.BarIndex, anchorLow.Price,
                            reversalHigh.BarIndex, reversalHigh.Price);
 
                 FireTrendChangeAlert("Trend ▲", true);
@@ -878,57 +878,57 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // uptrend → downtrend: anchor = highest recent swing high (①), reversal = most recent swing low (②)
                 if (swingHighs.Count == 0 || swingLows.Count == 0) return;
 
-                MysterySwingPoint anchorHigh = FindMostRecentSwingHigh();
-                MysterySwingPoint reversalLow = swingLows[swingLows.Count - 1];
+                FibSwingPoint anchorHigh = FindMostRecentSwingHigh();
+                FibSwingPoint reversalLow = swingLows[swingLows.Count - 1];
 
                 if (anchorHigh == null || reversalLow == null) return;
                 if (reversalLow.BarIndex <= anchorHigh.BarIndex) return;
 
-                CreateZone(MysteryZoneDirection.Bearish, anchorHigh.BarIndex, anchorHigh.Price,
+                CreateZone(FibSwingZoneDirection.Bearish, anchorHigh.BarIndex, anchorHigh.Price,
                            reversalLow.BarIndex, reversalLow.Price);
 
                 FireTrendChangeAlert("Trend ▼", false);
             }
         }
 
-        private MysterySwingPoint FindMostRecentSwingHigh()
+        private FibSwingPoint FindMostRecentSwingHigh()
         {
             if (swingHighs.Count == 0) return null;
             // Find highest high in recent history
-            MysterySwingPoint best = swingHighs[swingHighs.Count - 1];
+            FibSwingPoint best = swingHighs[swingHighs.Count - 1];
             int lookbackLimit = Math.Max(0, swingHighs.Count - 5);
             for (int i = lookbackLimit; i < swingHighs.Count; i++)
                 if (swingHighs[i].Price > best.Price) best = swingHighs[i];
             return best;
         }
 
-        private MysterySwingPoint FindMostRecentSwingLow()
+        private FibSwingPoint FindMostRecentSwingLow()
         {
             if (swingLows.Count == 0) return null;
             // Find lowest low in recent history
-            MysterySwingPoint best = swingLows[swingLows.Count - 1];
+            FibSwingPoint best = swingLows[swingLows.Count - 1];
             int lookbackLimit = Math.Max(0, swingLows.Count - 5);
             for (int i = lookbackLimit; i < swingLows.Count; i++)
                 if (swingLows[i].Price < best.Price) best = swingLows[i];
             return best;
         }
 
-        private void CreateZone(MysteryZoneDirection dir, int anchorBar, double anchorPrice,
+        private void CreateZone(FibSwingZoneDirection dir, int anchorBar, double anchorPrice,
                                  int reversalBar, double reversalPrice)
         {
             // Demote existing zones
             for (int i = 0; i < zones.Count; i++)
             {
-                if (zones[i].Phase == MysteryZonePhase.Active)
-                    zones[i].Phase = MysteryZonePhase.Previous;
-                else if (zones[i].Phase == MysteryZonePhase.Previous)
-                    zones[i].Phase = MysteryZonePhase.Ghost;
-                else if (zones[i].Phase == MysteryZonePhase.Ghost)
-                    zones[i].Phase = MysteryZonePhase.Expired;
+                if (zones[i].Phase == FibSwingZonePhase.Active)
+                    zones[i].Phase = FibSwingZonePhase.Previous;
+                else if (zones[i].Phase == FibSwingZonePhase.Previous)
+                    zones[i].Phase = FibSwingZonePhase.Ghost;
+                else if (zones[i].Phase == FibSwingZonePhase.Ghost)
+                    zones[i].Phase = FibSwingZonePhase.Expired;
             }
 
             // Remove expired zones; keep at most MaxStoredZones
-            zones.RemoveAll(z => z.Phase == MysteryZonePhase.Expired);
+            zones.RemoveAll(z => z.Phase == FibSwingZonePhase.Expired);
             while (zones.Count >= MaxStoredZones)
                 zones.RemoveAt(0);
 
@@ -939,14 +939,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!levelBroken.ContainsKey(r))
                     levelBroken[r] = false;
 
-            var zone = new MysteryFibZone
+            var zone = new FibSwingZone
             {
                 AnchorBar     = anchorBar,
                 AnchorPrice   = anchorPrice,
                 ReversalBar   = reversalBar,
                 ReversalPrice = reversalPrice,
                 Direction     = dir,
-                Phase         = MysteryZonePhase.Active,
+                Phase         = FibSwingZonePhase.Active,
                 EndBar        = CurrentBar,
                 LevelBroken   = levelBroken
             };
@@ -963,15 +963,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 zone.EndBar = CurrentBar;
 
                 int age = zone.AgeInBars(CurrentBar);
-                if (zone.Phase == MysteryZonePhase.Active && age > ZoneExpiryBars)
-                    zone.Phase = MysteryZonePhase.Previous;
+                if (zone.Phase == FibSwingZonePhase.Active && age > ZoneExpiryBars)
+                    zone.Phase = FibSwingZonePhase.Previous;
             }
 
             // Update broken state for levels
             double[] ratios = GetFibRatios();
             foreach (var zone in zones)
             {
-                if (zone.Phase == MysteryZonePhase.Expired) continue;
+                if (zone.Phase == FibSwingZonePhase.Expired) continue;
 
                 foreach (double ratio in ratios)
                 {
@@ -979,7 +979,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (zone.LevelBroken[ratio]) continue;
 
                     double levelPrice = zone.GetFibPrice(ratio);
-                    if (zone.Direction == MysteryZoneDirection.Bullish)
+                    if (zone.Direction == FibSwingZoneDirection.Bullish)
                     {
                         if (Close[0] < levelPrice)
                             zone.LevelBroken[ratio] = true;
@@ -1002,7 +1002,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             foreach (var zone in zones)
             {
-                if (zone.Phase != MysteryZonePhase.Active) continue;
+                if (zone.Phase != FibSwingZonePhase.Active) continue;
                 if (zone.Signals.Count >= MaxSignalsPerZone) continue;
 
                 // Throttle by split bars
@@ -1016,11 +1016,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     bool inZone = (Low[0] <= fibPrice + tolerance) && (High[0] >= fibPrice - tolerance);
                     if (!inZone) continue;
 
-                    MysterySignalDirection sigDir = zone.Direction == MysteryZoneDirection.Bullish
-                        ? MysterySignalDirection.Bullish
-                        : MysterySignalDirection.Bearish;
+                    FibSwingSignalDirection sigDir = zone.Direction == FibSwingZoneDirection.Bullish
+                        ? FibSwingSignalDirection.Bullish
+                        : FibSwingSignalDirection.Bearish;
 
-                    var signal = new MysteryReturnSignal
+                    var signal = new FibSwingReturnSignal
                     {
                         BarIndex  = CurrentBar,
                         Price     = fibPrice,
@@ -1035,7 +1035,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (MarkersEnabled)
                     {
                         string tag = "FibSig_" + CurrentBar + "_" + ratio.ToString("F3");
-                        if (sigDir == MysterySignalDirection.Bullish)
+                        if (sigDir == FibSwingSignalDirection.Bullish)
                             Draw.ArrowUp(this, tag, false, 0, Low[0] - MarkerOffset * TickSize, Brushes.Cyan);
                         else
                             Draw.ArrowDown(this, tag, false, 0, High[0] + MarkerOffset * TickSize, Brushes.DeepPink);
@@ -1044,10 +1044,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Fire alerts
                     if (AlertOnReturnSignal)
                     {
-                        string msg = sigDir == MysterySignalDirection.Bullish
+                        string msg = sigDir == FibSwingSignalDirection.Bullish
                             ? BullishMarkerText + " @ " + (ratio * 100.0).ToString("F1") + "%"
                             : BearishMarkerText + " @ " + (ratio * 100.0).ToString("F1") + "%";
-                        FireReturnSignalAlert(msg, sigDir == MysterySignalDirection.Bullish);
+                        FireReturnSignalAlert(msg, sigDir == FibSwingSignalDirection.Bullish);
                     }
 
                     break; // one signal per zone per bar
@@ -1115,7 +1115,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             try
             {
                 if (AlertPopup)
-                    Alert("FibMystery_" + CurrentBar, Priority.High, message, "", 0, Brushes.LightYellow, Brushes.Black);
+                    Alert("FibSwing_" + CurrentBar, Priority.High, message, "", 0, Brushes.LightYellow, Brushes.Black);
 
                 if (AlertSound)
                 {
@@ -1124,7 +1124,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
 
                 if (AlertEmail && !string.IsNullOrEmpty(AlertEmailAddress))
-                    SendMail(AlertEmailAddress, "Fibonacci Mystery Alert", message);
+                    SendMail(AlertEmailAddress, "Fibonacci Swing Zones Alert", message);
             }
             catch { }
         }
@@ -1317,7 +1317,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderFibonacciLevelLines(rt, chartControl, chartScale, firstBar, lastBar);
 
                 // ── Layer 4: Swing point markers ───────────────────────────────────────────
-                if (SwingDisplayMode != MysterySwingDisplayMode.Never)
+                if (SwingDisplayMode != FibSwingDisplayMode.Never)
                     RenderSwingPointMarkers(rt, chartControl, chartScale, firstBar, lastBar);
 
                 // ── Layer 6: Return signal circles + labels ────────────────────────────────
@@ -1405,7 +1405,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             foreach (var zone in zones)
             {
-                if (zone.Phase == MysteryZonePhase.Expired) continue;
+                if (zone.Phase == FibSwingZonePhase.Expired) continue;
 
                 // Choose opacity based on phase
                 float opacity;
@@ -1413,19 +1413,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 switch (zone.Phase)
                 {
-                    case MysteryZonePhase.Active:
+                    case FibSwingZonePhase.Active:
                         opacity        = ActiveZoneOpacity   / 100f;
-                        fillColorBrush = zone.Direction == MysteryZoneDirection.Bullish
+                        fillColorBrush = zone.Direction == FibSwingZoneDirection.Bullish
                             ? ActiveBullishZoneColor : ActiveBearishZoneColor;
                         break;
-                    case MysteryZonePhase.Previous:
+                    case FibSwingZonePhase.Previous:
                         opacity        = PreviousZoneOpacity / 100f;
-                        fillColorBrush = zone.Direction == MysteryZoneDirection.Bullish
+                        fillColorBrush = zone.Direction == FibSwingZoneDirection.Bullish
                             ? ActiveBullishZoneColor : ActiveBearishZoneColor;
                         break;
                     default: // Ghost
                         opacity        = GhostZoneOpacity    / 100f;
-                        fillColorBrush = zone.Direction == MysteryZoneDirection.Bullish
+                        fillColorBrush = zone.Direction == FibSwingZoneDirection.Bullish
                             ? ActiveBullishZoneColor : ActiveBearishZoneColor;
                         break;
                 }
@@ -1452,11 +1452,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float yBottomClip = yAnchorLow  + (yConverge - yAnchorLow)  * tClip;
 
                 // Fill the trapezoid
-                if (ZoneDisplayMode == MysteryZoneDisplayMode.Gradient)
+                if (ZoneDisplayMode == FibSwingZoneDisplayMode.Gradient)
                 {
                     RenderGradientTrapezoid(rt, fillColorBrush, opacity,
                         xClip, yTopClip, yBottomClip, xEnd, yConverge,
-                        zone.Direction == MysteryZoneDirection.Bullish);
+                        zone.Direction == FibSwingZoneDirection.Bullish);
                 }
                 else
                 {
@@ -1467,15 +1467,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Outline lines (solid if active, dashed if inactive)
                 SharpDX.Direct2D1.StrokeStyle lineStyle =
-                    (zone.Phase == MysteryZonePhase.Active && ActiveLinesAreSolid) ? null
+                    (zone.Phase == FibSwingZonePhase.Active && ActiveLinesAreSolid) ? null
                     : (InactiveLinesAreDashed ? dxDashStyle : null);
 
-                var lineBrush = zone.Direction == MysteryZoneDirection.Bullish
+                var lineBrush = zone.Direction == FibSwingZoneDirection.Bullish
                     ? dxTrendCurveBullBrush : dxTrendCurveBearBrush;
 
                 if (lineBrush != null)
                 {
-                    float lineWidth = zone.Phase == MysteryZonePhase.Active ? 1.5f : 0.8f;
+                    float lineWidth = zone.Phase == FibSwingZonePhase.Active ? 1.5f : 0.8f;
                     rt.DrawLine(new Vector2(xClip, yTopClip),    new Vector2(xEnd, yConverge), lineBrush, lineWidth, lineStyle);
                     rt.DrawLine(new Vector2(xClip, yBottomClip), new Vector2(xEnd, yConverge), lineBrush, lineWidth, lineStyle);
                 }
@@ -1572,7 +1572,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             foreach (var zone in zones)
             {
-                if (zone.Phase == MysteryZonePhase.Expired) continue;
+                if (zone.Phase == FibSwingZonePhase.Expired) continue;
 
                 int zoneStartBar = Math.Max(firstBar, zone.AnchorBar);
                 int zoneEndBar   = Math.Min(lastBar,  zone.EndBar);
@@ -1634,7 +1634,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             foreach (var zone in zones)
             {
-                if (zone.Phase == MysteryZonePhase.Expired) continue;
+                if (zone.Phase == FibSwingZonePhase.Expired) continue;
 
                 // ① Anchor point marker
                 if (zone.AnchorBar >= firstBar && zone.AnchorBar <= lastBar)
@@ -1642,7 +1642,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     float xAnchor = cc.GetXByBarIndex(ChartBars, zone.AnchorBar);
                     float yAnchor = (float)cs.GetYByValue(zone.AnchorPrice);
 
-                    var brush = zone.Direction == MysteryZoneDirection.Bearish ? dxSwingHighBrush : dxSwingLowBrush;
+                    var brush = zone.Direction == FibSwingZoneDirection.Bearish ? dxSwingHighBrush : dxSwingLowBrush;
                     if (brush != null)
                     {
                         var ellipse = new SharpDX.Direct2D1.Ellipse(new Vector2(xAnchor, yAnchor), radius, radius);
@@ -1663,7 +1663,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     float xRev = cc.GetXByBarIndex(ChartBars, zone.ReversalBar);
                     float yRev = (float)cs.GetYByValue(zone.ReversalPrice);
 
-                    var brush = zone.Direction == MysteryZoneDirection.Bearish ? dxSwingLowBrush : dxSwingHighBrush;
+                    var brush = zone.Direction == FibSwingZoneDirection.Bearish ? dxSwingLowBrush : dxSwingHighBrush;
                     if (brush != null)
                     {
                         var ellipse = new SharpDX.Direct2D1.Ellipse(new Vector2(xRev, yRev), radius, radius);
@@ -1691,7 +1691,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             foreach (var zone in zones)
             {
-                if (zone.Phase == MysteryZonePhase.Expired) continue;
+                if (zone.Phase == FibSwingZonePhase.Expired) continue;
 
                 foreach (var sig in zone.Signals)
                 {
@@ -1701,11 +1701,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     float y = (float)cs.GetYByValue(sig.Price);
 
                     // Circle offset above/below price
-                    float yOffset = sig.Direction == MysterySignalDirection.Bullish
+                    float yOffset = sig.Direction == FibSwingSignalDirection.Bullish
                         ? y + MarkerOffset + circleR
                         : y - MarkerOffset - circleR;
 
-                    var brush = sig.Direction == MysterySignalDirection.Bullish
+                    var brush = sig.Direction == FibSwingSignalDirection.Bullish
                         ? dxBullSignalBrush : dxBearSignalBrush;
 
                     if (brush != null)
@@ -1718,18 +1718,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Label text below/above circle
                     if (dxSignalFormat != null && dxTextBrush != null)
                     {
-                        string labelText = sig.Direction == MysterySignalDirection.Bullish
+                        string labelText = sig.Direction == FibSwingSignalDirection.Bullish
                             ? BullishMarkerText : BearishMarkerText;
 
                         float lx = x - 30f;
-                        float ly = sig.Direction == MysterySignalDirection.Bullish
+                        float ly = sig.Direction == FibSwingSignalDirection.Bullish
                             ? yOffset + circleR + 2f
                             : yOffset - circleR - 24f;
 
                         var lblRect = new SharpDX.RectangleF(lx, ly, 80f, 24f);
 
                         using (var lBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                            sig.Direction == MysterySignalDirection.Bullish
+                            sig.Direction == FibSwingSignalDirection.Bullish
                                 ? new SharpDX.Color4(0f, 1f, 1f, 1f)      // Cyan
                                 : new SharpDX.Color4(1f, 0.078f, 0.576f, 1f))) // DeepPink
                         {
@@ -1763,13 +1763,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Title
             var titleRect = new SharpDX.RectangleF(panelX + m, panelY + dragH + m, pw - 2 * m, 14f);
-            rt.DrawText("Fibonacci Mystery", dxPanelFormat, titleRect, dxTextBrush);
+            rt.DrawText("Fibonacci Swing Zones", dxPanelFormat, titleRect, dxTextBrush);
 
             // Zone count info
             int activeCount = 0;
             if (zones != null)
                 foreach (var z in zones)
-                    if (z.Phase == MysteryZonePhase.Active) activeCount++;
+                    if (z.Phase == FibSwingZonePhase.Active) activeCount++;
 
             string infoLine = "Zones: " + activeCount + "  Trend: " + (lastTrendUp ? "▲" : "▼");
             var infoRect = new SharpDX.RectangleF(panelX + m, panelY + dragH + m + 16f, pw - 2 * m, 14f);
