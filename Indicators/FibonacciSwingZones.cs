@@ -1608,7 +1608,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         // Label at right edge: "61.8%  price"
                         if (dxInfoFormat != null)
                         {
-                            string priceStr   = fibPrice.ToString(Instrument.MasterInstrument.DisplayFormat);
+                            string priceStr   = fibPrice.ToString("F2");
                             string labelText  = (ratio * 100.0).ToString("F1") + "%  " + priceStr;
                             float  labelWidth = LevelLabelOffset;
                             var lblRect = new SharpDX.RectangleF(xRight - labelWidth - 2f, yLevel - 10f, labelWidth, 20f);
