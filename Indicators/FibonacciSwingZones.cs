@@ -701,7 +701,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowBackgroundShading = true;
 
                 // ── Plots (NT8 requires at minimum these)
-                AddPlot(new Stroke(Brushes.Yellow, PlotStyle.Square, 2), PlotStyle.Square, "Trend");
+                AddPlot(new Stroke(Brushes.Yellow, 2), PlotStyle.Square, "Trend");
                 AddPlot(new Stroke(Brushes.DeepSkyBlue, 1), PlotStyle.Line, "SignalTrend");
                 AddPlot(new Stroke(Brushes.Magenta, 1), PlotStyle.Line, "SignalTrade");
             }
@@ -1607,7 +1607,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         // Label at right edge: "61.8%  price"
                         if (dxInfoFormat != null)
                         {
-                            string priceStr   = fibPrice.ToString("F" + Instrument.MasterInstrument.PriceFormat);
+                            string priceStr   = fibPrice.ToString("F" + Instrument.MasterInstrument.DecimalPlaces);
                             string labelText  = (ratio * 100.0).ToString("F1") + "%  " + priceStr;
                             float  labelWidth = LevelLabelOffset;
                             var lblRect = new SharpDX.RectangleF(xRight - labelWidth - 2f, yLevel - 10f, labelWidth, 20f);
