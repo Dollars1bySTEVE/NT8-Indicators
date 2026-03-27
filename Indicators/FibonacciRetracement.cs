@@ -826,24 +826,26 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             float half = size * 0.5f;
 
-            using (var geo  = new SharpDX.Direct2D1.PathGeometry(rt.Factory))
-            using (var sink = geo.Open())
+            using (var geo = new SharpDX.Direct2D1.PathGeometry(rt.Factory))
             {
-                if (pointUp)
+                using (var sink = geo.Open())
                 {
-                    sink.BeginFigure(new SharpDX.Vector2(cx,        cy - size), SharpDX.Direct2D1.FigureBegin.Filled);
-                    sink.AddLine(    new SharpDX.Vector2(cx + half,  cy));
-                    sink.AddLine(    new SharpDX.Vector2(cx - half,  cy));
-                }
-                else
-                {
-                    sink.BeginFigure(new SharpDX.Vector2(cx,        cy + size), SharpDX.Direct2D1.FigureBegin.Filled);
-                    sink.AddLine(    new SharpDX.Vector2(cx + half,  cy));
-                    sink.AddLine(    new SharpDX.Vector2(cx - half,  cy));
-                }
+                    if (pointUp)
+                    {
+                        sink.BeginFigure(new SharpDX.Vector2(cx,        cy - size), SharpDX.Direct2D1.FigureBegin.Filled);
+                        sink.AddLine(    new SharpDX.Vector2(cx + half,  cy));
+                        sink.AddLine(    new SharpDX.Vector2(cx - half,  cy));
+                    }
+                    else
+                    {
+                        sink.BeginFigure(new SharpDX.Vector2(cx,        cy + size), SharpDX.Direct2D1.FigureBegin.Filled);
+                        sink.AddLine(    new SharpDX.Vector2(cx + half,  cy));
+                        sink.AddLine(    new SharpDX.Vector2(cx - half,  cy));
+                    }
 
-                sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
-                sink.Close();
+                    sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
+                    sink.Close();
+                }
                 rt.FillGeometry(geo, brush);
             }
         }
