@@ -618,6 +618,122 @@ Standard NinjaTrader `Draw.Region()`, `Draw.Dot()`, and `Draw.ArrowUp()` calls c
 
 ---
 
+## 8. FibonacciRetracement
+
+### Overview
+GPU-rendered **Fibonacci Retracement** indicator that automatically identifies high-probability retracement zones by detecting **trend transition points** — where an uptrend becomes a downtrend or vice versa. Unlike manual Fibonacci tools, this indicator anchors its levels to mathematically validated swing highs and lows at the exact moment trends intersect.
+
+Designed for futures traders (NQ, ES, RTY, YM) who want objective, repeatable Fibonacci entry signals without manual zone placement.
+
+### The Strategy
+
+#### Why Trend Intersection Points?
+Standard Fibonacci tools require the trader to subjectively choose anchor points. This indicator removes that subjectivity by anchoring levels only to **confirmed swing points at trend reversals**:
+
+- **Highest Swing High** (uptrend → downtrend): The peak where buying pressure was strongest, representing maximum selling opportunity. Marked as the **100% level**.
+- **First Swing Low** (start of downtrend): The initial pullback low after the reversal, marking the **0% level** for bearish zones.
+- **Lowest Swing Low** (downtrend → uptrend): The trough where selling pressure was strongest, marked as the **100% level** for bullish zones.
+- **First Swing High** (start of uptrend): The initial bounce high, marking the **0% level** for bullish zones.
+
+#### Bearish Fibonacci Zones (Uptrend → Downtrend)
+1. Indicator detects a confirmed swing high series (higher highs + higher lows → uptrend)
+2. Tracks the **highest swing high** in the uptrend as the 100% anchor
+3. When price forms lower highs + lower lows, the **first swing low** becomes the 0% anchor
+4. Retracement levels 23.6%, 38.2%, 50%, 61.8%, 78.6% are calculated between these points
+5. **SELL/Bearish Return signals** fire when price retraces back up into the zone
+
+#### Bullish Fibonacci Zones (Downtrend → Uptrend)
+- Mirror logic: Lowest swing low (100%) → First swing high (0%) → **BUY/Bullish Return signals** at golden ratios
+
+### Key Features
+- ✅ **Automatic swing high/low detection** at genuine trend intersection points — no manual input required
+- ✅ **Bearish & bullish Fibonacci zones** with full GPU-rendered fills and level lines
+- ✅ **Solid lines** for primary signal levels (38.2%, 50%, 61.8%) — high-probability entry zones
+- ✅ **Dashed lines** for secondary levels (23.6%, 78.6%) — confirmation/extension zones
+- ✅ **Return signal markers** — triangle arrows rendered directly on the bar where price reaches a Fibonacci level
+- ✅ **Signal history panel** — on-chart overlay showing the 5 most recent Return signals
+- ✅ **Dynamic color coding** — green zones for bullish, red for bearish
+- ✅ **Multi-market adaptability** — works in trending and sideways markets
+- ✅ **Full SharpDX Direct2D1 GPU rendering** — zero Draw.\* objects, smooth 60 FPS
+- ✅ **Configurable parameters** — lookback period, zone width, opacity, line width, individual level toggles
+
+### Visual Design
+
+| Element | Style | Direction | Purpose |
+|---------|-------|-----------|---------|
+| **Zone Fill** | Semi-transparent rect | Bullish=Green / Bearish=Red | Instant zone recognition |
+| **0% Line** | Solid, full opacity | Both | First opposite swing anchor |
+| **100% Line** | Solid, full opacity | Both | Extreme swing anchor |
+| **38.2% Line** | Solid, full opacity | Both | Primary signal level (golden ratio) |
+| **50.0% Line** | Solid, full opacity | Both | Primary signal level (mid-point) |
+| **61.8% Line** | Solid, full opacity | Both | Primary signal level (golden ratio) |
+| **23.6% Line** | Dashed, 65% width | Both | Secondary confirmation level |
+| **78.6% Line** | Dashed, 65% width | Both | Secondary extension level |
+| **▲ Triangle** | Bright green, below bar | Bullish Return | Buy signal at Fib level |
+| **▼ Triangle** | Bright red, above bar | Bearish Return | Sell signal at Fib level |
+| **Signal Panel** | Dark overlay, top-left | Both | 5 most recent Return signals |
+
+### Settings
+
+#### Detection
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| **Swing Lookback (bars)** | 10 | 3–50 | Bars on each side required to confirm a swing point. Higher = fewer but more significant swings. |
+| **Zone Width (ticks)** | 2 | 1–20 | Price tolerance in ticks for triggering a Return signal at a Fibonacci level. |
+| **Max Active Zones** | 5 | 1–10 | Maximum Fibonacci zones shown simultaneously. Oldest removed first. |
+
+#### Fibonacci Levels
+| Parameter | Default | Style | Description |
+|-----------|---------|-------|-------------|
+| **Show 23.6%** | On | Dashed | Secondary extension level |
+| **Show 38.2%** | On | Solid | Primary golden ratio entry |
+| **Show 50.0%** | On | Solid | Mid-point return level |
+| **Show 61.8%** | On | Solid | Primary golden ratio entry |
+| **Show 78.6%** | On | Dashed | Deep retracement level |
+
+#### Visuals
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| **Bullish Zone Color** | LimeGreen | — | Fill and line color for bullish zones |
+| **Bearish Zone Color** | Crimson | — | Fill and line color for bearish zones |
+| **Fill Opacity %** | 15 | 0–100 | Transparency of zone background fill |
+| **Line Width (px)** | 1.5 | 0.5–5.0 | Thickness of Fibonacci level lines |
+| **Show Level Labels** | On | — | Price percentage + value labels at right edge |
+| **Show Signal Markers** | On | — | Triangle arrows at Return signal bars |
+| **Show Signal Panel** | On | — | On-chart overlay with recent signal history |
+
+#### Alerts
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Enable Alerts** | Off | Audio alert + chart notification on Return signal |
+
+### Performance Architecture
+
+**GPU rendering approach:**
+- All Fibonacci zone fills rendered as `SharpDX.Direct2D1.RectangleF` directly to GPU surface
+- All Fibonacci level lines rendered via `RenderTarget.DrawLine()` — native GPU strokes
+- Signal triangles rendered as `SharpDX.Direct2D1.PathGeometry` — zero managed Draw.\* objects
+- Level labels rendered via `SharpDX.DirectWrite.TextLayout` using NinjaTrader's shared `DirectWriteFactory`
+- SharpDX brushes, stroke styles, and text formats **created once per render target**, disposed on target change via `OnRenderTargetChanged()`
+- Only bars within `ChartBars.FromIndex` → `ChartBars.ToIndex` are processed — no off-screen rendering
+- Result: **Smooth 60 FPS** even with multiple active zones on dense charts
+
+### How It Works
+1. **Swing Detection**: On each bar close, checks if the bar `SwingLookback` bars ago is strictly the highest (or lowest) within `SwingLookback` bars on both sides
+2. **Trend Analysis**: Compares consecutive swing high/low pairs to determine trend direction (higher highs + higher lows = uptrend)
+3. **Zone Generation**: When trend transitions are confirmed, creates a Fibonacci zone anchored to the extreme swing (100%) and the first opposite swing (0%)
+4. **Signal Checking**: Each bar, tests the close price against the 38.2%, 50%, and 61.8% levels within `±ZoneWidthTicks` tolerance
+5. **GPU Rendering**: `OnRender()` iterates only visible zones and bars, drawing fills, lines, labels, and markers directly to the GPU canvas
+
+### Tips
+1. **Swing Lookback**: Use 8–12 for intraday futures (NQ 5-min). Increase to 15–20 for daily charts to filter noise. Lower values produce more zones; higher values fewer but stronger ones.
+2. **Zone Width Ticks**: Start with `2` for NQ (which has tight ticks). For ES use `4–6`. This controls how close price must get to a level to trigger a Return signal.
+3. **Trending Markets**: Watch for Return signals at the 38.2% and 50% levels — these are the highest-probability pullback entries during a strong trend resumption.
+4. **Sideways Markets**: Multiple touches of the dashed 23.6% and 78.6% levels signal consolidation. A close outside these extremes often precedes a breakout.
+5. **Confluence**: Stack with a momentum indicator (e.g., MACD, WaveTrend) — a Return signal coinciding with a momentum flip dramatically increases entry quality.
+
+---
+
 ## Installation
 
 1. Download the `.cs` files from the `Indicators` folder
