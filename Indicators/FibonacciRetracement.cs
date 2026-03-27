@@ -108,6 +108,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double    FibRatio;  // which ratio triggered (0.382, 0.50, 0.618)
         }
 
+        // ── Constants ───────────────────────────────────────────────────────────────
+
+        // Fibonacci ratios used for signal detection (primary solid levels)
+        private static readonly double[] PrimaryFibRatios = { 0.382, 0.500, 0.618 };
+
+        // All ratios rendered as level lines (including secondary dashed levels)
+        private static readonly double[] AllFibRatios     = { 0.000, 0.236, 0.382, 0.500, 0.618, 0.786, 1.000 };
+
+        // Maximum number of signals retained in history (storage capacity)
+        private const int MaxSignalHistory  = 20;
+
+        // Maximum number of signals shown in the on-chart panel (display capacity)
+        private const int SignalPanelRows   = 5;
+
         // ── Private Fields ──────────────────────────────────────────────────────────
 
         private List<SwingPoint>    swingHighs;
@@ -525,9 +539,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             double tolerance  = ZoneWidthTicks * TickSize;
             double closePrice = Close[0];
 
-            // Primary signal levels only (solid lines)
-            double[] primaryLevels = { 0.382, 0.500, 0.618 };
-
             foreach (var zone in activeZones)
             {
                 switch (zone.State)
@@ -541,7 +552,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 bool resetState = true;
 
-                foreach (double ratio in primaryLevels)
+                // Primary signal levels only (solid lines) — see PrimaryFibRatios constant
+                foreach (double ratio in PrimaryFibRatios)
                 {
                     double levelPrice = zone.GetLevel(ratio);
 
@@ -568,7 +580,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                             Type     = sigType
                         };
 
-                        while (recentSignals.Count >= 20)
+                        while (recentSignals.Count >= MaxSignalHistory)
                             recentSignals.Dequeue();
                         recentSignals.Enqueue(signal);
 
@@ -581,7 +593,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 sigType, ratio, closePrice.ToString("F2"));
 
                             Alert("FibReturn", Priority.High, msg,
-                                  NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                  System.IO.Path.Combine(NinjaTrader.Core.Globals.InstallDir, "sounds", "Alert1.wav"),
                                   10, Brushes.White, Brushes.DarkBlue);
                         }
                     }
@@ -753,19 +765,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Fibonacci level definitions
-            // ratio | enabled flag       | solid (true) or dashed (false) | label text
-            double[] ratios        = { 0.000, 0.236,        0.382,        0.500,        0.618,        0.786,        1.000 };
-            bool[]   enabled       = { true,  ShowLevel236, ShowLevel382, ShowLevel500, ShowLevel618, ShowLevel786, true  };
-            bool[]   isPrimary     = { true,  false,        true,         true,         true,         false,        true  };
-            string[] labels        = { "0%",  "23.6%",      "38.2%",      "50.0%",      "61.8%",      "78.6%",      "100%" };
+            // Fibonacci level rendering metadata (aligned with AllFibRatios constant)
+            bool[]   enabled   = { true,  ShowLevel236, ShowLevel382, ShowLevel500, ShowLevel618, ShowLevel786, true  };
+            bool[]   isPrimary = { true,  false,        true,         true,         true,         false,        true  };
+            string[] labels    = { "0%",  "23.6%",      "38.2%",      "50.0%",      "61.8%",      "78.6%",      "100%" };
 
             float lw = (float)LineWidth;
 
-            for (int i = 0; i < ratios.Length; i++)
+            for (int i = 0; i < AllFibRatios.Length; i++)
             {
                 if (!enabled[i]) continue;
 
-                double levelPrice = zone.GetLevel(ratios[i]);
+                double levelPrice = zone.GetLevel(AllFibRatios[i]);
                 float  yLevel     = cs.GetYByValue(levelPrice);
 
                 var p1 = new SharpDX.Vector2(xStart, yLevel);
@@ -858,7 +869,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             ReturnSignal[] signals = recentSignals.ToArray();
-            int            count   = Math.Min(signals.Length, 5);
+            int            count   = Math.Min(signals.Length, SignalPanelRows);
 
             if (count == 0) return;
 
