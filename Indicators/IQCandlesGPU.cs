@@ -104,11 +104,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Unrecovered liquidity zone left behind by a swing high or low.</summary>
         private class LiquidityZone
         {
-            public double HighPrice;     // upper boundary of the zone
-            public double LowPrice;      // lower boundary of the zone
-            public int    CreatedBar;    // CurrentBar value when zone was created
-            public bool   IsHigh;        // true = swing-high zone, false = swing-low zone
-            public bool   IsRecovered;   // true = price has crossed fully through the zone
+            public double HighPrice;      // upper boundary including wicks
+            public double LowPrice;       // lower boundary including wicks
+            public double BodyHighPrice;  // upper boundary body-only
+            public double BodyLowPrice;   // lower boundary body-only
+            public int    CreatedBar;     // CurrentBar value when zone was created
+            public bool   IsBullish;      // true = swing-low zone (green), false = swing-high zone (red)
+            public bool   IsRecovered;    // true = price has crossed fully through the zone
         }
 
         #endregion
@@ -198,8 +200,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxBorderFakeBrush;      // orange
 
         // ── Zone fill brushes ─────────────────────────────────────────────────
-        private SharpDX.Direct2D1.SolidColorBrush dxZoneBullBrush;  // semi-transparent blue (support)
-        private SharpDX.Direct2D1.SolidColorBrush dxZoneBearBrush;  // semi-transparent red  (resistance)
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBullishBrush;  // semi-transparent green (support/swing-low)
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBearishBrush;  // semi-transparent red   (resistance/swing-high)
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -448,6 +450,32 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Opacity of the liquidity zone rectangles (5 = nearly transparent, 80 = mostly opaque).")]
         public int ZoneOpacity { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Bullish Zone Color", Order = 6, GroupName = "7. Liquidity Zones",
+            Description = "Fill color for bullish (swing-low support) liquidity zones.")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush ULZBullishColor { get; set; }
+
+        [Browsable(false)]
+        public string ULZBullishColorSerializable
+        {
+            get { return Serialize.BrushToString(ULZBullishColor); }
+            set { ULZBullishColor = Serialize.StringToBrush(value); }
+        }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bearish Zone Color", Order = 7, GroupName = "7. Liquidity Zones",
+            Description = "Fill color for bearish (swing-high resistance) liquidity zones.")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush ULZBearishColor { get; set; }
+
+        [Browsable(false)]
+        public string ULZBearishColorSerializable
+        {
+            get { return Serialize.BrushToString(ULZBearishColor); }
+            set { ULZBearishColor = Serialize.StringToBrush(value); }
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
@@ -513,6 +541,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowZoneCount        = true;
                 MaxActiveZones       = 100;
                 ZoneOpacity          = 30;
+                ULZBullishColor      = Brushes.LimeGreen;
+                ULZBearishColor      = Brushes.IndianRed;
             }
             else if (State == State.DataLoaded)
             {
@@ -997,11 +1027,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zone.IsRecovered)
                     continue;
 
-                float yHigh = cs.GetYByValue(zone.HighPrice);
-                float yLow  = cs.GetYByValue(zone.LowPrice);
+                double topPrice = ULZIncludeWicks ? zone.HighPrice : zone.BodyHighPrice;
+                double botPrice = ULZIncludeWicks ? zone.LowPrice  : zone.BodyLowPrice;
+
+                float yHigh = cs.GetYByValue(topPrice);
+                float yLow  = cs.GetYByValue(botPrice);
                 float zoneH = Math.Max(1f, yLow - yHigh);
 
-                SharpDX.Direct2D1.SolidColorBrush zoneBrush = zone.IsHigh ? dxZoneBearBrush : dxZoneBullBrush;
+                SharpDX.Direct2D1.SolidColorBrush zoneBrush = zone.IsBullish ? dxULZBullishBrush : dxULZBearishBrush;
                 rt.FillRectangle(new SharpDX.RectangleF(0f, yHigh, chartWidth, zoneH), zoneBrush);
             }
         }
@@ -1163,31 +1196,38 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // ── Create unrecovered liquidity zone at this swing ───────────
                 if (EnableLiquidityZones && !duplicate)
                 {
-                    double zoneHigh, zoneLow;
+                    double zoneWickHigh, zoneWickLow, zoneBodyHigh, zoneBodyLow;
                     if (isSwingHigh)
                     {
-                        zoneHigh = ULZIncludeWicks ? High[0] : Math.Max(Open[0], Close[0]);
-                        zoneLow  = ULZIncludeWicks ? High[0] - TickSize * 3
-                                                   : Math.Min(Open[0], Close[0]);
+                        // Swing-high resistance zone: zone spans the top of the candle
+                        zoneWickHigh = High[0];
+                        zoneWickLow  = High[0] - TickSize * 3;
+                        zoneBodyHigh = Math.Max(Open[0], Close[0]);
+                        zoneBodyLow  = Math.Min(Open[0], Close[0]);
                     }
                     else
                     {
-                        zoneHigh = ULZIncludeWicks ? Low[0] + TickSize * 3
-                                                   : Math.Max(Open[0], Close[0]);
-                        zoneLow  = ULZIncludeWicks ? Low[0] : Math.Min(Open[0], Close[0]);
+                        // Swing-low support zone: zone spans the bottom of the candle
+                        zoneWickHigh = Low[0] + TickSize * 3;
+                        zoneWickLow  = Low[0];
+                        zoneBodyHigh = Math.Max(Open[0], Close[0]);
+                        zoneBodyLow  = Math.Min(Open[0], Close[0]);
                     }
 
-                    if (zoneHigh > zoneLow)
+                    // Use wicks boundaries as the definitive check for zone validity
+                    if (zoneWickHigh > zoneWickLow)
                     {
                         if (liquidityZones.Count >= MaxActiveZones)
                             liquidityZones.RemoveAt(0);
                         liquidityZones.Add(new LiquidityZone
                         {
-                            HighPrice  = zoneHigh,
-                            LowPrice   = zoneLow,
-                            CreatedBar = CurrentBar,
-                            IsHigh     = isSwingHigh,
-                            IsRecovered = false
+                            HighPrice      = zoneWickHigh,
+                            LowPrice       = zoneWickLow,
+                            BodyHighPrice  = zoneBodyHigh,
+                            BodyLowPrice   = zoneBodyLow,
+                            CreatedBar     = CurrentBar,
+                            IsBullish      = !isSwingHigh,   // swing-low zones are bullish (green)
+                            IsRecovered    = false
                         });
                     }
                 }
@@ -1376,12 +1416,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 }
 
+                // Use the same boundary as rendering based on the wicks toggle
+                double topPrice = ULZIncludeWicks ? z.HighPrice : z.BodyHighPrice;
+                double botPrice = ULZIncludeWicks ? z.LowPrice  : z.BodyLowPrice;
+
                 // Zone is recovered when price trades fully through it
-                bool zoneFullyCrossed = curLow <= z.LowPrice && curHigh >= z.HighPrice;
+                bool zoneFullyCrossed = curLow <= botPrice && curHigh >= topPrice;
 
                 if (zoneFullyCrossed ||
-                    (curClose >= z.HighPrice && curOpen <= z.LowPrice) ||
-                    (curClose <= z.LowPrice  && curOpen >= z.HighPrice))
+                    (curClose >= topPrice && curOpen <= botPrice) ||
+                    (curClose <= botPrice && curOpen >= topPrice))
                 {
                     z.IsRecovered = true;
                     recovered++;
@@ -1459,10 +1503,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // ── Zone fill brushes (semi-transparent) ──────────────────────
                 float zoneAlphaF = Math.Max(0.02f, Math.Min(0.80f, (float)ZoneOpacity / 100f));
-                dxZoneBullBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, zoneAlphaF));
-                dxZoneBearBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(220f / 255f, 30f / 255f, 30f / 255f, zoneAlphaF));
+                dxULZBullishBrush = MakeBrush(rt, ULZBullishColor, zoneAlphaF);
+                dxULZBearishBrush = MakeBrush(rt, ULZBearishColor, zoneAlphaF);
 
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxDashFormat  = new SharpDX.DirectWrite.TextFormat(
@@ -1515,8 +1557,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxBorderAbsorbBrush);
             DisposeRef(ref dxBorderImbalanceBrush);
             DisposeRef(ref dxBorderFakeBrush);
-            DisposeRef(ref dxZoneBullBrush);
-            DisposeRef(ref dxZoneBearBrush);
+            DisposeRef(ref dxULZBullishBrush);
+            DisposeRef(ref dxULZBearishBrush);
             DisposeRef(ref dxDashFormat);
             DisposeRef(ref dxLabelFormat);
             DisposeRef(ref dxWriteFactory);
