@@ -739,9 +739,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                             float r    = baseR + layer * 2f;
                             byte  alpha = (byte)(30 - layer * (30 / HaloLayers));
                             var   haloColor = haloBrush.Color;
-                            haloColor.A = alpha;
+                            var   newHaloColor = new SharpDX.Color4(haloColor.Red, haloColor.Green, haloColor.Blue, alpha / 255f);
 
-                            using (var haloLayerBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, haloColor))
+                            using (var haloLayerBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, newHaloColor))
                             {
                                 var ellipse = new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(x, centerY), r, r + (yBot - yTop) / 2f);
                                 rt.FillEllipse(ellipse, haloLayerBrush);
@@ -764,9 +764,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     double normalised = NormaliseValue(Math.Abs(snap.DeltaPct), 0, 100);
                     byte   alpha      = (byte)(40 + normalised * 180);
                     var    gradColor  = bodyBrush.Color;
-                    gradColor.A = alpha;
+                    var    newGradColor = new SharpDX.Color4(gradColor.Red, gradColor.Green, gradColor.Blue, alpha / 255f);
 
-                    using (var gradBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, gradColor))
+                    using (var gradBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, newGradColor))
                     {
                         rt.FillRectangle(new SharpDX.RectangleF(x - halfW, yTop, barW, bodyH), gradBrush);
                     }
@@ -1153,11 +1153,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxImbalanceBrush = MakeBrush(rt, ImbalanceColor, 0.85f);
                 dxFakeBrush      = MakeBrush(rt, FakeBreakoutColor, 0.90f);
                 dxWickBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color(180, 180, 180, 200));
+                    new SharpDX.Color((byte)180, (byte)180, (byte)180, (byte)200));
                 dxDashBgBrush    = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color(10, 10, 20, (byte)(opacityFrac * 220)));
+                    new SharpDX.Color((byte)10, (byte)10, (byte)20, (byte)(opacityFrac * 220)));
                 dxDashTextBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color(220, 220, 230, 240));
+                    new SharpDX.Color((byte)220, (byte)220, (byte)230, (byte)240));
                 dxDashAccentBrush= MakeBrush(rt, FakeBreakoutColor, 1f);
                 dxWallBidBrush   = MakeBrush(rt, BullishColor, 0.9f);
                 dxWallAskBrush   = MakeBrush(rt, BearishColor, 0.9f);
