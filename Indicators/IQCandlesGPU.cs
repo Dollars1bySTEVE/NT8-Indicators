@@ -44,6 +44,8 @@ public enum IQCDashboardPosition
 /// <summary>Candle coloring mode.</summary>
 public enum IQCCandleColorMode
 {
+    Composite,    // Volume (PVSRA) priority + multi-signal borders
+    PVSRA,        // PVSRA vector candles only
     VolumeDelta,
     Absorption,
     Imbalance,
@@ -97,6 +99,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Price;
             public long   Size;
             public bool   IsSpoof;        // flagged by anti-spoofing heuristic
+        }
+
+        /// <summary>Unrecovered liquidity zone left behind by a swing high or low.</summary>
+        private class LiquidityZone
+        {
+            public double HighPrice;     // upper boundary of the zone
+            public double LowPrice;      // lower boundary of the zone
+            public int    CreatedBar;    // CurrentBar value when zone was created
+            public bool   IsHigh;        // true = swing-high zone, false = swing-low zone
+            public bool   IsRecovered;   // true = price has crossed fully through the zone
         }
 
         #endregion
@@ -167,6 +179,27 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string dashLine4 = "";
         private string dashLine5 = "";
         private string dashLine6 = "";
+        private string dashLine7 = "";
+
+        // ── Unrecovered Liquidity Zones ───────────────────────────────────────
+        private List<LiquidityZone> liquidityZones;
+        private int  activeZoneCount;
+        private int  recoveredZoneCount;
+
+        // ── PVSRA GPU brushes ─────────────────────────────────────────────────
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraHighBullBrush;  // bright green
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraHighBearBrush;  // bright red
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraMidBullBrush;   // blue
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraMidBearBrush;   // blue-violet
+
+        // ── Composite border brushes ──────────────────────────────────────────
+        private SharpDX.Direct2D1.SolidColorBrush dxBorderAbsorbBrush;    // gold
+        private SharpDX.Direct2D1.SolidColorBrush dxBorderImbalanceBrush; // blue
+        private SharpDX.Direct2D1.SolidColorBrush dxBorderFakeBrush;      // orange
+
+        // ── Zone fill brushes ─────────────────────────────────────────────────
+        private SharpDX.Direct2D1.SolidColorBrush dxZoneBullBrush;  // semi-transparent blue (support)
+        private SharpDX.Direct2D1.SolidColorBrush dxZoneBearBrush;  // semi-transparent red  (resistance)
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -359,6 +392,64 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 6. PVSRA Vectors
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable PVSRA Vectors", Order = 1, GroupName = "6. PVSRA Vectors",
+            Description = "Color candles using PVSRA volume-threshold logic (Green/Red high-vol, Blue/Blue-Violet mid-vol).")]
+        public bool EnablePVSRA { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 50)]
+        [Display(Name = "PVSRA Lookback Bars", Order = 2, GroupName = "6. PVSRA Vectors",
+            Description = "Number of previous bars used to compute the volume average for PVSRA classification.")]
+        public int PVSRALookback { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(100, 300)]
+        [Display(Name = "High-Volume Threshold %", Order = 3, GroupName = "6. PVSRA Vectors",
+            Description = "Volume must be >= this percentage of the lookback average to qualify as a high-volume (Green/Red) candle.")]
+        public int HighVolumeThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(100, 200)]
+        [Display(Name = "Mid-Volume Threshold %", Order = 4, GroupName = "6. PVSRA Vectors",
+            Description = "Volume must be >= this percentage of the lookback average to qualify as a mid-volume (Blue/Blue-Violet) candle.")]
+        public int MidVolumeThreshold { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 7. Liquidity Zones
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Liquidity Zones", Order = 1, GroupName = "7. Liquidity Zones",
+            Description = "Draw semi-transparent unrecovered liquidity zones at swing highs/lows. Zones disappear when price recovers through them.")]
+        public bool EnableLiquidityZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Include Wicks in Zone Boundary", Order = 2, GroupName = "7. Liquidity Zones",
+            Description = "When enabled, zone boundaries use the full High/Low (including wicks). When disabled, only the candle body is used.")]
+        public bool ULZIncludeWicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Zone Count on Dashboard", Order = 3, GroupName = "7. Liquidity Zones",
+            Description = "Display the number of active and recovered liquidity zones on the dashboard overlay.")]
+        public bool ShowZoneCount { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 100)]
+        [Display(Name = "Max Active Zones", Order = 4, GroupName = "7. Liquidity Zones",
+            Description = "Maximum number of liquidity zones to track simultaneously. Oldest zones are removed when the limit is reached.")]
+        public int MaxActiveZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 80)]
+        [Display(Name = "Zone Opacity %", Order = 5, GroupName = "7. Liquidity Zones",
+            Description = "Opacity of the liquidity zone rectangles (5 = nearly transparent, 80 = mostly opaque).")]
+        public int ZoneOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
 
         protected override void OnStateChange()
@@ -409,6 +500,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 AbsorptionColor  = Brushes.Gold;
                 ImbalanceColor   = Brushes.DodgerBlue;
                 FakeBreakoutColor = Brushes.OrangeRed;
+
+                // PVSRA Vectors
+                EnablePVSRA          = true;
+                PVSRALookback        = 10;
+                HighVolumeThreshold  = 200;
+                MidVolumeThreshold   = 150;
+
+                // Liquidity Zones
+                EnableLiquidityZones = true;
+                ULZIncludeWicks      = false;
+                ShowZoneCount        = true;
+                MaxActiveZones       = 100;
+                ZoneOpacity          = 30;
             }
             else if (State == State.DataLoaded)
             {
@@ -417,6 +521,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 srLevels      = new List<double>(50);
                 bidBook       = new Dictionary<double, BookLevel>(200);
                 askBook       = new Dictionary<double, BookLevel>(200);
+                liquidityZones = new List<LiquidityZone>(100);
 
                 cumDelta      = 0;
                 sessionBuyVol = 0;
@@ -427,6 +532,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 imbalanceHigh = double.MaxValue;
                 level2Available = false;
                 l2StatusText  = EnableLevel2 ? "L2: waiting…" : "L2: disabled";
+                activeZoneCount   = 0;
+                recoveredZoneCount = 0;
             }
             else if (State == State.Terminated)
             {
@@ -521,6 +628,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── 6. S/R level auto-detection (filter 4) ────────────────────────
             if (IsFirstTickOfBar)
                 TryDetectSRLevel();
+
+            // ── 6a. Liquidity zone recovery tracking ──────────────────────────
+            if (EnableLiquidityZones && IsFirstTickOfBar)
+                CheckLiquidityZoneRecovery();
 
             // ── 7. All 5 fake-breakout filters ───────────────────────────────
             bool isFakeBreakout  = false;
@@ -667,6 +778,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── Draw candles ──────────────────────────────────────────────────
             RenderCandles(chartControl, chartScale, fromBar, toBar);
 
+            // ── Draw liquidity zones ──────────────────────────────────────────
+            if (EnableLiquidityZones)
+                RenderLiquidityZones(chartControl, chartScale);
+
             // ── Draw wall lines ───────────────────────────────────────────────
             if (ShowWallLines && EnableLevel2 && level2Available)
                 RenderWallLines(chartControl, chartScale);
@@ -702,6 +817,23 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float yTop = Math.Min(yO, yC);
                 float yBot = Math.Max(yO, yC);
 
+                // ── PVSRA inline classification for this bar ─────────────────
+                string pvsraClass = "";
+                if (EnablePVSRA && barIdx >= PVSRALookback)
+                {
+                    double barVol = Bars.GetVolume(barIdx);
+                    double sumPrev = 0;
+                    for (int k = 1; k <= PVSRALookback; k++)
+                        sumPrev += Bars.GetVolume(barIdx - k);
+                    double avgPrev = sumPrev / PVSRALookback;
+                    double volPct  = avgPrev > 0 ? barVol / avgPrev * 100.0 : 0;
+                    bool   isBull  = c >= o;
+                    if (volPct >= HighVolumeThreshold)
+                        pvsraClass = isBull ? "HighBull" : "HighBear";
+                    else if (volPct >= MidVolumeThreshold)
+                        pvsraClass = isBull ? "MidBull" : "MidBear";
+                }
+
                 // Select body brush based on ColorMode and snapshot data
                 SharpDX.Direct2D1.SolidColorBrush bodyBrush = c >= o ? dxBullBrush : dxBearBrush;
 
@@ -710,6 +842,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     switch (ColorMode)
                     {
+                        case IQCCandleColorMode.PVSRA:
+                            if      (pvsraClass == "HighBull") bodyBrush = dxPvsraHighBullBrush;
+                            else if (pvsraClass == "HighBear") bodyBrush = dxPvsraHighBearBrush;
+                            else if (pvsraClass == "MidBull")  bodyBrush = dxPvsraMidBullBrush;
+                            else if (pvsraClass == "MidBear")  bodyBrush = dxPvsraMidBearBrush;
+                            else                               bodyBrush = c >= o ? dxBullBrush : dxBearBrush;
+                            break;
+                        case IQCCandleColorMode.Composite:
+                            // Volume/PVSRA as base color, secondary signals shown as borders
+                            if      (pvsraClass == "HighBull") bodyBrush = dxPvsraHighBullBrush;
+                            else if (pvsraClass == "HighBear") bodyBrush = dxPvsraHighBearBrush;
+                            else if (pvsraClass == "MidBull")  bodyBrush = dxPvsraMidBullBrush;
+                            else if (pvsraClass == "MidBear")  bodyBrush = dxPvsraMidBearBrush;
+                            else                               bodyBrush = snap.Delta >= 0 ? dxBullBrush : dxBearBrush;
+                            break;
                         case IQCCandleColorMode.VolumeDelta:
                             bodyBrush = snap.Delta >= 0 ? dxBullBrush : dxBearBrush;
                             break;
@@ -757,6 +904,35 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float bodyH = Math.Max(1f, yBot - yTop);
                 rt.FillRectangle(new SharpDX.RectangleF(x - halfW, yTop, barW, bodyH), bodyBrush);
                 rt.DrawRectangle(new SharpDX.RectangleF(x - halfW, yTop, barW, bodyH), dxWickBrush, 1f);
+
+                // ── Composite mode: multi-signal borders ──────────────────────
+                if (snap != null && ColorMode == IQCCandleColorMode.Composite)
+                {
+                    float borderOffset = 0f;
+                    if (snap.IsAbsorption)
+                    {
+                        rt.DrawRectangle(
+                            new SharpDX.RectangleF(x - halfW - borderOffset - 1f, yTop - borderOffset - 1f,
+                                barW + (borderOffset + 1f) * 2f, bodyH + (borderOffset + 1f) * 2f),
+                            dxBorderAbsorbBrush, 2f);
+                        borderOffset += 3f;
+                    }
+                    if (snap.IsImbalance)
+                    {
+                        rt.DrawRectangle(
+                            new SharpDX.RectangleF(x - halfW - borderOffset - 1f, yTop - borderOffset - 1f,
+                                barW + (borderOffset + 1f) * 2f, bodyH + (borderOffset + 1f) * 2f),
+                            dxBorderImbalanceBrush, 2f);
+                        borderOffset += 3f;
+                    }
+                    if (snap.IsFakeBreakout)
+                    {
+                        rt.DrawRectangle(
+                            new SharpDX.RectangleF(x - halfW - borderOffset - 1f, yTop - borderOffset - 1f,
+                                barW + (borderOffset + 1f) * 2f, bodyH + (borderOffset + 1f) * 2f),
+                            dxBorderFakeBrush, 2f);
+                    }
+                }
 
                 // ── Gradient transparency on body based on delta magnitude ────
                 if (snap != null && ColorMode == IQCCandleColorMode.VolumeDelta)
@@ -807,6 +983,29 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        // ── Liquidity zone rendering ──────────────────────────────────────────
+        private void RenderLiquidityZones(ChartControl cc, ChartScale cs)
+        {
+            if (liquidityZones == null || liquidityZones.Count == 0)
+                return;
+
+            var   rt         = RenderTarget;
+            float chartWidth = (float)cc.ActualWidth;
+
+            foreach (LiquidityZone zone in liquidityZones)
+            {
+                if (zone.IsRecovered)
+                    continue;
+
+                float yHigh = cs.GetYByValue(zone.HighPrice);
+                float yLow  = cs.GetYByValue(zone.LowPrice);
+                float zoneH = Math.Max(1f, yLow - yHigh);
+
+                SharpDX.Direct2D1.SolidColorBrush zoneBrush = zone.IsHigh ? dxZoneBearBrush : dxZoneBullBrush;
+                rt.FillRectangle(new SharpDX.RectangleF(0f, yHigh, chartWidth, zoneH), zoneBrush);
+            }
+        }
+
         // ── Dashboard rendering ───────────────────────────────────────────────
         private void RenderDashboard(ChartControl cc, ChartScale cs)
         {
@@ -821,7 +1020,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 dashLine1, dashLine2, dashLine3,
                 dashLine4, dashLine5, dashLine6,
-                l2StatusText
+                dashLine7, l2StatusText
             };
 
             int    nonEmpty    = lines.Count(s => !string.IsNullOrEmpty(s));
@@ -959,6 +1158,38 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (srLevels.Count >= 50)
                         srLevels.RemoveAt(0);
                     srLevels.Add(level);
+                }
+
+                // ── Create unrecovered liquidity zone at this swing ───────────
+                if (EnableLiquidityZones && !duplicate)
+                {
+                    double zoneHigh, zoneLow;
+                    if (isSwingHigh)
+                    {
+                        zoneHigh = ULZIncludeWicks ? High[0] : Math.Max(Open[0], Close[0]);
+                        zoneLow  = ULZIncludeWicks ? High[0] - TickSize * 3
+                                                   : Math.Min(Open[0], Close[0]);
+                    }
+                    else
+                    {
+                        zoneHigh = ULZIncludeWicks ? Low[0] + TickSize * 3
+                                                   : Math.Max(Open[0], Close[0]);
+                        zoneLow  = ULZIncludeWicks ? Low[0] : Math.Min(Open[0], Close[0]);
+                    }
+
+                    if (zoneHigh > zoneLow)
+                    {
+                        if (liquidityZones.Count >= MaxActiveZones)
+                            liquidityZones.RemoveAt(0);
+                        liquidityZones.Add(new LiquidityZone
+                        {
+                            HighPrice  = zoneHigh,
+                            LowPrice   = zoneLow,
+                            CreatedBar = CurrentBar,
+                            IsHigh     = isSwingHigh,
+                            IsRecovered = false
+                        });
+                    }
                 }
             }
         }
@@ -1108,6 +1339,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             dashLine5 = flags.Count > 0 ? "Signals: " + string.Join(" | ", flags) : "Signals: none";
 
             dashLine6 = string.Format("S/R Levels: {0}  |  Imb Threshold: {1:N0}", srLevels.Count, imbalanceHigh);
+
+            dashLine7 = (ShowZoneCount && EnableLiquidityZones)
+                ? string.Format("ULZ: Active {0}  |  Recovered {1}", activeZoneCount, recoveredZoneCount)
+                : "";
         }
 
         private BarSnapshot GetSnapshot(int barIdx)
@@ -1117,6 +1352,48 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (sIdx < 0 || sIdx >= snapshots.Count)
                 return null;
             return snapshots[sIdx];
+        }
+
+        private void CheckLiquidityZoneRecovery()
+        {
+            if (liquidityZones.Count == 0)
+                return;
+
+            double curHigh  = High[0];
+            double curLow   = Low[0];
+            double curOpen  = Open[0];
+            double curClose = Close[0];
+
+            int active    = 0;
+            int recovered = 0;
+
+            for (int i = 0; i < liquidityZones.Count; i++)
+            {
+                LiquidityZone z = liquidityZones[i];
+                if (z.IsRecovered)
+                {
+                    recovered++;
+                    continue;
+                }
+
+                // Zone is recovered when price trades fully through it
+                bool zoneFullyCrossed = curLow <= z.LowPrice && curHigh >= z.HighPrice;
+
+                if (zoneFullyCrossed ||
+                    (curClose >= z.HighPrice && curOpen <= z.LowPrice) ||
+                    (curClose <= z.LowPrice  && curOpen >= z.HighPrice))
+                {
+                    z.IsRecovered = true;
+                    recovered++;
+                }
+                else
+                {
+                    active++;
+                }
+            }
+
+            activeZoneCount    = active;
+            recoveredZoneCount = recovered;
         }
 
         private static double NormaliseValue(double value, double min, double max)
@@ -1162,11 +1439,36 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxWallBidBrush   = MakeBrush(rt, BullishColor, 0.9f);
                 dxWallAskBrush   = MakeBrush(rt, BearishColor, 0.9f);
 
+                // ── PVSRA vector brushes ───────────────────────────────────────
+                dxPvsraHighBullBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(0f / 255f, 210f / 255f, 80f / 255f, 220f / 255f));
+                dxPvsraHighBearBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(220f / 255f, 0f / 255f, 30f / 255f, 220f / 255f));
+                dxPvsraMidBullBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, 200f / 255f));
+                dxPvsraMidBearBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(120f / 255f, 40f / 255f, 200f / 255f, 200f / 255f));
+
+                // ── Composite border brushes ───────────────────────────────────
+                dxBorderAbsorbBrush    = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 215f / 255f, 0f / 255f, 230f / 255f));
+                dxBorderImbalanceBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(30f / 255f, 144f / 255f, 255f / 255f, 230f / 255f));
+                dxBorderFakeBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 120f / 255f, 0f / 255f, 230f / 255f));
+
+                // ── Zone fill brushes (semi-transparent) ──────────────────────
+                float zoneAlphaF = Math.Max(0.02f, Math.Min(0.80f, (float)ZoneOpacity / 100f));
+                dxZoneBullBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, zoneAlphaF));
+                dxZoneBearBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(220f / 255f, 30f / 255f, 30f / 255f, zoneAlphaF));
+
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxDashFormat  = new SharpDX.DirectWrite.TextFormat(
                     dxWriteFactory, "Consolas", DashFontSize);
                 dxLabelFormat = new SharpDX.DirectWrite.TextFormat(
-                    dxWriteFactory, "Consolas", Math.Max(8, DashFontSize - 3));
+                    dxWriteFactory, "Consolas", Math.Max(8, DashFontSize - 1));
 
                 dxReady = true;
             }
@@ -1206,6 +1508,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxDashAccentBrush);
             DisposeRef(ref dxWallBidBrush);
             DisposeRef(ref dxWallAskBrush);
+            DisposeRef(ref dxPvsraHighBullBrush);
+            DisposeRef(ref dxPvsraHighBearBrush);
+            DisposeRef(ref dxPvsraMidBullBrush);
+            DisposeRef(ref dxPvsraMidBearBrush);
+            DisposeRef(ref dxBorderAbsorbBrush);
+            DisposeRef(ref dxBorderImbalanceBrush);
+            DisposeRef(ref dxBorderFakeBrush);
+            DisposeRef(ref dxZoneBullBrush);
+            DisposeRef(ref dxZoneBearBrush);
             DisposeRef(ref dxDashFormat);
             DisposeRef(ref dxLabelFormat);
             DisposeRef(ref dxWriteFactory);
