@@ -104,14 +104,20 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Unrecovered liquidity zone left behind by a PVSRA candle.</summary>
         private class LiquidityZone
         {
-            public double HighPrice;      // upper boundary including wicks
-            public double LowPrice;       // lower boundary including wicks
-            public double BodyHighPrice;  // upper boundary body-only
-            public double BodyLowPrice;   // lower boundary body-only
-            public int    CreatedBar;     // CurrentBar value when zone was created
-            public bool   IsBullish;      // true = bullish zone (green/blue), false = bearish zone (red/pink)
-            public bool   IsAbsorption;   // true = mid-vol absorption zone (blue/pink), false = climax zone (green/red)
-            public bool   IsRecovered;    // true = price has touched through the zone boundary
+            public double HighPrice;             // upper boundary including wicks
+            public double LowPrice;              // lower boundary including wicks
+            public double BodyHighPrice;         // upper boundary body-only
+            public double BodyLowPrice;          // lower boundary body-only
+            public int    CreatedBar;            // CurrentBar value when zone was created
+            public int    OriginBarIndex;        // absolute bar index of the PVSRA candle that spawned this zone
+            public bool   IsBullish;             // true = bullish zone (green/blue), false = bearish zone (red/pink)
+            public bool   IsAbsorption;          // true = mid-vol absorption zone (blue/pink), false = climax zone (green/red)
+            public bool   IsRecovered;           // true = price has touched through the zone boundary
+            // Partial recovery tracking: these boundaries shrink as price progressively touches the zone.
+            // For bullish zones, PartialRecoveryLow moves UP as the bottom of the zone is cleaned.
+            // For bearish zones, PartialRecoveryHigh moves DOWN as the top of the zone is cleaned.
+            public double PartialRecoveryHigh;   // current unrecovered upper boundary
+            public double PartialRecoveryLow;    // current unrecovered lower boundary
         }
 
         #endregion
@@ -1041,14 +1047,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (rt == null) return;
 
             float chartWidth = (float)cc.ActualWidth;
+            // Half-bar width used to position the zone's left edge at the right side of its origin bar.
+            float halfBarW = Math.Max(1f, cc.GetBarPaintWidth(ChartBars) / 2f);
 
             foreach (LiquidityZone zone in liquidityZones.ToList())
             {
                 if (zone.IsRecovered)
                     continue;
 
-                double topPrice = ULZIncludeWicks ? zone.HighPrice : zone.BodyHighPrice;
-                double botPrice = ULZIncludeWicks ? zone.LowPrice  : zone.BodyLowPrice;
+                double topPrice = ULZIncludeWicks ? zone.PartialRecoveryHigh : zone.BodyHighPrice;
+                double botPrice = ULZIncludeWicks ? zone.PartialRecoveryLow  : zone.BodyLowPrice;
 
                 if (topPrice <= botPrice)
                     continue;
@@ -1064,6 +1072,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float zoneH   = Math.Abs(yBot - yTop);
 
                 if (zoneH < 1f)
+                    continue;
+
+                // Zone starts from the right edge of the PVSRA candle that created it.
+                // If the origin bar has been scrolled off to the left, clamp to x=0 so the
+                // zone remains visible across the full visible chart area.
+                float xOrigin  = cc.GetXByBarIndex(ChartBars, zone.OriginBarIndex);
+                float xStart   = Math.Max(0f, xOrigin + halfBarW);
+                float zoneW    = chartWidth - xStart;
+
+                if (zoneW < 1f)
                     continue;
 
                 // Select brush by zone type: IsBullish × IsAbsorption
@@ -1082,7 +1100,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 try
                 {
-                    rt.FillRectangle(new SharpDX.RectangleF(0f, rectTop, chartWidth, zoneH), zoneBrush);
+                    rt.FillRectangle(new SharpDX.RectangleF(xStart, rectTop, zoneW, zoneH), zoneBrush);
                 }
                 catch { /* Silently skip individual zone render errors to keep the chart stable */ }
             }
@@ -1271,14 +1289,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             AddLiquidityZone(new LiquidityZone
             {
-                HighPrice     = zoneHigh,
-                LowPrice      = zoneLow,
-                BodyHighPrice = zoneBodyHigh,
-                BodyLowPrice  = zoneBodyLow,
-                CreatedBar    = CurrentBar,
-                IsBullish     = isBullish,
-                IsAbsorption  = isAbsorption,
-                IsRecovered   = false
+                HighPrice            = zoneHigh,
+                LowPrice             = zoneLow,
+                BodyHighPrice        = zoneBodyHigh,
+                BodyLowPrice         = zoneBodyLow,
+                CreatedBar           = CurrentBar,
+                OriginBarIndex       = CurrentBar - 1,  // bar[1] = the vector candle that just closed
+                IsBullish            = isBullish,
+                IsAbsorption         = isAbsorption,
+                IsRecovered          = false,
+                PartialRecoveryHigh  = zoneHigh,
+                PartialRecoveryLow   = zoneLow
             });
         }
 
@@ -1590,19 +1611,46 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // price closes above the zone's upper boundary, or a wick touches above it.
                 // Bearish zones (RED climax / PINK absorption) are recovered when
                 // price closes below the zone's lower boundary, or a wick touches below it.
+                // When ULZIncludeWicks is enabled, price wicks that enter—but do not fully
+                // cross—the zone cause partial recovery: the zone shrinks progressively
+                // until the untouched portion disappears.
                 bool zoneRecovered = false;
 
                 if (z.IsBullish)
                 {
-                    double topBoundary = ULZIncludeWicks ? z.HighPrice : z.BodyHighPrice;
+                    // topBoundary: the current upper limit of the unrecovered portion.
+                    // PartialRecoveryHigh stays fixed at the original HighPrice for bullish zones;
+                    // PartialRecoveryLow climbs upward as price wicks enter the zone from below.
+                    double topBoundary = ULZIncludeWicks ? z.PartialRecoveryHigh : z.BodyHighPrice;
                     if (curClose > topBoundary || (ULZIncludeWicks && curHigh > topBoundary))
+                    {
                         zoneRecovered = true;
+                    }
+                    else if (ULZIncludeWicks && curLow < z.PartialRecoveryLow && curHigh > z.PartialRecoveryLow && curHigh <= topBoundary)
+                    {
+                        // Wick entered the zone from below — clean the bottom portion up to where the wick reached.
+                        z.PartialRecoveryLow = Math.Max(z.PartialRecoveryLow, curHigh);
+                        if (z.PartialRecoveryLow >= z.PartialRecoveryHigh)
+                            zoneRecovered = true;
+                    }
                 }
                 else
                 {
-                    double botBoundary = ULZIncludeWicks ? z.LowPrice : z.BodyLowPrice;
+                    // botBoundary: the current lower limit of the unrecovered portion.
+                    // PartialRecoveryLow stays fixed at the original LowPrice for bearish zones;
+                    // PartialRecoveryHigh descends downward as price wicks enter the zone from above.
+                    double botBoundary = ULZIncludeWicks ? z.PartialRecoveryLow : z.BodyLowPrice;
                     if (curClose < botBoundary || (ULZIncludeWicks && curLow < botBoundary))
+                    {
                         zoneRecovered = true;
+                    }
+                    else if (ULZIncludeWicks && curHigh > z.PartialRecoveryHigh && curLow < z.PartialRecoveryHigh && curLow >= botBoundary)
+                    {
+                        // Wick entered the zone from above — clean the top portion down to where the wick reached.
+                        z.PartialRecoveryHigh = Math.Min(z.PartialRecoveryHigh, curLow);
+                        if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
+                            zoneRecovered = true;
+                    }
                 }
 
                 if (zoneRecovered)
@@ -1691,14 +1739,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxWallAskBrush   = MakeBrush(rt, BearishColor, 0.9f);
 
                 // ── PVSRA vector brushes ───────────────────────────────────────
+                // Colors are shared with zone fill brushes so candle and zone always match.
                 dxPvsraHighBullBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(0f / 255f, 210f / 255f, 80f / 255f, 220f / 255f));
+                    new SharpDX.Color4(0f / 255f, 210f / 255f, 80f / 255f, 220f / 255f));   // GREEN  climax
                 dxPvsraHighBearBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(220f / 255f, 0f / 255f, 30f / 255f, 220f / 255f));
+                    new SharpDX.Color4(220f / 255f, 0f / 255f, 30f / 255f, 220f / 255f));   // RED    climax
                 dxPvsraMidBullBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, 200f / 255f));
+                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, 200f / 255f)); // BLUE   absorption
                 dxPvsraMidBearBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(120f / 255f, 40f / 255f, 200f / 255f, 200f / 255f));
+                    new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, 200f / 255f)); // PINK  absorption
 
                 // ── Composite border brushes ───────────────────────────────────
                 dxBorderAbsorbBrush    = new SharpDX.Direct2D1.SolidColorBrush(rt,
@@ -1708,16 +1757,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxBorderFakeBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(255f / 255f, 120f / 255f, 0f / 255f, 230f / 255f));
 
-                // ── Zone fill brushes (semi-transparent, PVSRA-typed) ─────────
+                // ── Zone fill brushes — same RGB as PVSRA candle brushes, at zone opacity ─
+                // This ensures candle color and zone color always match perfectly.
                 float zoneAlphaF = Math.Max(0.02f, Math.Min(0.80f, (float)ZoneOpacity / 100f));
-                dxULZBullishBrush = MakeBrush(rt, ULZBullishColor, zoneAlphaF);
-                dxULZBearishBrush = MakeBrush(rt, ULZBearishColor, zoneAlphaF);
-                // Blue (bullish absorption) — RoyalBlue
+                dxULZBullishBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(0f / 255f, 210f / 255f, 80f / 255f, zoneAlphaF));    // GREEN  climax
+                dxULZBearishBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(220f / 255f, 0f / 255f, 30f / 255f, zoneAlphaF));    // RED    climax
                 dxULZBlueBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(65f / 255f, 105f / 255f, 225f / 255f, zoneAlphaF));
-                // Pink (bearish absorption) — HotPink
+                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, zoneAlphaF));  // BLUE   absorption
                 dxULZPinkBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF));
+                    new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF)); // PINK   absorption
 
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxDashFormat  = new SharpDX.DirectWrite.TextFormat(
