@@ -577,6 +577,42 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
+            // ── Gap-based liquidity zone detection (runs before other guards) ─
+            if (EnableLiquidityZones && IsFirstTickOfBar && CurrentBar > 1)
+            {
+                double prevClose = Close[1];
+                double currOpen  = Open[0];
+
+                if (currOpen > prevClose)
+                {
+                    // Gap up → bullish ULZ: zone spans the gap between prevClose and currOpen
+                    AddLiquidityZone(new LiquidityZone
+                    {
+                        HighPrice     = currOpen,
+                        LowPrice      = prevClose,
+                        BodyHighPrice = currOpen,
+                        BodyLowPrice  = prevClose,
+                        CreatedBar    = CurrentBar,
+                        IsBullish     = true,
+                        IsRecovered   = false
+                    });
+                }
+                else if (currOpen < prevClose)
+                {
+                    // Gap down → bearish ULZ: zone spans the gap between currOpen and prevClose
+                    AddLiquidityZone(new LiquidityZone
+                    {
+                        HighPrice     = prevClose,
+                        LowPrice      = currOpen,
+                        BodyHighPrice = prevClose,
+                        BodyLowPrice  = currOpen,
+                        CreatedBar    = CurrentBar,
+                        IsBullish     = false,
+                        IsRecovered   = false
+                    });
+                }
+            }
+
             if (CurrentBar < Math.Max(SRSwingStrength * 2 + 1, MomentumPeriod + 1))
                 return;
 
@@ -805,12 +841,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (fromBar > toBar)
                 return;
 
-            // ── Draw candles ──────────────────────────────────────────────────
-            RenderCandles(chartControl, chartScale, fromBar, toBar);
-
-            // ── Draw liquidity zones ──────────────────────────────────────────
+            // ── Draw liquidity zones (behind candles) ─────────────────────────
             if (EnableLiquidityZones)
                 RenderLiquidityZones(chartControl, chartScale);
+
+            // ── Draw candles ──────────────────────────────────────────────────
+            RenderCandles(chartControl, chartScale, fromBar, toBar);
 
             // ── Draw wall lines ───────────────────────────────────────────────
             if (ShowWallLines && EnableLevel2 && level2Available)
@@ -1019,10 +1055,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (liquidityZones == null || liquidityZones.Count == 0)
                 return;
 
-            var   rt         = RenderTarget;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
             float chartWidth = (float)cc.ActualWidth;
 
-            foreach (LiquidityZone zone in liquidityZones)
+            foreach (LiquidityZone zone in liquidityZones.ToList())
             {
                 if (zone.IsRecovered)
                     continue;
@@ -1030,12 +1068,31 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double topPrice = ULZIncludeWicks ? zone.HighPrice : zone.BodyHighPrice;
                 double botPrice = ULZIncludeWicks ? zone.LowPrice  : zone.BodyLowPrice;
 
-                float yHigh = cs.GetYByValue(topPrice);
-                float yLow  = cs.GetYByValue(botPrice);
-                float zoneH = Math.Max(1f, yLow - yHigh);
+                if (topPrice <= botPrice)
+                    continue;
+
+                float yTop = cs.GetYByValue(topPrice);
+                float yBot = cs.GetYByValue(botPrice);
+
+                if (float.IsNaN(yTop) || float.IsNaN(yBot))
+                    continue;
+
+                // In DirectX, higher price → smaller Y (top of chart).  Normalize.
+                float rectTop = Math.Min(yTop, yBot);
+                float zoneH   = Math.Abs(yBot - yTop);
+
+                if (zoneH < 1f)
+                    continue;
 
                 SharpDX.Direct2D1.SolidColorBrush zoneBrush = zone.IsBullish ? dxULZBullishBrush : dxULZBearishBrush;
-                rt.FillRectangle(new SharpDX.RectangleF(0f, yHigh, chartWidth, zoneH), zoneBrush);
+                if (zoneBrush == null)
+                    continue;
+
+                try
+                {
+                    rt.FillRectangle(new SharpDX.RectangleF(0f, rectTop, chartWidth, zoneH), zoneBrush);
+                }
+                catch { /* Silently skip individual zone render errors to keep the chart stable */ }
             }
         }
 
@@ -1199,16 +1256,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     double zoneWickHigh, zoneWickLow, zoneBodyHigh, zoneBodyLow;
                     if (isSwingHigh)
                     {
-                        // Swing-high resistance zone: zone spans the top of the candle
+                        // Swing-high resistance zone: full candle range for wicks, body for body-only mode
                         zoneWickHigh = High[0];
-                        zoneWickLow  = High[0] - TickSize * 3;
+                        zoneWickLow  = Low[0];
                         zoneBodyHigh = Math.Max(Open[0], Close[0]);
                         zoneBodyLow  = Math.Min(Open[0], Close[0]);
                     }
                     else
                     {
-                        // Swing-low support zone: zone spans the bottom of the candle
-                        zoneWickHigh = Low[0] + TickSize * 3;
+                        // Swing-low support zone: full candle range for wicks, body for body-only mode
+                        zoneWickHigh = High[0];
                         zoneWickLow  = Low[0];
                         zoneBodyHigh = Math.Max(Open[0], Close[0]);
                         zoneBodyLow  = Math.Min(Open[0], Close[0]);
@@ -1217,9 +1274,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Use wicks boundaries as the definitive check for zone validity
                     if (zoneWickHigh > zoneWickLow)
                     {
-                        if (liquidityZones.Count >= MaxActiveZones)
-                            liquidityZones.RemoveAt(0);
-                        liquidityZones.Add(new LiquidityZone
+                        AddLiquidityZone(new LiquidityZone
                         {
                             HighPrice      = zoneWickHigh,
                             LowPrice       = zoneWickLow,
@@ -1438,6 +1493,33 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             activeZoneCount    = active;
             recoveredZoneCount = recovered;
+        }
+
+        private void AddLiquidityZone(LiquidityZone zone)
+        {
+            // Skip degenerate zones where top <= bottom
+            if (zone.HighPrice <= zone.LowPrice)
+                return;
+
+            if (liquidityZones.Count >= MaxActiveZones)
+            {
+                // Prefer removing an already-recovered zone; otherwise remove oldest
+                LiquidityZone recoveredZone = null;
+                for (int i = 0; i < liquidityZones.Count; i++)
+                {
+                    if (liquidityZones[i].IsRecovered)
+                    {
+                        recoveredZone = liquidityZones[i];
+                        break;
+                    }
+                }
+                if (recoveredZone != null)
+                    liquidityZones.Remove(recoveredZone);
+                else if (liquidityZones.Count > 0)
+                    liquidityZones.RemoveAt(0);
+            }
+
+            liquidityZones.Add(zone);
         }
 
         private static double NormaliseValue(double value, double min, double max)
