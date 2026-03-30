@@ -104,14 +104,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Unrecovered liquidity zone left behind by a PVSRA candle.</summary>
         private class LiquidityZone
         {
-            public double HighPrice;      // upper boundary including wicks
-            public double LowPrice;       // lower boundary including wicks
-            public double BodyHighPrice;  // upper boundary body-only
-            public double BodyLowPrice;   // lower boundary body-only
-            public int    CreatedBar;     // CurrentBar value when zone was created
-            public bool   IsBullish;      // true = bullish zone (green/blue), false = bearish zone (red/pink)
-            public bool   IsAbsorption;   // true = mid-vol absorption zone (blue/pink), false = climax zone (green/red)
-            public bool   IsRecovered;    // true = price has touched through the zone boundary
+            public double HighPrice;             // upper boundary including wicks
+            public double LowPrice;              // lower boundary including wicks
+            public double BodyHighPrice;         // upper boundary body-only
+            public double BodyLowPrice;          // lower boundary body-only
+            public int    CreatedBar;            // CurrentBar value when zone was created
+            public bool   IsBullish;             // true = bullish zone (green/blue), false = bearish zone (red/pink)
+            public bool   IsAbsorption;          // true = mid-vol absorption zone (blue/pink), false = climax zone (green/red)
+            public bool   IsRecovered;           // true = price has touched through the zone boundary
+            // Partial recovery tracking: these boundaries shrink as price progressively touches the zone.
+            // For bullish zones, PartialRecoveryLow moves UP as the bottom of the zone is cleaned.
+            // For bearish zones, PartialRecoveryHigh moves DOWN as the top of the zone is cleaned.
+            public double PartialRecoveryHigh;   // current unrecovered upper boundary
+            public double PartialRecoveryLow;    // current unrecovered lower boundary
         }
 
         #endregion
@@ -1047,8 +1052,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zone.IsRecovered)
                     continue;
 
-                double topPrice = ULZIncludeWicks ? zone.HighPrice : zone.BodyHighPrice;
-                double botPrice = ULZIncludeWicks ? zone.LowPrice  : zone.BodyLowPrice;
+                double topPrice = ULZIncludeWicks ? zone.PartialRecoveryHigh : zone.BodyHighPrice;
+                double botPrice = ULZIncludeWicks ? zone.PartialRecoveryLow  : zone.BodyLowPrice;
 
                 if (topPrice <= botPrice)
                     continue;
@@ -1271,14 +1276,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             AddLiquidityZone(new LiquidityZone
             {
-                HighPrice     = zoneHigh,
-                LowPrice      = zoneLow,
-                BodyHighPrice = zoneBodyHigh,
-                BodyLowPrice  = zoneBodyLow,
-                CreatedBar    = CurrentBar,
-                IsBullish     = isBullish,
-                IsAbsorption  = isAbsorption,
-                IsRecovered   = false
+                HighPrice            = zoneHigh,
+                LowPrice             = zoneLow,
+                BodyHighPrice        = zoneBodyHigh,
+                BodyLowPrice         = zoneBodyLow,
+                CreatedBar           = CurrentBar,
+                IsBullish            = isBullish,
+                IsAbsorption         = isAbsorption,
+                IsRecovered          = false,
+                PartialRecoveryHigh  = zoneHigh,
+                PartialRecoveryLow   = zoneLow
             });
         }
 
@@ -1590,19 +1597,46 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // price closes above the zone's upper boundary, or a wick touches above it.
                 // Bearish zones (RED climax / PINK absorption) are recovered when
                 // price closes below the zone's lower boundary, or a wick touches below it.
+                // When ULZIncludeWicks is enabled, price wicks that enter—but do not fully
+                // cross—the zone cause partial recovery: the zone shrinks progressively
+                // until the untouched portion disappears.
                 bool zoneRecovered = false;
 
                 if (z.IsBullish)
                 {
-                    double topBoundary = ULZIncludeWicks ? z.HighPrice : z.BodyHighPrice;
+                    // topBoundary: the current upper limit of the unrecovered portion.
+                    // PartialRecoveryHigh stays fixed at the original HighPrice for bullish zones;
+                    // PartialRecoveryLow climbs upward as price wicks enter the zone from below.
+                    double topBoundary = ULZIncludeWicks ? z.PartialRecoveryHigh : z.BodyHighPrice;
                     if (curClose > topBoundary || (ULZIncludeWicks && curHigh > topBoundary))
+                    {
                         zoneRecovered = true;
+                    }
+                    else if (ULZIncludeWicks && curLow < z.PartialRecoveryLow && curHigh > z.PartialRecoveryLow && curHigh <= topBoundary)
+                    {
+                        // Wick entered the zone from below — clean the bottom portion up to where the wick reached.
+                        z.PartialRecoveryLow = Math.Max(z.PartialRecoveryLow, curHigh);
+                        if (z.PartialRecoveryLow >= z.PartialRecoveryHigh)
+                            zoneRecovered = true;
+                    }
                 }
                 else
                 {
-                    double botBoundary = ULZIncludeWicks ? z.LowPrice : z.BodyLowPrice;
+                    // botBoundary: the current lower limit of the unrecovered portion.
+                    // PartialRecoveryLow stays fixed at the original LowPrice for bearish zones;
+                    // PartialRecoveryHigh descends downward as price wicks enter the zone from above.
+                    double botBoundary = ULZIncludeWicks ? z.PartialRecoveryLow : z.BodyLowPrice;
                     if (curClose < botBoundary || (ULZIncludeWicks && curLow < botBoundary))
+                    {
                         zoneRecovered = true;
+                    }
+                    else if (ULZIncludeWicks && curHigh > z.PartialRecoveryHigh && curLow < z.PartialRecoveryHigh && curLow >= botBoundary)
+                    {
+                        // Wick entered the zone from above — clean the top portion down to where the wick reached.
+                        z.PartialRecoveryHigh = Math.Min(z.PartialRecoveryHigh, curLow);
+                        if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
+                            zoneRecovered = true;
+                    }
                 }
 
                 if (zoneRecovered)
