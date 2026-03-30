@@ -101,7 +101,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public bool   IsSpoof;        // flagged by anti-spoofing heuristic
         }
 
-        /// <summary>Unrecovered liquidity zone left behind by a swing high or low.</summary>
+        /// <summary>Unrecovered liquidity zone left behind by a PVSRA candle.</summary>
         private class LiquidityZone
         {
             public double HighPrice;      // upper boundary including wicks
@@ -109,8 +109,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double BodyHighPrice;  // upper boundary body-only
             public double BodyLowPrice;   // lower boundary body-only
             public int    CreatedBar;     // CurrentBar value when zone was created
-            public bool   IsBullish;      // true = swing-low zone (green), false = swing-high zone (red)
-            public bool   IsRecovered;    // true = price has crossed fully through the zone
+            public bool   IsBullish;      // true = bullish zone (green/blue), false = bearish zone (red/pink)
+            public bool   IsAbsorption;   // true = mid-vol absorption zone (blue/pink), false = climax zone (green/red)
+            public bool   IsRecovered;    // true = price has touched through the zone boundary
         }
 
         #endregion
@@ -200,8 +201,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxBorderFakeBrush;      // orange
 
         // ── Zone fill brushes ─────────────────────────────────────────────────
-        private SharpDX.Direct2D1.SolidColorBrush dxULZBullishBrush;  // semi-transparent green (support/swing-low)
-        private SharpDX.Direct2D1.SolidColorBrush dxULZBearishBrush;  // semi-transparent red   (resistance/swing-high)
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBullishBrush;  // lime green  — GREEN climax (bullish)
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBearishBrush;  // crimson red — RED climax   (bearish)
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBlueBrush;     // royal blue  — BLUE absorption (bullish)
+        private SharpDX.Direct2D1.SolidColorBrush dxULZPinkBrush;     // hot pink    — PINK absorption (bearish)
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -577,40 +580,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            // ── Gap-based liquidity zone detection (runs before other guards) ─
-            if (EnableLiquidityZones && IsFirstTickOfBar && CurrentBar > 1)
+            // ── PVSRA-based liquidity zone creation (completed bar) ───────────
+            // Zones are created ONLY from classified PVSRA candles (GREEN/RED/BLUE/PINK).
+            // We check bar [1] (the bar that just completed) on the first tick of each new bar.
+            if (EnableLiquidityZones && IsFirstTickOfBar && CurrentBar > PVSRALookback + 1)
             {
-                double prevClose = Close[1];
-                double currOpen  = Open[0];
-
-                if (currOpen > prevClose)
-                {
-                    // Gap up → bullish ULZ: zone spans the gap between prevClose and currOpen
-                    AddLiquidityZone(new LiquidityZone
-                    {
-                        HighPrice     = currOpen,
-                        LowPrice      = prevClose,
-                        BodyHighPrice = currOpen,
-                        BodyLowPrice  = prevClose,
-                        CreatedBar    = CurrentBar,
-                        IsBullish     = true,
-                        IsRecovered   = false
-                    });
-                }
-                else if (currOpen < prevClose)
-                {
-                    // Gap down → bearish ULZ: zone spans the gap between currOpen and prevClose
-                    AddLiquidityZone(new LiquidityZone
-                    {
-                        HighPrice     = prevClose,
-                        LowPrice      = currOpen,
-                        BodyHighPrice = prevClose,
-                        BodyLowPrice  = currOpen,
-                        CreatedBar    = CurrentBar,
-                        IsBullish     = false,
-                        IsRecovered   = false
-                    });
-                }
+                if (IsPVSRAGreen(1))
+                    CreatePVSRAZone(true,  false, 1);   // GREEN  — bullish climax
+                else if (IsPVSRARed(1))
+                    CreatePVSRAZone(false, false, 1);   // RED    — bearish climax
+                else if (IsPVSRABlue(1))
+                    CreatePVSRAZone(true,  true,  1);   // BLUE   — bullish absorption
+                else if (IsPVSRAPink(1))
+                    CreatePVSRAZone(false, true,  1);   // PINK   — bearish absorption
             }
 
             if (CurrentBar < Math.Max(SRSwingStrength * 2 + 1, MomentumPeriod + 1))
@@ -1084,7 +1066,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zoneH < 1f)
                     continue;
 
-                SharpDX.Direct2D1.SolidColorBrush zoneBrush = zone.IsBullish ? dxULZBullishBrush : dxULZBearishBrush;
+                // Select brush by zone type: IsBullish × IsAbsorption
+                SharpDX.Direct2D1.SolidColorBrush zoneBrush;
+                if (zone.IsBullish && !zone.IsAbsorption)
+                    zoneBrush = dxULZBullishBrush;  // GREEN climax
+                else if (zone.IsBullish && zone.IsAbsorption)
+                    zoneBrush = dxULZBlueBrush;     // BLUE absorption
+                else if (!zone.IsBullish && !zone.IsAbsorption)
+                    zoneBrush = dxULZBearishBrush;  // RED climax
+                else
+                    zoneBrush = dxULZPinkBrush;     // PINK absorption
+
                 if (zoneBrush == null)
                     continue;
 
@@ -1153,6 +1145,142 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Microstructure helpers
+
+        // ── PVSRA candle classification ───────────────────────────────────────
+
+        /// <summary>Returns the average volume of the <paramref name="lookback"/> bars that
+        /// precede bar <paramref name="barIndex"/> (i.e. bars [barIndex+1 … barIndex+lookback]).</summary>
+        private double GetAverageVolume(int barIndex, int lookback)
+        {
+            double sum = 0;
+            int limit = Math.Min(barIndex + lookback, CurrentBar - 1);
+            for (int i = barIndex + 1; i <= limit; i++)
+                sum += Volume[i];
+            return lookback > 0 ? sum / lookback : 0;
+        }
+
+        /// <summary>Returns the maximum spread×volume product among the <paramref name="lookback"/>
+        /// bars that precede bar <paramref name="barIndex"/>.</summary>
+        private double GetMaxSpreadVolProduct(int barIndex, int lookback)
+        {
+            double maxProduct = 0;
+            int limit = Math.Min(barIndex + lookback, CurrentBar - 1);
+            for (int i = barIndex + 1; i <= limit; i++)
+            {
+                double svp = (High[i] - Low[i]) * Volume[i];
+                if (svp > maxProduct) maxProduct = svp;
+            }
+            return maxProduct;
+        }
+
+        /// <summary>Bullish climax: bullish candle + volume ≥ high threshold OR spread×vol is record high.</summary>
+        private bool IsPVSRAGreen(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            double svp    = (High[barIndex] - Low[barIndex]) * Volume[barIndex];
+            double maxSvp = GetMaxSpreadVolProduct(barIndex, PVSRALookback);
+            return Close[barIndex] > Open[barIndex] &&
+                   (Volume[barIndex] >= avgVol * (HighVolumeThreshold / 100.0) ||
+                    (maxSvp > 0 && svp >= maxSvp));
+        }
+
+        /// <summary>Bearish climax: bearish candle + volume ≥ high threshold OR spread×vol is record high.</summary>
+        private bool IsPVSRARed(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            double svp    = (High[barIndex] - Low[barIndex]) * Volume[barIndex];
+            double maxSvp = GetMaxSpreadVolProduct(barIndex, PVSRALookback);
+            return Close[barIndex] < Open[barIndex] &&
+                   (Volume[barIndex] >= avgVol * (HighVolumeThreshold / 100.0) ||
+                    (maxSvp > 0 && svp >= maxSvp));
+        }
+
+        /// <summary>Bullish absorption: bullish candle + volume ≥ mid threshold but &lt; high threshold.</summary>
+        private bool IsPVSRABlue(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            return Close[barIndex] > Open[barIndex] &&
+                   Volume[barIndex] >= avgVol * (MidVolumeThreshold  / 100.0) &&
+                   Volume[barIndex] <  avgVol * (HighVolumeThreshold / 100.0);
+        }
+
+        /// <summary>Bearish absorption: bearish candle + volume ≥ mid threshold but &lt; high threshold.</summary>
+        private bool IsPVSRAPink(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            return Close[barIndex] < Open[barIndex] &&
+                   Volume[barIndex] >= avgVol * (MidVolumeThreshold  / 100.0) &&
+                   Volume[barIndex] <  avgVol * (HighVolumeThreshold / 100.0);
+        }
+
+        /// <summary>Creates a PVSRA liquidity zone from the completed bar at <paramref name="barIndex"/>.</summary>
+        private void CreatePVSRAZone(bool isBullish, bool isAbsorption, int barIndex)
+        {
+            double high  = High[barIndex];
+            double low   = Low[barIndex];
+            double open  = Open[barIndex];
+            double close = Close[barIndex];
+
+            // ── Wick boundaries (ULZIncludeWicks = true) ────────────────────
+            double wickTop, wickBot;
+            if (isBullish)
+            {
+                // Bullish absorption zone rises from Open; climax zone from Low
+                wickBot = isAbsorption ? open : low;
+                wickTop = high;
+            }
+            else
+            {
+                // Bearish absorption zone drops from Open; climax zone from High
+                wickTop = isAbsorption ? open : high;
+                wickBot = low;
+            }
+
+            // ── Body boundaries (ULZIncludeWicks = false) ───────────────────
+            // Use the candle body (Open↔Close) as the tighter boundary.
+            double bodyHigh = Math.Max(open, close);
+            double bodyLow  = Math.Min(open, close);
+
+            double bodyTop, bodyBot;
+            if (isBullish)
+            {
+                bodyBot = isAbsorption ? open : bodyLow;
+                bodyTop = bodyHigh;
+            }
+            else
+            {
+                bodyTop = isAbsorption ? open : bodyHigh;
+                bodyBot = bodyLow;
+            }
+
+            double zoneHigh     = Math.Max(wickTop, wickBot);
+            double zoneLow      = Math.Min(wickTop, wickBot);
+            double zoneBodyHigh = Math.Max(bodyTop, bodyBot);
+            double zoneBodyLow  = Math.Min(bodyTop, bodyBot);
+
+            if (zoneHigh == zoneLow)
+                return;
+
+            AddLiquidityZone(new LiquidityZone
+            {
+                HighPrice     = zoneHigh,
+                LowPrice      = zoneLow,
+                BodyHighPrice = zoneBodyHigh,
+                BodyLowPrice  = zoneBodyLow,
+                CreatedBar    = CurrentBar,
+                IsBullish     = isBullish,
+                IsAbsorption  = isAbsorption,
+                IsRecovered   = false
+            });
+        }
 
         private void UpdateImbalanceThresholds()
         {
@@ -1248,43 +1376,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (srLevels.Count >= 50)
                         srLevels.RemoveAt(0);
                     srLevels.Add(level);
-                }
-
-                // ── Create unrecovered liquidity zone at this swing ───────────
-                if (EnableLiquidityZones && !duplicate)
-                {
-                    double zoneWickHigh, zoneWickLow, zoneBodyHigh, zoneBodyLow;
-                    if (isSwingHigh)
-                    {
-                        // Swing-high resistance zone: full candle range for wicks, body for body-only mode
-                        zoneWickHigh = High[0];
-                        zoneWickLow  = Low[0];
-                        zoneBodyHigh = Math.Max(Open[0], Close[0]);
-                        zoneBodyLow  = Math.Min(Open[0], Close[0]);
-                    }
-                    else
-                    {
-                        // Swing-low support zone: full candle range for wicks, body for body-only mode
-                        zoneWickHigh = High[0];
-                        zoneWickLow  = Low[0];
-                        zoneBodyHigh = Math.Max(Open[0], Close[0]);
-                        zoneBodyLow  = Math.Min(Open[0], Close[0]);
-                    }
-
-                    // Use wicks boundaries as the definitive check for zone validity
-                    if (zoneWickHigh > zoneWickLow)
-                    {
-                        AddLiquidityZone(new LiquidityZone
-                        {
-                            HighPrice      = zoneWickHigh,
-                            LowPrice       = zoneWickLow,
-                            BodyHighPrice  = zoneBodyHigh,
-                            BodyLowPrice   = zoneBodyLow,
-                            CreatedBar     = CurrentBar,
-                            IsBullish      = !isSwingHigh,   // swing-low zones are bullish (green)
-                            IsRecovered    = false
-                        });
-                    }
                 }
             }
         }
@@ -1435,9 +1526,27 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             dashLine6 = string.Format("S/R Levels: {0}  |  Imb Threshold: {1:N0}", srLevels.Count, imbalanceHigh);
 
-            dashLine7 = (ShowZoneCount && EnableLiquidityZones)
-                ? string.Format("ULZ: Active {0}  |  Recovered {1}", activeZoneCount, recoveredZoneCount)
-                : "";
+            if (ShowZoneCount && EnableLiquidityZones)
+            {
+                int greenZones = 0, redZones = 0, blueZones = 0, pinkZones = 0;
+                if (liquidityZones != null)
+                {
+                    foreach (LiquidityZone z in liquidityZones)
+                    {
+                        if (z.IsRecovered) continue;
+                        if      ( z.IsBullish && !z.IsAbsorption) greenZones++;
+                        else if (!z.IsBullish && !z.IsAbsorption) redZones++;
+                        else if ( z.IsBullish &&  z.IsAbsorption) blueZones++;
+                        else                                       pinkZones++;
+                    }
+                }
+                dashLine7 = string.Format("ULZ: G:{0} R:{1} B:{2} P:{3}  (Rec:{4})",
+                    greenZones, redZones, blueZones, pinkZones, recoveredZoneCount);
+            }
+            else
+            {
+                dashLine7 = "";
+            }
         }
 
         private BarSnapshot GetSnapshot(int barIdx)
@@ -1456,7 +1565,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             double curHigh  = High[0];
             double curLow   = Low[0];
-            double curOpen  = Open[0];
             double curClose = Close[0];
 
             int active    = 0;
@@ -1471,16 +1579,33 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 }
 
-                // Use the same boundary as rendering based on the wicks toggle
-                double topPrice = ULZIncludeWicks ? z.HighPrice : z.BodyHighPrice;
-                double botPrice = ULZIncludeWicks ? z.LowPrice  : z.BodyLowPrice;
+                // Skip zones created on the current bar to avoid immediate self-recovery
+                if (z.CreatedBar >= CurrentBar)
+                {
+                    active++;
+                    continue;
+                }
 
-                // Zone is recovered when price trades fully through it
-                bool zoneFullyCrossed = curLow <= botPrice && curHigh >= topPrice;
+                // Bullish zones (GREEN climax / BLUE absorption) are recovered when
+                // price closes above the zone's upper boundary, or a wick touches above it.
+                // Bearish zones (RED climax / PINK absorption) are recovered when
+                // price closes below the zone's lower boundary, or a wick touches below it.
+                bool zoneRecovered = false;
 
-                if (zoneFullyCrossed ||
-                    (curClose >= topPrice && curOpen <= botPrice) ||
-                    (curClose <= botPrice && curOpen >= topPrice))
+                if (z.IsBullish)
+                {
+                    double topBoundary = ULZIncludeWicks ? z.HighPrice : z.BodyHighPrice;
+                    if (curClose > topBoundary || (ULZIncludeWicks && curHigh > topBoundary))
+                        zoneRecovered = true;
+                }
+                else
+                {
+                    double botBoundary = ULZIncludeWicks ? z.LowPrice : z.BodyLowPrice;
+                    if (curClose < botBoundary || (ULZIncludeWicks && curLow < botBoundary))
+                        zoneRecovered = true;
+                }
+
+                if (zoneRecovered)
                 {
                     z.IsRecovered = true;
                     recovered++;
@@ -1583,10 +1708,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxBorderFakeBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(255f / 255f, 120f / 255f, 0f / 255f, 230f / 255f));
 
-                // ── Zone fill brushes (semi-transparent) ──────────────────────
+                // ── Zone fill brushes (semi-transparent, PVSRA-typed) ─────────
                 float zoneAlphaF = Math.Max(0.02f, Math.Min(0.80f, (float)ZoneOpacity / 100f));
                 dxULZBullishBrush = MakeBrush(rt, ULZBullishColor, zoneAlphaF);
                 dxULZBearishBrush = MakeBrush(rt, ULZBearishColor, zoneAlphaF);
+                // Blue (bullish absorption) — RoyalBlue
+                dxULZBlueBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(65f / 255f, 105f / 255f, 225f / 255f, zoneAlphaF));
+                // Pink (bearish absorption) — HotPink
+                dxULZPinkBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF));
 
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxDashFormat  = new SharpDX.DirectWrite.TextFormat(
@@ -1641,6 +1772,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxBorderFakeBrush);
             DisposeRef(ref dxULZBullishBrush);
             DisposeRef(ref dxULZBearishBrush);
+            DisposeRef(ref dxULZBlueBrush);
+            DisposeRef(ref dxULZPinkBrush);
             DisposeRef(ref dxDashFormat);
             DisposeRef(ref dxLabelFormat);
             DisposeRef(ref dxWriteFactory);
