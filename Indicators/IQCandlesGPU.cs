@@ -590,17 +590,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             // ── PVSRA-based liquidity zone creation (completed bar) ───────────
             // Zones are created ONLY from classified PVSRA candles (GREEN/RED/BLUE/PINK).
-            // We check bar [1] (the bar that just completed) on the first tick of each new bar.
+            // In OnBarClose mode the bar that just closed is bar[0]; in OnEachTick and
+            // OnPriceChange modes bar[0] is still forming so the completed candle is bar[1].
             if (EnableLiquidityZones && IsFirstTickOfBar && CurrentBar > PVSRALookback + 1)
             {
-                if (IsPVSRAGreen(1))
-                    CreatePVSRAZone(true,  false, 1);   // GREEN  — bullish climax
-                else if (IsPVSRARed(1))
-                    CreatePVSRAZone(false, false, 1);   // RED    — bearish climax
-                else if (IsPVSRABlue(1))
-                    CreatePVSRAZone(true,  true,  1);   // BLUE   — bullish absorption
-                else if (IsPVSRAPink(1))
-                    CreatePVSRAZone(false, true,  1);   // PINK   — bearish absorption
+                int vb = (Calculate == Calculate.OnBarClose) ? 0 : 1;
+                if (IsPVSRAGreen(vb))
+                    CreatePVSRAZone(true,  false, vb);  // GREEN  — bullish climax
+                else if (IsPVSRARed(vb))
+                    CreatePVSRAZone(false, false, vb);  // RED    — bearish climax
+                else if (IsPVSRABlue(vb))
+                    CreatePVSRAZone(true,  true,  vb);  // BLUE   — bullish absorption
+                else if (IsPVSRAPink(vb))
+                    CreatePVSRAZone(false, true,  vb);  // PINK   — bearish absorption
             }
 
             if (CurrentBar < Math.Max(SRSwingStrength * 2 + 1, MomentumPeriod + 1))
@@ -1018,7 +1020,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void RenderWallLines(ChartControl cc, ChartScale cs)
         {
             var rt = RenderTarget;
-            float chartWidth = (float)cc.ActualWidth;
+            // Use the render target's own pixel dimensions instead of cc.ActualWidth (WPF logical
+            // pixels) to avoid DPI-scaling mismatches on HiDPI displays where the two differ.
+            float chartWidth = rt != null ? (float)rt.Size.Width : (float)cc.ActualWidth;
 
             if (wallBidPrice > 0)
             {
@@ -1048,7 +1052,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null) return;
 
-            float chartWidth = (float)cc.ActualWidth;
+            // Use the render target's own pixel dimensions instead of cc.ActualWidth (WPF logical
+            // pixels) to avoid DPI-scaling mismatches on HiDPI displays.  On a 125 % or 150 %
+            // DPI monitor cc.ActualWidth is smaller than the render target width, which caused
+            // zones to have a hard right-side boundary well before the chart edge.
+            float chartWidth = (float)rt.Size.Width;
 
             foreach (LiquidityZone zone in liquidityZones.ToList())
             {
@@ -1119,8 +1127,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             int    nonEmpty    = lines.Count(s => !string.IsNullOrEmpty(s));
             float  panelH      = PadY * 2 + nonEmpty * LineH;
-            float  chartWidth  = (float)cc.ActualWidth;
-            float  chartHeight = (float)cc.ActualHeight;
+            float  chartWidth  = RenderTarget != null ? (float)RenderTarget.Size.Width  : (float)cc.ActualWidth;
+            float  chartHeight = RenderTarget != null ? (float)RenderTarget.Size.Height : (float)cc.ActualHeight;
 
             float panelX, panelY;
             switch (DashPosition)
@@ -1288,7 +1296,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BodyHighPrice        = zoneBodyHigh,
                 BodyLowPrice         = zoneBodyLow,
                 CreatedBar           = CurrentBar,
-                OriginBarIndex       = CurrentBar - 1,  // bar[1] = the vector candle that just closed
+                OriginBarIndex       = CurrentBar - barIndex,  // bar[barIndex] = the vector candle that just closed
                 IsBullish            = isBullish,
                 IsAbsorption         = isAbsorption,
                 IsRecovered          = false,
@@ -1578,9 +1586,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (liquidityZones.Count == 0)
                 return;
 
-            double curHigh  = High[0];
-            double curLow   = Low[0];
-            double curClose = Close[0];
+            // In OnBarClose mode bar[0] is the candle that just closed — its OHLC values
+            // are complete and correct for recovery testing.
+            // In OnEachTick / OnPriceChange mode IsFirstTickOfBar fires on the first tick of
+            // the NEW bar: bar[0] is just opening (Close[0] ≈ open price), so we must use
+            // bar[1] which is the bar that just finished.
+            int refBar = (Calculate == Calculate.OnBarClose) ? 0 : 1;
+
+            double curHigh  = High[refBar];
+            double curLow   = Low[refBar];
+            double curClose = Close[refBar];
 
             int active    = 0;
             int recovered = 0;
