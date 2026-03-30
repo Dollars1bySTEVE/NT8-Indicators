@@ -1049,8 +1049,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (rt == null) return;
 
             float chartWidth = (float)cc.ActualWidth;
-            // Half-bar width used to position the zone's left edge at the right side of its origin bar.
-            float halfBarW = Math.Max(1f, cc.GetBarPaintWidth(ChartBars) / 2f);
 
             foreach (LiquidityZone zone in liquidityZones.ToList())
             {
@@ -1076,16 +1074,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zoneH < 1f)
                     continue;
 
-                // Zone starts from the right edge of the PVSRA candle that created it.
-                // If the origin bar has been scrolled off to the left, clamp to x=0 so the
-                // zone remains visible across the full visible chart area.
-                float xOrigin  = cc.GetXByBarIndex(ChartBars, zone.OriginBarIndex);
-                float xStart   = Math.Max(0f, xOrigin + halfBarW);
-                float zoneW    = chartWidth - xStart;
-
-                if (zoneW < 1f)
-                    continue;
-
                 // Select brush by zone type: IsBullish × IsAbsorption
                 SharpDX.Direct2D1.SolidColorBrush zoneBrush;
                 if (zone.IsBullish && !zone.IsAbsorption)
@@ -1102,7 +1090,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 try
                 {
-                    rt.FillRectangle(new SharpDX.RectangleF(xStart, rectTop, zoneW, zoneH), zoneBrush);
+                    // Zones always extend from the full left edge (x=0) to the full right edge
+                    // of the chart so they remain continuously visible regardless of where the
+                    // origin bar sits on screen (including when the zone was just created and
+                    // its origin bar is at or beyond the visible right boundary).
+                    rt.FillRectangle(new SharpDX.RectangleF(0f, rectTop, chartWidth, zoneH), zoneBrush);
                 }
                 catch { /* Silently skip individual zone render errors to keep the chart stable */ }
             }
@@ -1679,11 +1671,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                     else
                     {
-                        // Body-only mode: use Close to determine recovery.
+                        // Body-only mode: bearish zone is recovered only when price closes
+                        // at or above the zone body top (the open of the bearish candle).
+                        // Requiring the full close above BodyHighPrice prevents immediate
+                        // recovery from the tiny bounces that commonly follow bearish climax
+                        // candles, which was causing RED/PINK zones to disappear on the
+                        // very first tick after creation.
                         if (curClose >= z.BodyHighPrice)
                             zoneRecovered = true;   // body closed above entire zone
-                        else if (curClose > z.BodyLowPrice)
-                            zoneRecovered = true;   // body closed inside the zone
                     }
                 }
 
