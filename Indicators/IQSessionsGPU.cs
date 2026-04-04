@@ -969,10 +969,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Name                     = "IQSessionsGPU";
                 Calculate                = Calculate.OnBarClose;
                 IsOverlay                = true;
+                IsAutoScale              = false;
                 DisplayInDataBox         = false;
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
                 IsSuspendedWhileInactive = false;
+                MaxBarsLookBack          = MaxBarsLookBackInfinite;
 
                 // 1. Label Offsets
                 LabelOffsetBars  = 2;
