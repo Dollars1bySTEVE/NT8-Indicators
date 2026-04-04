@@ -982,22 +982,32 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // 2. EMAs
                 ShowEma5         = true;
-                Ema5Color        = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 74));
+                var ema5Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 74));
+                ema5Brush.Freeze();
+                Ema5Color        = ema5Brush;
                 Ema5Thickness    = 1;
                 ShowEma13        = true;
-                Ema13Color       = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(253, 84, 87));
+                var ema13Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(253, 84, 87));
+                ema13Brush.Freeze();
+                Ema13Color       = ema13Brush;
                 Ema13Thickness   = 1;
                 ShowEma50        = true;
-                Ema50Color       = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 188, 211));
+                var ema50Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 188, 211));
+                ema50Brush.Freeze();
+                Ema50Color       = ema50Brush;
                 Ema50Thickness   = 2;
                 ShowEma50Cloud   = true;
-                CloudFillColor   = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(155, 47, 174));
+                var cloudBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(155, 47, 174));
+                cloudBrush.Freeze();
+                CloudFillColor   = cloudBrush;
                 CloudFillOpacity = 24;
                 ShowEma200       = true;
                 Ema200Color      = Brushes.White;
                 Ema200Thickness  = 2;
                 ShowEma800       = true;
-                Ema800Color      = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(50, 34, 144));
+                var ema800Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(50, 34, 144));
+                ema800Brush.Freeze();
+                Ema800Color      = ema800Brush;
                 Ema800Thickness  = 2;
                 ShowEmaLabels    = true;
 
@@ -1082,7 +1092,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // 12. Daily Open
                 ShowDailyOpen            = true;
                 ShowHistoricalDailyOpens = false;
-                DailyOpenColor           = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 78));
+                var dailyOpenBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 78));
+                dailyOpenBrush.Freeze();
+                DailyOpenColor           = dailyOpenBrush;
                 DailyOpenLineStyle       = IQSLineStyle.Solid;
 
                 // 13. London  UTC 08:00–16:30 (UK DST -1hr)
@@ -1090,7 +1102,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LondonLabel            = "London";
                 LondonShowLabel        = true;
                 LondonShowOpeningRange = true;
-                LondonColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(70, 130, 180));
+                LondonColor            = System.Windows.Media.Brushes.SteelBlue;
                 LondonOpacity          = 15;
 
                 // 14. New York  UTC 14:30–21:00 (US DST -1hr)
@@ -1098,7 +1110,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 NewYorkLabel            = "New York";
                 NewYorkShowLabel        = true;
                 NewYorkShowOpeningRange = true;
-                NewYorkColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(34, 139, 34));
+                NewYorkColor            = System.Windows.Media.Brushes.ForestGreen;
                 NewYorkOpacity          = 15;
 
                 // 15. Tokyo  UTC 00:00–06:00 (no DST)
@@ -1106,7 +1118,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 TokyoLabel            = "Tokyo";
                 TokyoShowLabel        = true;
                 TokyoShowOpeningRange = true;
-                TokyoColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(220, 20, 60));
+                TokyoColor            = System.Windows.Media.Brushes.Crimson;
                 TokyoOpacity          = 15;
 
                 // 16. Hong Kong  UTC 01:30–08:00 (no DST)
@@ -1114,7 +1126,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 HongKongLabel            = "Hong Kong";
                 HongKongShowLabel        = true;
                 HongKongShowOpeningRange = true;
-                HongKongColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 165, 0));
+                HongKongColor            = System.Windows.Media.Brushes.Orange;
                 HongKongOpacity          = 15;
 
                 // 17. Sydney  UTC 22:00–06:00 (AU DST -1hr)
@@ -1122,7 +1134,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SydneyLabel            = "Sydney";
                 SydneyShowLabel        = true;
                 SydneyShowOpeningRange = true;
-                SydneyColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(148, 0, 211));
+                SydneyColor            = System.Windows.Media.Brushes.DarkViolet;
                 SydneyOpacity          = 15;
 
                 // 18. EU Brinks  UTC 08:00–09:00 (UK DST)
@@ -1130,7 +1142,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EuBrinksLabel            = "EU Brinks";
                 EuBrinksShowLabel        = true;
                 EuBrinksShowOpeningRange = true;
-                EuBrinksColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0, 191, 255));
+                EuBrinksColor            = System.Windows.Media.Brushes.DeepSkyBlue;
                 EuBrinksOpacity          = 20;
 
                 // 19. US Brinks  UTC 14:00–15:00 (US DST)
@@ -1138,7 +1150,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 UsBrinksLabel            = "US Brinks";
                 UsBrinksShowLabel        = true;
                 UsBrinksShowOpeningRange = true;
-                UsBrinksColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(50, 205, 50));
+                UsBrinksColor            = System.Windows.Media.Brushes.LimeGreen;
                 UsBrinksOpacity          = 20;
 
                 // 20. Frankfurt  UTC 07:00–16:30 (UK DST)
@@ -1146,7 +1158,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 FrankfurtLabel            = "Frankfurt";
                 FrankfurtShowLabel        = true;
                 FrankfurtShowOpeningRange = true;
-                FrankfurtColor            = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 215, 0));
+                FrankfurtColor            = System.Windows.Media.Brushes.Gold;
                 FrankfurtOpacity          = 12;
 
                 // 21. Psy Levels
