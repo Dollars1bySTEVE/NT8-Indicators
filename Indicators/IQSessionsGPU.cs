@@ -81,10 +81,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields
 
-        // ── EMA values (computed in OnBarUpdate via NinjaTrader EMA() calls) ──
-        private double ema5Val, ema13Val, ema50Val, ema200Val, ema800Val;
-        private double ema50Upper, ema50Lower;   // cloud bands
-
         // ── Cached EMA/StdDev indicator references (set in State.DataLoaded) ──
         // Caching avoids repeated lookups from the render thread which is not thread-safe.
         private NinjaTrader.NinjaScript.Indicators.EMA    ema5Ind, ema13Ind, ema50Ind, ema200Ind, ema800Ind;
@@ -121,6 +117,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ── Session tracking ─────────────────────────────────────────────────
         private List<SessionBox> sessionBoxes;  // capped at 200
         private SessionBox[]     activeSessions; // one per session type (0-7)
+        private readonly object  _sessionLock = new object();
 
         // ── Weekly Psy levels ─────────────────────────────────────────────────
         private double psyWeekHigh, psyWeekLow;
@@ -130,11 +127,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool alertAdrHighFired, alertAdrLowFired;
         private bool alertAwrHighFired, alertAwrLowFired;
         private bool alertAmrHighFired, alertAmrLowFired;
-
-        // ── Constants ─────────────────────────────────────────────────────────
-        // Minimum bars required before computing session/pivot/ADR values.
-        // Kept low so features appear early; each EMA has its own per-period guard.
-        private const int MIN_BARS_REQUIRED = 50;
 
         // ── SharpDX GPU resources ─────────────────────────────────────────────
         private bool dxReady;
@@ -1222,25 +1214,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < MIN_BARS_REQUIRED)
+            // Require at least bar 1 so Time[1] is safe for new-day detection.
+            // EMA child indicators handle their own per-period guards in the render loop.
+            if (CurrentBar < 1)
                 return;
 
-            // ── 1. EMAs — each guarded by its own minimum period ──────────────
-            if (CurrentBar >= 5)   ema5Val   = ema5Ind[0];
-            if (CurrentBar >= 13)  ema13Val  = ema13Ind[0];
-            if (CurrentBar >= 50)  ema50Val  = ema50Ind[0];
-            if (CurrentBar >= 200) ema200Val = ema200Ind[0];
-            if (CurrentBar >= 800) ema800Val = ema800Ind[0];
-
-            // EMA 50 cloud bands: ema50 ± StdDev(Close, 100) / 4
-            if (ShowEma50Cloud && CurrentBar >= 100)
-            {
-                double sd = stdDev100Ind[0];
-                ema50Upper = ema50Val + sd / 4.0;
-                ema50Lower = ema50Val - sd / 4.0;
-            }
-
-            // ── 2. Day / week / month tracking ───────────────────────────────
+            // ── 1. Day / week / month tracking ───────────────────────────────
             if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
             {
                 DateTime barTime = Time[0];
@@ -1282,6 +1261,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 else
                 {
+                    if (dailyOpen == 0) dailyOpen = Open[0];  // init on first intraday bar if missed
                     if (High[0] > dayHigh) dayHigh = High[0];
                     if (Low[0]  < dayLow)  dayLow  = Low[0];
                     dayClose = Close[0];
@@ -1304,6 +1284,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         rwRanges.Enqueue(wRange);
 
                         alertAwrHighFired = alertAwrLowFired = false;
+
+                        // Reset week tracking so the new week starts fresh
+                        weekHigh = High[0];
+                        weekLow  = Low[0];
 
                         // Psy levels reset at week start
                         psyWeekHigh    = High[0];
@@ -1353,7 +1337,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            // ── 3. Compute ADR / AWR / AMR / RD / RW values ──────────────────
+            // ── 2. Compute ADR / AWR / AMR / RD / RW values ──────────────────
             if (dailyRanges.Count > 0)
             {
                 adrValue = dailyRanges.Average();
@@ -1366,9 +1350,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 else
                 {
-                    adrHigh = dayLow + adrValue;
-                    adrLow  = dayHigh - adrValue;
-                    // Expand symmetrically
+                    // Expand symmetrically around today's midpoint
                     double slack = (adrValue - todayRange) / 2.0;
                     adrHigh = dayHigh + slack;
                     adrLow  = dayLow  - slack;
@@ -1410,10 +1392,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 rwLow  = weekLow  - rwSlack;
             }
 
-            // ── 4. Session tracking ───────────────────────────────────────────
+            // ── 3. Session tracking ───────────────────────────────────────────
             if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
             {
-                UpdateSessions(Time[0]);
+                // Convert exchange-local time to UTC for session window comparisons.
+                DateTime barUtc = TimeZoneInfo.ConvertTimeToUtc(
+                    DateTime.SpecifyKind(Time[0], DateTimeKind.Unspecified),
+                    Bars.TradingHours.TimeZoneInfo);
+                UpdateSessions(barUtc);
 
                 // Psy level tracking
                 if (psyWeekStartBar > 0)
@@ -1423,7 +1409,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            // ── 5. Alerts ─────────────────────────────────────────────────────
+            // ── 4. Alerts ─────────────────────────────────────────────────────
             if (IsFirstTickOfBar && adrValue > 0)
             {
                 double c = Close[0];
@@ -1746,10 +1732,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                         };
                         activeSessions[id] = box;
 
-                        // Add to list (capped at 200)
-                        if (sessionBoxes.Count >= 200)
-                            sessionBoxes.RemoveAt(0);
-                        sessionBoxes.Add(box);
+                        // Add to list (capped at 200) — lock for render-thread safety
+                        lock (_sessionLock)
+                        {
+                            if (sessionBoxes.Count >= 200)
+                                sessionBoxes.RemoveAt(0);
+                            sessionBoxes.Add(box);
+                        }
                     }
                     else
                     {
@@ -1831,9 +1820,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             RenderLastWeekLevels(chartControl, chartScale, rtW);
 
             // ── 5. ADR / AWR / AMR / RD / RW ─────────────────────────────────
-            if (adrValue > 0 && ShowAdr)  RenderHorizontalBand(chartControl, chartScale, rtW, adrHigh, adrLow, dxAdrBrush, "ADR H", "ADR L", ShowAdrLabels, adrHigh, adrLow, ShowAdr50);
-            if (awrValue > 0 && ShowAwr)  RenderHorizontalBand(chartControl, chartScale, rtW, awrHigh, awrLow, dxAwrBrush, "AWR H", "AWR L", ShowAwrLabels, awrHigh, awrLow, ShowAwr50);
-            if (amrValue > 0 && ShowAmr)  RenderHorizontalBand(chartControl, chartScale, rtW, amrHigh, amrLow, dxAmrBrush, "AMR H", "AMR L", ShowAmrLabels, amrHigh, amrLow, ShowAmr50);
+            if (adrValue > 0 && ShowAdr)  RenderHorizontalBand(chartControl, chartScale, rtW, adrHigh, adrLow, dxAdrBrush, "ADR H", "ADR L", ShowAdrLabels, adrHigh, adrLow, ShowAdr50, AdrLineStyle);
+            if (awrValue > 0 && ShowAwr)  RenderHorizontalBand(chartControl, chartScale, rtW, awrHigh, awrLow, dxAwrBrush, "AWR H", "AWR L", ShowAwrLabels, awrHigh, awrLow, ShowAwr50, AwrLineStyle);
+            if (amrValue > 0 && ShowAmr)  RenderHorizontalBand(chartControl, chartScale, rtW, amrHigh, amrLow, dxAmrBrush, "AMR H", "AMR L", ShowAmrLabels, amrHigh, amrLow, ShowAmr50, AmrLineStyle);
             if (rdValue  > 0 && ShowRd)   RenderHorizontalBand(chartControl, chartScale, rtW, rdHigh,  rdLow,  dxRdBrush,  "RD H",  "RD L",  ShowRdLabels,  rdHigh,  rdLow,  false);
             if (rwValue  > 0 && ShowRw)   RenderHorizontalBand(chartControl, chartScale, rtW, rwHigh,  rwLow,  dxRwBrush,  "RW H",  "RW L",  ShowRwLabels,  rwHigh,  rwLow,  false);
 
@@ -1867,9 +1856,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             DateTime now = Time[0];
 
-            // Use ToList() to get a snapshot — prevents InvalidOperationException if
-            // OnBarUpdate adds a box while this render is in progress.
-            foreach (var box in sessionBoxes.ToList())
+            // Take a locked snapshot — prevents races when OnBarUpdate modifies the list.
+            List<SessionBox> snapshot;
+            lock (_sessionLock) { snapshot = sessionBoxes.ToList(); }
+            foreach (var box in snapshot)
             {
                 if (!SessionShowOpeningRange(box.SessionId))
                     continue;
@@ -2013,15 +2003,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 firstBar = false;
             }
 
-            // Labels at rightmost visible bar
+            // Labels at rightmost visible bar — use the rightmost X of any enabled EMA
             if (ShowEmaLabels && !firstBar && dxLabelFormat != null)
             {
-                float labelX = prevX5 + 6f;
-                DrawLineLabel(labelX, prevY5,   "5",   dxEma5Brush);
-                DrawLineLabel(labelX, prevY13,  "13",  dxEma13Brush);
-                DrawLineLabel(labelX, prevY50,  "50",  dxEma50Brush);
-                DrawLineLabel(labelX, prevY200, "200", dxEma200Brush);
-                DrawLineLabel(labelX, prevY800, "800", dxEma800Brush);
+                float labelX = 0f;
+                if (ShowEma5   && !first5)   labelX = Math.Max(labelX, prevX5);
+                if (ShowEma13  && !first13)  labelX = Math.Max(labelX, prevX13);
+                if (ShowEma50  && !first50)  labelX = Math.Max(labelX, prevX50);
+                if (ShowEma200 && !first200) labelX = Math.Max(labelX, prevX200);
+                if (ShowEma800 && !first800) labelX = Math.Max(labelX, prevX800);
+                labelX += 6f;
+
+                if (ShowEma5   && !first5)   DrawLineLabel(labelX, prevY5,   "5",   dxEma5Brush);
+                if (ShowEma13  && !first13)  DrawLineLabel(labelX, prevY13,  "13",  dxEma13Brush);
+                if (ShowEma50  && !first50)  DrawLineLabel(labelX, prevY50,  "50",  dxEma50Brush);
+                if (ShowEma200 && !first200) DrawLineLabel(labelX, prevY200, "200", dxEma200Brush);
+                if (ShowEma800 && !first800) DrawLineLabel(labelX, prevY800, "800", dxEma800Brush);
             }
         }
 
@@ -2103,13 +2100,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void RenderHorizontalBand(ChartControl cc, ChartScale cs, float rtW,
             double high, double low, SharpDX.Direct2D1.SolidColorBrush brush,
             string highLabel, string lowLabel, bool showLabels,
-            double h, double l, bool show50)
+            double h, double l, bool show50,
+            IQSLineStyle lineStyle = IQSLineStyle.Dashed)
         {
             if (brush == null || high == 0 || low == 0) return;
             float yH = cs.GetYByValue(high);
             float yL = cs.GetYByValue(low);
-            DrawStyledLine(0f, yH, rtW, yH, brush, 1.5f, IQSLineStyle.Dashed);
-            DrawStyledLine(0f, yL, rtW, yL, brush, 1.5f, IQSLineStyle.Dashed);
+            DrawStyledLine(0f, yH, rtW, yH, brush, 1.5f, lineStyle);
+            DrawStyledLine(0f, yL, rtW, yL, brush, 1.5f, lineStyle);
             if (showLabels && dxLabelFormat != null)
             {
                 RenderTarget.DrawText(highLabel + " " + high.ToString("F5"), dxLabelFormat,
@@ -2346,10 +2344,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 dxReady = true;
             }
-            catch
+            catch (Exception ex)
             {
                 dxReady = false;
                 DisposeDXResources();
+                Print("IQSessionsGPU CreateDXResources failed: " + ex.Message);
             }
         }
 
@@ -2361,7 +2360,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             var scb = wpfBrush as System.Windows.Media.SolidColorBrush;
             if (scb != null)
             {
-                var c = scb.Color;
+                System.Windows.Media.Color c;
+                try   { c = scb.Color; }
+                catch { c = System.Windows.Media.Colors.White; }  // non-frozen brush on render thread
                 return new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, opacity));
             }
