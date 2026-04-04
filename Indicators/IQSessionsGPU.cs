@@ -1474,6 +1474,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
+            ForceRefresh();
         }
 
         #endregion
@@ -1858,8 +1859,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             catch
             {
-                // Swallow render exceptions — device lost or null RT mid-frame.
-                // dxReady stays true; next frame will attempt again cleanly.
+                // A bad frame is silently skipped; rendering resumes on the next call.
+                // Reset dxReady so resources are recreated cleanly on the next frame.
+                dxReady = false;
             }
         }
 
