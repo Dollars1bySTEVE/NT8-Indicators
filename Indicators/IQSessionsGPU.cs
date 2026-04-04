@@ -1814,45 +1814,53 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (fromBar > toBar)
                 return;
 
-            // ── 1. Session boxes ──────────────────────────────────────────────
-            RenderSessionBoxes(chartControl, chartScale, rtW, rtH);
-
-            // ── 2. EMA lines + cloud ──────────────────────────────────────────
-            RenderEmas(chartControl, chartScale, fromBar, toBar);
-
-            // ── 3. Pivot levels ───────────────────────────────────────────────
-            if (currentPivot != null)
-                RenderPivots(chartControl, chartScale, rtW);
-
-            // ── 4. Yesterday / last week Hi/Lo ────────────────────────────────
-            RenderYesterdayLevels(chartControl, chartScale, rtW);
-            RenderLastWeekLevels(chartControl, chartScale, rtW);
-
-            // ── 5. ADR / AWR / AMR / RD / RW ─────────────────────────────────
-            if (adrValue > 0 && ShowAdr)  RenderHorizontalBand(chartControl, chartScale, rtW, adrHigh, adrLow, dxAdrBrush, "ADR H", "ADR L", ShowAdrLabels, adrHigh, adrLow, ShowAdr50, AdrLineStyle);
-            if (awrValue > 0 && ShowAwr)  RenderHorizontalBand(chartControl, chartScale, rtW, awrHigh, awrLow, dxAwrBrush, "AWR H", "AWR L", ShowAwrLabels, awrHigh, awrLow, ShowAwr50, AwrLineStyle);
-            if (amrValue > 0 && ShowAmr)  RenderHorizontalBand(chartControl, chartScale, rtW, amrHigh, amrLow, dxAmrBrush, "AMR H", "AMR L", ShowAmrLabels, amrHigh, amrLow, ShowAmr50, AmrLineStyle);
-            if (rdValue  > 0 && ShowRd)   RenderHorizontalBand(chartControl, chartScale, rtW, rdHigh,  rdLow,  dxRdBrush,  "RD H",  "RD L",  ShowRdLabels,  rdHigh,  rdLow,  false);
-            if (rwValue  > 0 && ShowRw)   RenderHorizontalBand(chartControl, chartScale, rtW, rwHigh,  rwLow,  dxRwBrush,  "RW H",  "RW L",  ShowRwLabels,  rwHigh,  rwLow,  false);
-
-            // ── 6. Daily open ─────────────────────────────────────────────────
-            if (ShowDailyOpen && dailyOpen > 0)
-                RenderSingleLine(chartControl, chartScale, rtW, dailyOpen, dxDailyOpenBrush, "DO", ShowDailyOpen);
-
-            // ── 7. Weekly Psy levels ──────────────────────────────────────────
-            if (ShowPsyLevels && psyWeekHigh > 0)
+            try
             {
-                RenderSingleLine(chartControl, chartScale, rtW, psyWeekHigh, dxPsyBrush, "Psy H", ShowPsyLabels);
-                RenderSingleLine(chartControl, chartScale, rtW, psyWeekLow,  dxPsyBrush, "Psy L", ShowPsyLabels);
+                // ── 1. Session boxes ──────────────────────────────────────────────
+                RenderSessionBoxes(chartControl, chartScale, rtW, rtH);
+
+                // ── 2. EMA lines + cloud ──────────────────────────────────────────
+                RenderEmas(chartControl, chartScale, fromBar, toBar);
+
+                // ── 3. Pivot levels ───────────────────────────────────────────────
+                if (currentPivot != null)
+                    RenderPivots(chartControl, chartScale, rtW);
+
+                // ── 4. Yesterday / last week Hi/Lo ────────────────────────────────
+                RenderYesterdayLevels(chartControl, chartScale, rtW);
+                RenderLastWeekLevels(chartControl, chartScale, rtW);
+
+                // ── 5. ADR / AWR / AMR / RD / RW ─────────────────────────────────
+                if (adrValue > 0 && ShowAdr)  RenderHorizontalBand(chartControl, chartScale, rtW, adrHigh, adrLow, dxAdrBrush, "ADR H", "ADR L", ShowAdrLabels, adrHigh, adrLow, ShowAdr50, AdrLineStyle);
+                if (awrValue > 0 && ShowAwr)  RenderHorizontalBand(chartControl, chartScale, rtW, awrHigh, awrLow, dxAwrBrush, "AWR H", "AWR L", ShowAwrLabels, awrHigh, awrLow, ShowAwr50, AwrLineStyle);
+                if (amrValue > 0 && ShowAmr)  RenderHorizontalBand(chartControl, chartScale, rtW, amrHigh, amrLow, dxAmrBrush, "AMR H", "AMR L", ShowAmrLabels, amrHigh, amrLow, ShowAmr50, AmrLineStyle);
+                if (rdValue  > 0 && ShowRd)   RenderHorizontalBand(chartControl, chartScale, rtW, rdHigh,  rdLow,  dxRdBrush,  "RD H",  "RD L",  ShowRdLabels,  rdHigh,  rdLow,  false);
+                if (rwValue  > 0 && ShowRw)   RenderHorizontalBand(chartControl, chartScale, rtW, rwHigh,  rwLow,  dxRwBrush,  "RW H",  "RW L",  ShowRwLabels,  rwHigh,  rwLow,  false);
+
+                // ── 6. Daily open ─────────────────────────────────────────────────
+                if (ShowDailyOpen && dailyOpen > 0)
+                    RenderSingleLine(chartControl, chartScale, rtW, dailyOpen, dxDailyOpenBrush, "DO", ShowDailyOpen);
+
+                // ── 7. Weekly Psy levels ──────────────────────────────────────────
+                if (ShowPsyLevels && psyWeekHigh > 0)
+                {
+                    RenderSingleLine(chartControl, chartScale, rtW, psyWeekHigh, dxPsyBrush, "Psy H", ShowPsyLabels);
+                    RenderSingleLine(chartControl, chartScale, rtW, psyWeekLow,  dxPsyBrush, "Psy L", ShowPsyLabels);
+                }
+
+                // ── 8. ADR/AWR/AMR Dashboard table ────────────────────────────────
+                if (ShowRangeTable)
+                    RenderRangeTable(chartControl, chartScale, rtW, rtH);
+
+                // ── 9. DST reference table ────────────────────────────────────────
+                if (ShowDstTable)
+                    RenderDstTable(chartControl, chartScale, rtW, rtH);
             }
-
-            // ── 8. ADR/AWR/AMR Dashboard table ────────────────────────────────
-            if (ShowRangeTable)
-                RenderRangeTable(chartControl, chartScale, rtW, rtH);
-
-            // ── 9. DST reference table ────────────────────────────────────────
-            if (ShowDstTable)
-                RenderDstTable(chartControl, chartScale, rtW, rtH);
+            catch
+            {
+                // Swallow render exceptions — device lost or null RT mid-frame.
+                // dxReady stays true; next frame will attempt again cleanly.
+            }
         }
 
         // ── Session box rendering ─────────────────────────────────────────────
@@ -1942,15 +1950,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Offset from CurrentBar; skip if render is ahead of calculation
                 int off = CurrentBar - barIdx;
-                if (off < 0 || off >= ema5Ind.Count) continue;
+                if (off < 0) continue;
 
-                // Retrieve EMA values using cached indicator references.
-                // Per-period guards prevent accessing uninitialized values.
-                bool has5   = barIdx >= 5;
-                bool has13  = barIdx >= 13;
-                bool has50  = barIdx >= 50;
-                bool has200 = barIdx >= 200;
-                bool has800 = barIdx >= 800;
+                // Per-indicator count guards (each series may have different counts)
+                bool has5   = barIdx >= 5   && off < ema5Ind.Count;
+                bool has13  = barIdx >= 13  && off < ema13Ind.Count;
+                bool has50  = barIdx >= 50  && off < ema50Ind.Count;
+                bool has200 = barIdx >= 200 && off < ema200Ind.Count;
+                bool has800 = barIdx >= 800 && off < ema800Ind.Count;
 
                 double e5   = has5   ? ema5Ind[off]   : 0;
                 double e13  = has13  ? ema13Ind[off]   : 0;
@@ -2345,11 +2352,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 dxReady = true;
             }
-            catch (Exception ex)
+            catch
             {
                 dxReady = false;
                 DisposeDXResources();
-                Print("IQSessionsGPU CreateDXResources failed: " + ex.Message);
             }
         }
 
