@@ -1474,7 +1474,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            ForceRefresh();
+            // Only force a repaint at bar close or on first tick — not every tick.
+            if (Calculate == Calculate.OnBarClose || IsFirstTickOfBar)
+                ForceRefresh();
         }
 
         #endregion
@@ -1797,7 +1799,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             if (!dxReady)
-                CreateDXResources();
+            {
+                try { CreateDXResources(); }
+                catch { return; }
+            }
 
             if (!dxReady)
                 return;
@@ -1973,29 +1978,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (!firstBar)
                 {
-                    // Cloud fill geometry — wrapped in try-finally to guarantee disposal
+                    // Cloud fill — bounding-rect fill per bar segment.
+                    // Replaces per-bar PathGeometry creation (major GPU churn culprit).
                     if (ShowEma50Cloud && has50 && !first50 && dxCloudFillBrush != null)
                     {
-                        SharpDX.Direct2D1.PathGeometry geom = null;
-                        SharpDX.Direct2D1.GeometrySink sink = null;
-                        try
-                        {
-                            geom = new SharpDX.Direct2D1.PathGeometry(rt.Factory);
-                            sink = geom.Open();
-                            sink.BeginFigure(new SharpDX.Vector2(prevX50, prevYCloudU), SharpDX.Direct2D1.FigureBegin.Filled);
-                            sink.AddLine(new SharpDX.Vector2(x,       yClU));
-                            sink.AddLine(new SharpDX.Vector2(x,       yClL));
-                            sink.AddLine(new SharpDX.Vector2(prevX50, prevYCloudL));
-                            sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
-                            sink.Close();
-                            rt.FillGeometry(geom, dxCloudFillBrush);
-                        }
-                        catch { }
-                        finally
-                        {
-                            if (sink != null) { sink.Dispose(); sink = null; }
-                            if (geom != null) { geom.Dispose(); geom = null; }
-                        }
+                        float cloudTop    = Math.Min(Math.Min(prevYCloudU, prevYCloudL), Math.Min(yClU, yClL));
+                        float cloudBottom = Math.Max(Math.Max(prevYCloudU, prevYCloudL), Math.Max(yClU, yClL));
+                        var   segRect     = new SharpDX.RectangleF(prevX50, cloudTop, x - prevX50, cloudBottom - cloudTop);
+                        rt.FillRectangle(segRect, dxCloudFillBrush);
                     }
 
                     if (ShowEma5   && has5   && !first5   && dxEma5Brush   != null) rt.DrawLine(new SharpDX.Vector2(prevX5,   prevY5),   new SharpDX.Vector2(x, y5),   dxEma5Brush,   Ema5Thickness);
