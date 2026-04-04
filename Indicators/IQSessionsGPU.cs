@@ -113,6 +113,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double adrHigh, adrLow, awrHigh, awrLow, amrHigh, amrLow;
         private double rdHigh, rdLow, rwHigh, rwLow;
         private double dailyOpen;
+        private bool   dailyOpenSet;
 
         // ── Session tracking ─────────────────────────────────────────────────
         private List<SessionBox> sessionBoxes;  // capped at 200
@@ -1185,6 +1186,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 currentDayOfWeek = -1;
                 monthDataLoaded  = false;
                 currentMonth     = -1;
+                dailyOpenSet     = false;
 
                 alertAdrHighFired = alertAdrLowFired = false;
                 alertAwrHighFired = alertAwrLowFired = false;
@@ -1250,10 +1252,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
 
                     // Reset day tracking
-                    dayHigh   = High[0];
-                    dayLow    = Low[0];
-                    dayClose  = Close[0];
-                    dailyOpen = Open[0];
+                    dayHigh      = High[0];
+                    dayLow       = Low[0];
+                    dayClose     = Close[0];
+                    dailyOpen    = Open[0];
+                    dailyOpenSet = true;
                     prevDayLoaded = true;
 
                     // Reset ADR alerts
@@ -1261,7 +1264,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 else
                 {
-                    if (dailyOpen == 0) dailyOpen = Open[0];  // init on first intraday bar if missed
+                    if (!dailyOpenSet) { dailyOpen = Open[0]; dailyOpenSet = true; }  // init mid-day on startup
                     if (High[0] > dayHigh) dayHigh = High[0];
                     if (Low[0]  < dayLow)  dayLow  = Low[0];
                     dayClose = Close[0];
@@ -2012,13 +2015,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowEma50  && !first50)  labelX = Math.Max(labelX, prevX50);
                 if (ShowEma200 && !first200) labelX = Math.Max(labelX, prevX200);
                 if (ShowEma800 && !first800) labelX = Math.Max(labelX, prevX800);
-                labelX += 6f;
 
-                if (ShowEma5   && !first5)   DrawLineLabel(labelX, prevY5,   "5",   dxEma5Brush);
-                if (ShowEma13  && !first13)  DrawLineLabel(labelX, prevY13,  "13",  dxEma13Brush);
-                if (ShowEma50  && !first50)  DrawLineLabel(labelX, prevY50,  "50",  dxEma50Brush);
-                if (ShowEma200 && !first200) DrawLineLabel(labelX, prevY200, "200", dxEma200Brush);
-                if (ShowEma800 && !first800) DrawLineLabel(labelX, prevY800, "800", dxEma800Brush);
+                // Only draw if at least one EMA was visible in the current range
+                if (labelX > 0f)
+                {
+                    labelX += 6f;
+                    if (ShowEma5   && !first5)   DrawLineLabel(labelX, prevY5,   "5",   dxEma5Brush);
+                    if (ShowEma13  && !first13)  DrawLineLabel(labelX, prevY13,  "13",  dxEma13Brush);
+                    if (ShowEma50  && !first50)  DrawLineLabel(labelX, prevY50,  "50",  dxEma50Brush);
+                    if (ShowEma200 && !first200) DrawLineLabel(labelX, prevY200, "200", dxEma200Brush);
+                    if (ShowEma800 && !first800) DrawLineLabel(labelX, prevY800, "800", dxEma800Brush);
+                }
             }
         }
 
@@ -2362,7 +2369,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 System.Windows.Media.Color c;
                 try   { c = scb.Color; }
-                catch { c = System.Windows.Media.Colors.White; }  // non-frozen brush on render thread
+                catch { c = System.Windows.Media.Colors.White; }  // non-frozen brush: safe fallback, original color lost
                 return new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, opacity));
             }
