@@ -85,6 +85,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double ema5Val, ema13Val, ema50Val, ema200Val, ema800Val;
         private double ema50Upper, ema50Lower;   // cloud bands
 
+        // ── Cached EMA/StdDev indicator references (set in State.DataLoaded) ──
+        // Caching avoids repeated lookups from the render thread which is not thread-safe.
+        private NinjaTrader.NinjaScript.Indicators.EMA    ema5Ind, ema13Ind, ema50Ind, ema200Ind, ema800Ind;
+        private NinjaTrader.NinjaScript.Indicators.StdDev stdDev100Ind;
+
         // ── Pivot data ────────────────────────────────────────────────────────
         private PivotSnapshot currentPivot;
         private double        dayHigh, dayLow, dayClose;
@@ -127,9 +132,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool alertAmrHighFired, alertAmrLowFired;
 
         // ── Constants ─────────────────────────────────────────────────────────
-        // Minimum bars required before computing any indicator values;
-        // must be >= the largest EMA period (800).
-        private const int MIN_BARS_REQUIRED = 800;
+        // Minimum bars required before computing session/pivot/ADR values.
+        // Kept low so features appear early; each EMA has its own per-period guard.
+        private const int MIN_BARS_REQUIRED = 50;
 
         // ── SharpDX GPU resources ─────────────────────────────────────────────
         private bool dxReady;
@@ -1192,6 +1197,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 alertAdrHighFired = alertAdrLowFired = false;
                 alertAwrHighFired = alertAwrLowFired = false;
                 alertAmrHighFired = alertAmrLowFired = false;
+
+                // Cache EMA/StdDev indicators so the render thread can access them
+                // safely without calling the EMA() helper (which is not render-thread-safe).
+                ema5Ind      = EMA(5);
+                ema13Ind     = EMA(13);
+                ema50Ind     = EMA(50);
+                ema200Ind    = EMA(200);
+                ema800Ind    = EMA(800);
+                stdDev100Ind = StdDev(Close, 100);
             }
             else if (State == State.Terminated)
             {
@@ -1211,17 +1225,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < MIN_BARS_REQUIRED)
                 return;
 
-            // ── 1. EMAs ───────────────────────────────────────────────────────
-            ema5Val   = EMA(5)[0];
-            ema13Val  = EMA(13)[0];
-            ema50Val  = EMA(50)[0];
-            ema200Val = EMA(200)[0];
-            ema800Val = EMA(800)[0];
+            // ── 1. EMAs — each guarded by its own minimum period ──────────────
+            if (CurrentBar >= 5)   ema5Val   = ema5Ind[0];
+            if (CurrentBar >= 13)  ema13Val  = ema13Ind[0];
+            if (CurrentBar >= 50)  ema50Val  = ema50Ind[0];
+            if (CurrentBar >= 200) ema200Val = ema200Ind[0];
+            if (CurrentBar >= 800) ema800Val = ema800Ind[0];
 
             // EMA 50 cloud bands: ema50 ± StdDev(Close, 100) / 4
             if (ShowEma50Cloud && CurrentBar >= 100)
             {
-                double sd = StdDev(Close, 100)[0];
+                double sd = stdDev100Ind[0];
                 ema50Upper = ema50Val + sd / 4.0;
                 ema50Lower = ema50Val - sd / 4.0;
             }
@@ -1846,10 +1860,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ── Session box rendering ─────────────────────────────────────────────
         private void RenderSessionBoxes(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
+            if (sessionBoxes == null || sessionBoxes.Count == 0) return;
+
             var rt = RenderTarget;
+            if (rt == null) return;
+
             DateTime now = Time[0];
 
-            foreach (var box in sessionBoxes)
+            // Use ToList() to get a snapshot — prevents InvalidOperationException if
+            // OnBarUpdate adds a box while this render is in progress.
+            foreach (var box in sessionBoxes.ToList())
             {
                 if (!SessionShowOpeningRange(box.SessionId))
                     continue;
@@ -1910,69 +1930,86 @@ namespace NinjaTrader.NinjaScript.Indicators
             float prevX5 = 0, prevX13 = 0, prevX50 = 0, prevX200 = 0, prevX800 = 0;
             float prevY5 = 0, prevY13 = 0, prevY50 = 0, prevY200 = 0, prevY800 = 0;
             float prevYCloudU = 0, prevYCloudL = 0;
+            // Track first valid bar per EMA so we don't draw a line from (0,0)
+            bool first5 = true, first13 = true, first50 = true, first200 = true, first800 = true;
             bool firstBar = true;
 
             for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
             {
-                if (barIdx < MIN_BARS_REQUIRED)
-                    continue;
-
                 float x = cc.GetXByBarIndex(ChartBars, barIdx);
 
-                // Retrieve EMA values via Bars data at barIdx offset from CurrentBar
-                int   off   = CurrentBar - barIdx;
-                if (off < 0) continue;
+                // Offset from CurrentBar; skip if render is ahead of calculation
+                int off = CurrentBar - barIdx;
+                if (off < 0 || off >= ema5Ind.Count) continue;
 
-                double e5   = EMA(5)[off];
-                double e13  = EMA(13)[off];
-                double e50  = EMA(50)[off];
-                double e200 = EMA(200)[off];
-                double e800 = EMA(800)[off];
+                // Retrieve EMA values using cached indicator references.
+                // Per-period guards prevent accessing uninitialized values.
+                bool has5   = barIdx >= 5;
+                bool has13  = barIdx >= 13;
+                bool has50  = barIdx >= 50;
+                bool has200 = barIdx >= 200;
+                bool has800 = barIdx >= 800;
 
-                float y5   = cs.GetYByValue(e5);
-                float y13  = cs.GetYByValue(e13);
-                float y50  = cs.GetYByValue(e50);
-                float y200 = cs.GetYByValue(e200);
-                float y800 = cs.GetYByValue(e800);
+                double e5   = has5   ? ema5Ind[off]   : 0;
+                double e13  = has13  ? ema13Ind[off]   : 0;
+                double e50  = has50  ? ema50Ind[off]   : 0;
+                double e200 = has200 ? ema200Ind[off]  : 0;
+                double e800 = has800 ? ema800Ind[off]  : 0;
+
+                float y5   = has5   ? cs.GetYByValue(e5)   : 0;
+                float y13  = has13  ? cs.GetYByValue(e13)  : 0;
+                float y50  = has50  ? cs.GetYByValue(e50)  : 0;
+                float y200 = has200 ? cs.GetYByValue(e200) : 0;
+                float y800 = has800 ? cs.GetYByValue(e800) : 0;
 
                 double sdOff = 0;
                 float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && barIdx >= 100)
+                if (ShowEma50Cloud && has50 && barIdx >= 100 && off < stdDev100Ind.Count)
                 {
-                    sdOff = StdDev(Close, 100)[off] / 4.0;
+                    sdOff = stdDev100Ind[off] / 4.0;
                     yClU  = cs.GetYByValue(e50 + sdOff);
                     yClL  = cs.GetYByValue(e50 - sdOff);
                 }
 
                 if (!firstBar)
                 {
-                    // Cloud fill geometry
-                    if (ShowEma50Cloud && dxCloudFillBrush != null)
+                    // Cloud fill geometry — wrapped in try-finally to guarantee disposal
+                    if (ShowEma50Cloud && has50 && !first50 && dxCloudFillBrush != null)
                     {
-                        var geom = new SharpDX.Direct2D1.PathGeometry(rt.Factory);
-                        var sink = geom.Open();
-                        sink.BeginFigure(new SharpDX.Vector2(prevX50, prevYCloudU), SharpDX.Direct2D1.FigureBegin.Filled);
-                        sink.AddLine(new SharpDX.Vector2(x,       yClU));
-                        sink.AddLine(new SharpDX.Vector2(x,       yClL));
-                        sink.AddLine(new SharpDX.Vector2(prevX50, prevYCloudL));
-                        sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
-                        sink.Close();
-                        rt.FillGeometry(geom, dxCloudFillBrush);
-                        sink.Dispose();
-                        geom.Dispose();
+                        SharpDX.Direct2D1.PathGeometry geom = null;
+                        SharpDX.Direct2D1.GeometrySink sink = null;
+                        try
+                        {
+                            geom = new SharpDX.Direct2D1.PathGeometry(rt.Factory);
+                            sink = geom.Open();
+                            sink.BeginFigure(new SharpDX.Vector2(prevX50, prevYCloudU), SharpDX.Direct2D1.FigureBegin.Filled);
+                            sink.AddLine(new SharpDX.Vector2(x,       yClU));
+                            sink.AddLine(new SharpDX.Vector2(x,       yClL));
+                            sink.AddLine(new SharpDX.Vector2(prevX50, prevYCloudL));
+                            sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
+                            sink.Close();
+                            rt.FillGeometry(geom, dxCloudFillBrush);
+                        }
+                        catch { }
+                        finally
+                        {
+                            if (sink != null) { sink.Dispose(); sink = null; }
+                            if (geom != null) { geom.Dispose(); geom = null; }
+                        }
                     }
 
-                    if (ShowEma5   && dxEma5Brush   != null) rt.DrawLine(new SharpDX.Vector2(prevX5,   prevY5),   new SharpDX.Vector2(x, y5),   dxEma5Brush,   Ema5Thickness);
-                    if (ShowEma13  && dxEma13Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX13,  prevY13),  new SharpDX.Vector2(x, y13),  dxEma13Brush,  Ema13Thickness);
-                    if (ShowEma50  && dxEma50Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX50,  prevY50),  new SharpDX.Vector2(x, y50),  dxEma50Brush,  Ema50Thickness);
-                    if (ShowEma200 && dxEma200Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX200, prevY200), new SharpDX.Vector2(x, y200), dxEma200Brush, Ema200Thickness);
-                    if (ShowEma800 && dxEma800Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX800, prevY800), new SharpDX.Vector2(x, y800), dxEma800Brush, Ema800Thickness);
+                    if (ShowEma5   && has5   && !first5   && dxEma5Brush   != null) rt.DrawLine(new SharpDX.Vector2(prevX5,   prevY5),   new SharpDX.Vector2(x, y5),   dxEma5Brush,   Ema5Thickness);
+                    if (ShowEma13  && has13  && !first13  && dxEma13Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX13,  prevY13),  new SharpDX.Vector2(x, y13),  dxEma13Brush,  Ema13Thickness);
+                    if (ShowEma50  && has50  && !first50  && dxEma50Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX50,  prevY50),  new SharpDX.Vector2(x, y50),  dxEma50Brush,  Ema50Thickness);
+                    if (ShowEma200 && has200 && !first200 && dxEma200Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX200, prevY200), new SharpDX.Vector2(x, y200), dxEma200Brush, Ema200Thickness);
+                    if (ShowEma800 && has800 && !first800 && dxEma800Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX800, prevY800), new SharpDX.Vector2(x, y800), dxEma800Brush, Ema800Thickness);
                 }
 
-                prevX5 = prevX13 = prevX50 = prevX200 = prevX800 = x;
-                prevY5   = y5;   prevY13  = y13;  prevY50 = y50;
-                prevY200 = y200; prevY800 = y800;
-                prevYCloudU = yClU; prevYCloudL = yClL;
+                if (has5)   { prevX5   = x; prevY5   = y5;   first5   = false; }
+                if (has13)  { prevX13  = x; prevY13  = y13;  first13  = false; }
+                if (has50)  { prevX50  = x; prevY50  = y50;  prevYCloudU = yClU; prevYCloudL = yClL; first50 = false; }
+                if (has200) { prevX200 = x; prevY200 = y200; first200 = false; }
+                if (has800) { prevX800 = x; prevY800 = y800; first800 = false; }
                 firstBar = false;
             }
 
@@ -2232,7 +2269,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void CreateDXResources()
         {
             var rt = RenderTarget;
-            if (rt == null) return;
+            if (rt == null)
+            {
+                dxReady = false;
+                return;
+            }
+
+            // Dispose any previously-created resources before recreating them
+            // to avoid leaking GPU objects when the render target changes.
+            DisposeDXResources();
 
             try
             {
@@ -2304,6 +2349,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch
             {
                 dxReady = false;
+                DisposeDXResources();
             }
         }
 
