@@ -126,6 +126,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool alertAwrHighFired, alertAwrLowFired;
         private bool alertAmrHighFired, alertAmrLowFired;
 
+        // ── Constants ─────────────────────────────────────────────────────────
+        // Minimum bars required before computing any indicator values;
+        // must be >= the largest EMA period (800).
+        private const int MIN_BARS_REQUIRED = 800;
+
         // ── SharpDX GPU resources ─────────────────────────────────────────────
         private bool dxReady;
         private SharpDX.DirectWrite.Factory        dxWriteFactory;
@@ -1191,7 +1196,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < 800)
+            if (CurrentBar < MIN_BARS_REQUIRED)
                 return;
 
             // ── 1. EMAs ───────────────────────────────────────────────────────
@@ -1215,7 +1220,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DateTime barTime = Time[0];
 
                 // Detect new trading day
-                bool newDay = barTime.Date != (CurrentBar > 0 ? Time[1].Date : barTime.Date);
+                DateTime prevDate = CurrentBar > 0 ? Time[1].Date : barTime.Date;
+                bool newDay = barTime.Date != prevDate;
                 if (newDay || CurrentBar == 0)
                 {
                     // Archive yesterday's data
@@ -1570,13 +1576,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     int offset = IsUkDst(day) ? -1 : 0;
                     start = day.AddHours(8 + offset);
-                    end   = day.AddHours(16).AddMinutes(30 + offset * 60);
+                    end   = day.AddHours(16 + offset).AddMinutes(30);
                     break;
                 }
                 case 1: // New York
                 {
                     int offset = IsUsDst(day) ? -1 : 0;
-                    start = day.AddHours(14).AddMinutes(30 + offset * 60);
+                    start = day.AddHours(14 + offset).AddMinutes(30);
                     end   = day.AddHours(21 + offset);
                     break;
                 }
@@ -1614,7 +1620,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     int offset = IsUkDst(day) ? -1 : 0;
                     start = day.AddHours(7 + offset);
-                    end   = day.AddHours(16).AddMinutes(30 + offset * 60);
+                    end   = day.AddHours(16 + offset).AddMinutes(30);
                     break;
                 }
             }
@@ -1896,7 +1902,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
             {
-                if (barIdx < 800)
+                if (barIdx < MIN_BARS_REQUIRED)
                     continue;
 
                 float x = cc.GetXByBarIndex(ChartBars, barIdx);
@@ -1919,7 +1925,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 double sdOff = 0;
                 float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && off < (CurrentBar - 100))
+                if (ShowEma50Cloud && barIdx >= 100)
                 {
                     sdOff = StdDev(Close, 100)[off] / 4.0;
                     yClU  = cs.GetYByValue(e50 + sdOff);
