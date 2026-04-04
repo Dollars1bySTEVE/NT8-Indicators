@@ -1474,9 +1474,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            // Only force a repaint at bar close or on first tick — not every tick.
-            if (Calculate == Calculate.OnBarClose || IsFirstTickOfBar)
-                ForceRefresh();
         }
 
         #endregion
