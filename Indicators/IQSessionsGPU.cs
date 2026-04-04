@@ -1264,7 +1264,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 else
                 {
-                    if (!dailyOpenSet) { dailyOpen = Open[0]; dailyOpenSet = true; }  // init mid-day on startup
+                    if (!dailyOpenSet)       // init mid-day on startup if the new-day branch was missed
+                    {
+                        dailyOpen    = Open[0];
+                        dailyOpenSet = true;
+                    }
                     if (High[0] > dayHigh) dayHigh = High[0];
                     if (Low[0]  < dayLow)  dayLow  = Low[0];
                     dayClose = Close[0];
@@ -1861,7 +1865,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Take a locked snapshot — prevents races when OnBarUpdate modifies the list.
             List<SessionBox> snapshot;
-            lock (_sessionLock) { snapshot = sessionBoxes.ToList(); }
+            lock (_sessionLock)
+            {
+                snapshot = sessionBoxes.ToList();
+            }
             foreach (var box in snapshot)
             {
                 if (!SessionShowOpeningRange(box.SessionId))
@@ -2369,7 +2376,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 System.Windows.Media.Color c;
                 try   { c = scb.Color; }
-                catch { c = System.Windows.Media.Colors.White; }  // non-frozen brush: safe fallback, original color lost
+                catch (InvalidOperationException) { c = System.Windows.Media.Colors.White; }  // non-frozen brush: safe fallback, original color lost
                 return new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, opacity));
             }
