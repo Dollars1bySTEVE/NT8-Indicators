@@ -974,7 +974,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
                 IsSuspendedWhileInactive = false;
-                MaximumBarsLookBack      = MaximumBarsLookBack.Infinite;
+                MaximumBarsLookBack      = MaximumBarsLookBack.TwoHundredFiftySix;
 
                 // 1. Label Offsets
                 LabelOffsetBars  = 2;
@@ -1982,32 +1982,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (off < 0) continue;
 
                 // Per-indicator availability guards.
-                // barIdx >= period: enough bars for the EMA to have a valid value (0-indexed, EMA(5) needs 5 bars).
-                // off < Count: the series buffer covers this bar offset (guards against transiently short buffers).
-                bool has5   = barIdx >= 5   && off < ema5Ind.Count;
-                bool has13  = barIdx >= 13  && off < ema13Ind.Count;
-                bool has50  = barIdx >= 50  && off < ema50Ind.Count;
-                bool has200 = barIdx >= 200 && off < ema200Ind.Count;
-                bool has800 = barIdx >= 800 && off < ema800Ind.Count;
+                // barIdx >= period: enough bars for the EMA to have a valid value.
+                bool has5   = barIdx >= 5;
+                bool has13  = barIdx >= 13;
+                bool has50  = barIdx >= 50;
+                bool has200 = barIdx >= 200;
+                bool has800 = barIdx >= 800;
 
-                // Access EMA series values with explicit guards to handle any transient
-                // ArgumentOutOfRangeException that can occur when the render thread reads
-                // a series whose internal buffer is concurrently being updated.
                 double e5 = 0, e13 = 0, e50 = 0, e200 = 0, e800 = 0;
-                try
-                {
-                    if (has5)   e5   = ema5Ind[off];
-                    if (has13)  e13  = ema13Ind[off];
-                    if (has50)  e50  = ema50Ind[off];
-                    if (has200) e200 = ema200Ind[off];
-                    if (has800) e800 = ema800Ind[off];
-                }
-                catch (ArgumentOutOfRangeException)
-                {
-                    // EMA series not yet populated for this bar offset — skip this bar.
-                    firstBar = false;
-                    continue;
-                }
+                if (has5)   e5   = ema5Ind[off];
+                if (has13)  e13  = ema13Ind[off];
+                if (has50)  e50  = ema50Ind[off];
+                if (has200) e200 = ema200Ind[off];
+                if (has800) e800 = ema800Ind[off];
 
                 float y5   = has5   ? cs.GetYByValue(e5)   : 0;
                 float y13  = has13  ? cs.GetYByValue(e13)  : 0;
@@ -2017,7 +2004,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 double sdOff = 0;
                 float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && has50 && barIdx >= 100 && off < stdDev100Ind.Count)
+                if (ShowEma50Cloud && has50 && barIdx >= 100)
                 {
                     sdOff = stdDev100Ind[off] / 4.0;
                     yClU  = cs.GetYByValue(e50 + sdOff);
@@ -2115,8 +2102,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawStyledLine(0f, y, rtW, y, brush, 1f, style);
             if (showLabel && label.Length > 0 && dxLabelFormat != null)
             {
-                string txt  = label + " " + price.ToString("F5");
-                var    rect = new SharpDX.RectangleF(rtW - 80f, y - 8f, 78f, 16f);
+                string txt    = label + " " + price.ToString("F5");
+                int    lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
+                float  labelX = ChartControl.GetXByBarIndex(ChartBars, lblBar) + 6f;
+                var    rect   = new SharpDX.RectangleF(labelX, y - 8f, 120f, 16f);
                 RenderTarget.DrawText(txt, dxLabelFormat, rect, brush);
             }
         }
@@ -2143,8 +2132,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawStyledLine(0f, y, rtW, y, brush, 1.5f, IQSLineStyle.Solid);
             if (showLabel && label.Length > 0 && dxLabelFormat != null)
             {
-                string txt  = label + " " + price.ToString("F5");
-                var    rect = new SharpDX.RectangleF(rtW - 90f, y - 8f, 88f, 16f);
+                string txt    = label + " " + price.ToString("F5");
+                int    lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
+                float  labelX = cc.GetXByBarIndex(ChartBars, lblBar) + 6f;
+                var    rect   = new SharpDX.RectangleF(labelX, y - 8f, 120f, 16f);
                 RenderTarget.DrawText(txt, dxLabelFormat, rect, brush);
             }
         }
@@ -2162,10 +2153,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawStyledLine(0f, yL, rtW, yL, brush, 1.5f, lineStyle);
             if (showLabels && dxLabelFormat != null)
             {
+                int   lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
+                float labelX = cc.GetXByBarIndex(ChartBars, lblBar) + 6f;
                 RenderTarget.DrawText(highLabel + " " + high.ToString("F5"), dxLabelFormat,
-                    new SharpDX.RectangleF(rtW - 100f, yH - 8f, 98f, 16f), brush);
+                    new SharpDX.RectangleF(labelX, yH - 8f, 140f, 16f), brush);
                 RenderTarget.DrawText(lowLabel  + " " + low.ToString("F5"),  dxLabelFormat,
-                    new SharpDX.RectangleF(rtW - 100f, yL - 8f, 98f, 16f), brush);
+                    new SharpDX.RectangleF(labelX, yL - 8f, 140f, 16f), brush);
             }
             if (show50)
             {
@@ -2332,7 +2325,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             try
             {
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
-                dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 10f);
+                dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
                 dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas",  9f);
                 dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 11f);
 
