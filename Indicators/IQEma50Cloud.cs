@@ -233,18 +233,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool  first50   = true;
             bool  firstBar  = true;
 
-            // With MaximumBarsLookBack.TwoHundredFiftySix the series buffer holds max 256
-            // values (indices 0-255). The .Count property is unreliable for this check,
-            // so a hard limit is used.
-            const int maxLookback = 255;
-
             for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
             {
                 float x   = cc.GetXByBarIndex(ChartBars, barIdx);
                 int   off = CurrentBar - barIdx;
 
-                bool has50     = barIdx >= 50  && off >= 0 && off <= maxLookback;
-                bool hasStdDev = barIdx >= 100 && off >= 0 && off <= maxLookback;
+                // Skip if offset is negative or beyond the 256-bar lookback window
+                if (off < 0 || off > 255)
+                {
+                    firstBar = true;  // Reset continuity
+                    continue;
+                }
+
+                // Use IsValidDataPointAt for proper series bounds checking
+                bool has50     = barIdx >= 50  && ema50Ind.IsValidDataPointAt(off);
+                bool hasStdDev = barIdx >= 100 && stdDev100Ind.IsValidDataPointAt(off);
 
                 if (!has50)
                 {
