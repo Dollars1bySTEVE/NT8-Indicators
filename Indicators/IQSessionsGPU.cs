@@ -974,7 +974,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
                 IsSuspendedWhileInactive = false;
-                MaxBarsLookBack          = MaxBarsLookBackInfinite;
+                MaximumBarsLookBack      = MaximumBarsLookBack.Infinite;
 
                 // 1. Label Offsets
                 LabelOffsetBars  = 2;
