@@ -2005,7 +2005,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 catch (ArgumentOutOfRangeException)
                 {
                     // EMA series not yet populated for this bar offset — skip this bar.
-                    has5 = has13 = has50 = has200 = has800 = false;
                     firstBar = false;
                     continue;
                 }
