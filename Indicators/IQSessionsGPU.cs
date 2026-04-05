@@ -1965,6 +1965,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ema200Ind == null || ema800Ind == null || stdDev100Ind == null)
                 return;
 
+            // With MaximumBarsLookBack.TwoHundredFiftySix, series buffers hold max 256 values (indices 0-255)
+            const int maxLookback = 255;
+
             // Pre-gather previous bar X for continuity
             float prevX5 = 0, prevX13 = 0, prevX50 = 0, prevX200 = 0, prevX800 = 0;
             float prevY5 = 0, prevY13 = 0, prevY50 = 0, prevY200 = 0, prevY800 = 0;
@@ -1983,11 +1986,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Per-indicator availability guards.
                 // barIdx >= period: enough bars for the EMA to have a valid value.
-                bool has5   = barIdx >= 5;
-                bool has13  = barIdx >= 13;
-                bool has50  = barIdx >= 50;
-                bool has200 = barIdx >= 200;
-                bool has800 = barIdx >= 800;
+                bool has5   = barIdx >= 5   && off <= maxLookback;
+                bool has13  = barIdx >= 13  && off <= maxLookback;
+                bool has50  = barIdx >= 50  && off <= maxLookback;
+                bool has200 = barIdx >= 200 && off <= maxLookback;
+                bool has800 = barIdx >= 800 && off <= maxLookback;
 
                 double e5 = 0, e13 = 0, e50 = 0, e200 = 0, e800 = 0;
                 if (has5)   e5   = ema5Ind[off];
@@ -2004,7 +2007,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 double sdOff = 0;
                 float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && has50 && barIdx >= 100)
+                if (ShowEma50Cloud && has50 && barIdx >= 100 && off <= maxLookback)
                 {
                     sdOff = stdDev100Ind[off] / 4.0;
                     yClU  = cs.GetYByValue(e50 + sdOff);
