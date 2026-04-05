@@ -1,6 +1,6 @@
-// IQ EMA 50 Cloud — Standalone GPU-accelerated EMA 50 line with StdDev cloud for NinjaTrader 8
-// Renders the EMA(50) line and a cloud fill (EMA50 ± StdDev(Close,100)/4) using SharpDX.
-// Pattern follows IQCandlesGPU.cs and IQSessionsGPU.cs.
+// IQ EMA 50 Cloud — NinjaTrader 8 built-in plot/region rendering
+// Renders EMA(50) line and cloud fill between EMA50 ± StdDev(Close,100)/4 bands.
+// Uses AddPlot() and Draw.Region() — no SharpDX GPU code, no ArgumentOutOfRangeException.
 
 #region Using declarations
 using System;
@@ -13,39 +13,24 @@ using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 #endregion
 
-// NinjaTrader 8 requires custom enums declared OUTSIDE all namespaces
-// so the auto-generated partial class code can resolve them without ambiguity.
-// Reference: forum.ninjatrader.com threads #1182932, #95909, #1046853
-
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
-    /// IQ EMA 50 Cloud — Standalone GPU-accelerated indicator that renders:
+    /// IQ EMA 50 Cloud — Standalone indicator that renders:
     ///  • EMA(50) line with configurable color and thickness
     ///  • Cloud fill between EMA50 ± StdDev(Close,100)/4 bands with configurable opacity
     ///  • Optional cloud border lines (upper and lower band edges)
     ///  • Optional label "50" at the right edge of the EMA line
     ///
-    /// Uses SharpDX DirectX GPU rendering for high-performance chart drawing.
-    /// All SharpDX types fully qualified — no namespace conflicts.
+    /// Uses NinjaTrader built-in Plot and Draw.Region for reliable, crash-free rendering.
+    /// Same approach as PropTraderz MTFCloudsV1 — works perfectly with 256 bar lookback.
     /// </summary>
     public class IQEma50Cloud : Indicator
     {
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields
 
-        // ── Cached indicator references (set in State.DataLoaded) ─────────────
-        private NinjaTrader.NinjaScript.Indicators.EMA    ema50Ind;
-        private NinjaTrader.NinjaScript.Indicators.StdDev stdDev100Ind;
-
-        // ── SharpDX GPU resources ─────────────────────────────────────────────
-        private bool dxReady;
-        private SharpDX.DirectWrite.Factory        dxWriteFactory;
-        private SharpDX.DirectWrite.TextFormat     dxLabelFormat;
-
-        private SharpDX.Direct2D1.SolidColorBrush  dxEma50Brush;
-        private SharpDX.Direct2D1.SolidColorBrush  dxCloudFillBrush;
-        private SharpDX.Direct2D1.SolidColorBrush  dxCloudBorderBrush;
+        private NinjaTrader.Gui.Tools.SimpleFont labelFont;
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -111,7 +96,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description              = "IQ EMA 50 Cloud — Standalone GPU-rendered EMA(50) line with StdDev(100)/4 cloud bands.";
+                Description              = "IQ EMA 50 Cloud — EMA(50) line with StdDev(100)/4 cloud bands.";
                 Name                     = "IQEma50Cloud";
                 Calculate                = Calculate.OnBarClose;
                 IsOverlay                = true;
@@ -122,37 +107,39 @@ namespace NinjaTrader.NinjaScript.Indicators
                 IsSuspendedWhileInactive = false;
                 MaximumBarsLookBack      = MaximumBarsLookBack.TwoHundredFiftySix;
 
-                // EMA 50
-                ShowEma50       = true;
-                var ema50Brush  = new System.Windows.Media.SolidColorBrush(
+                // EMA 50 defaults
+                ShowEma50      = true;
+                var ema50Brush = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(31, 188, 211));
                 ema50Brush.Freeze();
-                Ema50Color      = ema50Brush;
-                Ema50Thickness  = 2;
+                Ema50Color     = ema50Brush;
+                Ema50Thickness = 2;
 
-                // Cloud
-                ShowCloud       = true;
-                var cloudBrush  = new System.Windows.Media.SolidColorBrush(
+                // Cloud defaults
+                ShowCloud        = true;
+                var cloudBrush   = new System.Windows.Media.SolidColorBrush(
                     System.Windows.Media.Color.FromRgb(155, 47, 174));
                 cloudBrush.Freeze();
-                CloudFillColor  = cloudBrush;
+                CloudFillColor   = cloudBrush;
                 CloudFillOpacity = 24;
-                ShowCloudBorder = false;
+                ShowCloudBorder  = false;
 
-                // Label
-                ShowLabel       = true;
+                // Label defaults
+                ShowLabel = true;
+
+                // Plots: EMA50 line, CloudUpper (transparent), CloudLower (transparent)
+                AddPlot(new Stroke(Ema50Color, Ema50Thickness), PlotStyle.Line, "EMA50");
+                AddPlot(new Stroke(Brushes.Transparent, 1),     PlotStyle.Line, "CloudUpper");
+                AddPlot(new Stroke(Brushes.Transparent, 1),     PlotStyle.Line, "CloudLower");
             }
             else if (State == State.DataLoaded)
             {
-                // Cache EMA/StdDev indicators so the render thread can access them
-                // safely without calling the EMA()/StdDev() helpers on the render thread.
-                // With TwoHundredFiftySix lookback the buffer holds max 256 values (0-255).
-                ema50Ind     = EMA(50);
-                stdDev100Ind = StdDev(Close, 100);
-            }
-            else if (State == State.Terminated)
-            {
-                DisposeDXResources();
+                // Sync EMA50 plot stroke to user-configured color and thickness
+                Plots[0].Brush = Ema50Color;
+                Plots[0].Width = Ema50Thickness;
+
+                // Create label font once to avoid per-bar allocation
+                labelFont = new NinjaTrader.Gui.Tools.SimpleFont("Consolas", 12);
             }
         }
 
@@ -162,233 +149,44 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            // No manual calculation needed — EMA and StdDev are managed by
-            // the cached indicator references; rendering is handled in OnRender.
-        }
+            if (CurrentBar < 100) return;
 
-        #endregion
-        // ════════════════════════════════════════════════════════════════════════
-        #region GPU Rendering — OnRender / OnRenderTargetChanged
+            double ema    = EMA(50)[0];
+            double stdDev = StdDev(Close, 100)[0] / 4.0;
 
-        public override void OnRenderTargetChanged()
-        {
-            DisposeDXResources();
-            dxReady = false;
-        }
+            // EMA50 plot — assign NaN to hide when ShowEma50 is off
+            Values[0][0] = ShowEma50 ? ema : double.NaN;
 
-        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
-        {
-            base.OnRender(chartControl, chartScale);
+            // Cloud band plots (used as data sources for Draw.Region)
+            Values[1][0] = ema + stdDev;
+            Values[2][0] = ema - stdDev;
 
-            if (Bars == null || ChartBars == null || RenderTarget == null)
-                return;
-
-            if (!dxReady)
+            // Cloud fill between upper and lower band plots
+            if (ShowCloud)
             {
-                try { CreateDXResources(); }
-                catch (Exception ex)
-                {
-                    Print("IQEma50Cloud: Unexpected exception from CreateDXResources: " + ex.Message);
-                    return;
-                }
+                // Draw region from current bar back through all bars with valid data.
+                // Cap at 254 to stay within the TwoHundredFiftySix (0-255 offset) window.
+                int barsBack       = Math.Max(0, Math.Min(CurrentBar - 100, 254));
+                Brush outlineBrush = ShowCloudBorder ? Ema50Color : Brushes.Transparent;
+                Draw.Region(this, "EmaCloud", 0, barsBack,
+                    Values[1], Values[2],
+                    outlineBrush, CloudFillColor, CloudFillOpacity);
+            }
+            else
+            {
+                RemoveDrawObject("EmaCloud");
             }
 
-            if (!dxReady)
-                return;
-
-            // Guard: indicator references set in State.DataLoaded; skip if not ready.
-            if (ema50Ind == null || stdDev100Ind == null)
-                return;
-
-            int fromBar = ChartBars.FromIndex;
-            int toBar   = ChartBars.ToIndex;
-
-            if (fromBar > toBar)
-                return;
-
-            try
+            // Label at the rightmost bar
+            if (IsLastBarOnChart)
             {
-                RenderEma50Cloud(chartControl, chartScale, fromBar, toBar);
-            }
-            catch (SharpDX.SharpDXException sdxEx)
-            {
-                Print("IQEma50Cloud: SharpDX error in OnRender, recreating resources: " + sdxEx.Message);
-                dxReady = false;
-                DisposeDXResources();
-            }
-            catch (Exception ex)
-            {
-                Print("IQEma50Cloud: RenderEma50Cloud [" + ex.GetType().Name + "]: " + ex.Message);
-            }
-        }
-
-        // ── EMA 50 + cloud rendering ──────────────────────────────────────────
-        private void RenderEma50Cloud(ChartControl cc, ChartScale cs, int fromBar, int toBar)
-        {
-            var rt = RenderTarget;
-            if (rt == null) return;
-
-            // Clamp fromBar to the 256-bar lookback window.
-            // With TwoHundredFiftySix, only bars within CurrentBar-255 to CurrentBar are accessible.
-            // Iterating outside this range would cause ArgumentOutOfRangeException even with
-            // the per-bar off > 255 guard, because IsValidDataPointAt can still return true
-            // for indices that throw on actual series access.
-            int minAllowedBar = Math.Max(0, CurrentBar - 255);
-            fromBar = Math.Max(fromBar, minAllowedBar);
-
-            if (fromBar > toBar)
-                return;
-
-            float prevX50 = 0, prevY50 = 0;
-            float prevYCloudU = 0, prevYCloudL = 0;
-            bool  first50   = true;
-            bool  firstBar  = true;
-
-            for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
-            {
-                float x   = cc.GetXByBarIndex(ChartBars, barIdx);
-                int   off = CurrentBar - barIdx;
-
-                // Skip if offset is negative or beyond the 256-bar lookback window
-                if (off < 0 || off > 255)
-                {
-                    firstBar = true;  // Reset continuity
-                    continue;
-                }
-
-                // Use IsValidDataPointAt for proper series bounds checking
-                bool has50     = barIdx >= 50  && ema50Ind.IsValidDataPointAt(off);
-                bool hasStdDev = barIdx >= 100 && stdDev100Ind.IsValidDataPointAt(off);
-
-                if (!has50)
-                {
-                    firstBar = true; // reset continuity when EMA is unavailable
-                    continue;
-                }
-
-                double e50  = ema50Ind[off];
-                float  y50  = cs.GetYByValue(e50);
-
-                double sdOff  = 0;
-                float  yClU   = y50;
-                float  yClL   = y50;
-
-                if (ShowCloud && hasStdDev)
-                {
-                    sdOff = stdDev100Ind[off] / 4.0;
-                    yClU  = cs.GetYByValue(e50 + sdOff);
-                    yClL  = cs.GetYByValue(e50 - sdOff);
-                }
-
-                if (!firstBar)
-                {
-                    // Cloud fill — bounding-rect fill per bar segment (avoids PathGeometry churn).
-                    if (ShowCloud && hasStdDev && dxCloudFillBrush != null)
-                    {
-                        float cloudTop    = Math.Min(Math.Min(prevYCloudU, prevYCloudL), Math.Min(yClU, yClL));
-                        float cloudBottom = Math.Max(Math.Max(prevYCloudU, prevYCloudL), Math.Max(yClU, yClL));
-                        var   segRect     = new SharpDX.RectangleF(prevX50, cloudTop, x - prevX50, cloudBottom - cloudTop);
-                        rt.FillRectangle(segRect, dxCloudFillBrush);
-                    }
-
-                    // Cloud border lines
-                    if (ShowCloud && ShowCloudBorder && hasStdDev && dxCloudBorderBrush != null)
-                    {
-                        rt.DrawLine(new SharpDX.Vector2(prevX50, prevYCloudU), new SharpDX.Vector2(x, yClU), dxCloudBorderBrush, 1f);
-                        rt.DrawLine(new SharpDX.Vector2(prevX50, prevYCloudL), new SharpDX.Vector2(x, yClL), dxCloudBorderBrush, 1f);
-                    }
-
-                    // EMA 50 line
-                    if (ShowEma50 && !first50 && dxEma50Brush != null)
-                        rt.DrawLine(new SharpDX.Vector2(prevX50, prevY50), new SharpDX.Vector2(x, y50), dxEma50Brush, Ema50Thickness);
-                }
-
-                prevX50     = x;
-                prevY50     = y50;
-                prevYCloudU = yClU;
-                prevYCloudL = yClL;
-                first50     = false;
-                firstBar    = false;
-            }
-
-            // Label at the rightmost visible bar
-            if (ShowLabel && ShowEma50 && !first50 && dxLabelFormat != null && dxEma50Brush != null)
-            {
-                float labelX = prevX50 + 6f;
-                var   lr     = new SharpDX.RectangleF(labelX, prevY50 - 8f, 32f, 16f);
-                rt.DrawText("50", dxLabelFormat, lr, dxEma50Brush);
-            }
-        }
-
-        #endregion
-        // ════════════════════════════════════════════════════════════════════════
-        #region SharpDX resource management
-
-        private void CreateDXResources()
-        {
-            var rt = RenderTarget;
-            if (rt == null)
-            {
-                dxReady = false;
-                return;
-            }
-
-            // Dispose any previously-created resources before recreating them
-            // to avoid leaking GPU objects when the render target changes.
-            DisposeDXResources();
-
-            try
-            {
-                dxWriteFactory = new SharpDX.DirectWrite.Factory();
-                dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
-
-                dxEma50Brush      = MakeBrush(rt, Ema50Color,      1f);
-                dxCloudFillBrush  = MakeBrush(rt, CloudFillColor,  CloudFillOpacity / 100f);
-                dxCloudBorderBrush= MakeBrush(rt, Ema50Color,      0.35f);
-
-                dxReady = true;
-            }
-            catch (Exception ex)
-            {
-                Print("IQEma50Cloud: CreateDXResources failed [" + ex.GetType().Name + "]: " + ex.Message);
-                dxReady = false;
-                DisposeDXResources();
-            }
-        }
-
-        private static SharpDX.Direct2D1.SolidColorBrush MakeBrush(
-            SharpDX.Direct2D1.RenderTarget rt,
-            System.Windows.Media.Brush wpfBrush,
-            float opacity)
-        {
-            var scb = wpfBrush as System.Windows.Media.SolidColorBrush;
-            if (scb != null)
-            {
-                System.Windows.Media.Color c;
-                try   { c = scb.Color; }
-                catch (InvalidOperationException) { c = System.Windows.Media.Colors.White; }
-                return new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, opacity));
-            }
-            return new SharpDX.Direct2D1.SolidColorBrush(rt,
-                new SharpDX.Color4(1f, 1f, 1f, opacity));
-        }
-
-        private void DisposeDXResources()
-        {
-            DisposeRef(ref dxWriteFactory);
-            DisposeRef(ref dxLabelFormat);
-            DisposeRef(ref dxEma50Brush);
-            DisposeRef(ref dxCloudFillBrush);
-            DisposeRef(ref dxCloudBorderBrush);
-        }
-
-        private static void DisposeRef<T>(ref T resource) where T : class, IDisposable
-        {
-            if (resource != null)
-            {
-                resource.Dispose();
-                resource = null;
+                if (ShowLabel && ShowEma50)
+                    Draw.Text(this, "Ema50Label", false, "50", 0, ema, 0,
+                        Ema50Color, labelFont,
+                        System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("Ema50Label");
             }
         }
 
