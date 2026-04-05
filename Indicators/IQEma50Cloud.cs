@@ -170,7 +170,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Label at the rightmost bar
-            if (CurrentBar >= Count - 2)
+            if (CurrentBar == Count - 1)
             {
                 if (ShowLabel && ShowEma50)
                     Draw.Text(this, "Ema50Label", "50", 0, ema + (stdDev * 0.5), Ema50Color);
