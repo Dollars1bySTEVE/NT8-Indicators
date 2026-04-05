@@ -77,6 +77,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int    StartBarIndex;
         }
 
+        /// <summary>Tracks the open price and bar range for a single trading day.</summary>
+        private class DailyOpenEntry
+        {
+            public double OpenPrice;
+            public int    StartBarIndex;
+            public int    EndBarIndex;
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields
@@ -114,6 +122,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double rdHigh, rdLow, rwHigh, rwLow;
         private double dailyOpen;
         private bool   dailyOpenSet;
+
+        // ── Daily open per-session tracking ──────────────────────────────────
+        private List<DailyOpenEntry> dailyOpenEntries;
+        private DailyOpenEntry       currentDailyOpenEntry;
 
         // ── Session tracking ─────────────────────────────────────────────────
         private List<SessionBox> sessionBoxes;  // capped at 200
@@ -1194,6 +1206,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 alertAwrHighFired = alertAwrLowFired = false;
                 alertAmrHighFired = alertAmrLowFired = false;
 
+                dailyOpenEntries     = new List<DailyOpenEntry>(200);
+                currentDailyOpenEntry = null;
+
                 // Cache EMA/StdDev indicators so the render thread can access them
                 // safely without calling the EMA() helper (which is not render-thread-safe).
                 ema5Ind      = EMA(5);
@@ -1253,6 +1268,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         ComputePivots();
                     }
 
+                    // Close out the previous daily open entry
+                    if (currentDailyOpenEntry != null)
+                        currentDailyOpenEntry.EndBarIndex = CurrentBar - 1;
+
                     // Reset day tracking
                     dayHigh      = High[0];
                     dayLow       = Low[0];
@@ -1260,6 +1279,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                     dailyOpen    = Open[0];
                     dailyOpenSet = true;
                     prevDayLoaded = true;
+
+                    // Create new daily open entry
+                    currentDailyOpenEntry = new DailyOpenEntry
+                    {
+                        OpenPrice     = Open[0],
+                        StartBarIndex = CurrentBar,
+                        EndBarIndex   = CurrentBar
+                    };
+                    lock (_sessionLock)
+                    {
+                        if (dailyOpenEntries.Count >= 200) dailyOpenEntries.RemoveAt(0);
+                        dailyOpenEntries.Add(currentDailyOpenEntry);
+                    }
 
                     // Reset ADR alerts
                     alertAdrHighFired = alertAdrLowFired = false;
@@ -1270,11 +1302,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         dailyOpen    = Open[0];
                         dailyOpenSet = true;
+
+                        // Create daily open entry for mid-day startup
+                        currentDailyOpenEntry = new DailyOpenEntry
+                        {
+                            OpenPrice     = Open[0],
+                            StartBarIndex = CurrentBar,
+                            EndBarIndex   = CurrentBar
+                        };
+                        lock (_sessionLock)
+                        {
+                            if (dailyOpenEntries.Count >= 200) dailyOpenEntries.RemoveAt(0);
+                            dailyOpenEntries.Add(currentDailyOpenEntry);
+                        }
                     }
                     if (High[0] > dayHigh) dayHigh = High[0];
                     if (Low[0]  < dayLow)  dayLow  = Low[0];
                     dayClose = Close[0];
                 }
+
+                // Keep current daily open entry's end bar up to date
+                if (currentDailyOpenEntry != null)
+                    currentDailyOpenEntry.EndBarIndex = CurrentBar;
 
                 // Detect new week (Monday or day-of-week rolls over)
                 int dow = (int)barTime.DayOfWeek;
@@ -1858,8 +1907,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderBands [" + ex.GetType().Name + "]: " + ex.Message); }
 
-            // ── 6. Daily open ─────────────────────────────────────────────────
-            try { if (ShowDailyOpen && dailyOpen > 0) RenderSingleLine(chartControl, chartScale, rtW, dailyOpen, dxDailyOpenBrush, "DO", ShowDailyOpen); }
+            // ── 6. Daily open (per-session) ───────────────────────────────────
+            try { if (ShowDailyOpen) RenderDailyOpenLines(chartControl, chartScale); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderDailyOpen [" + ex.GetType().Name + "]: " + ex.Message); }
 
@@ -2070,6 +2119,48 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (brush == null || dxLabelFormat == null) return;
             var lr = new SharpDX.RectangleF(x, y - 8f, 40f, 16f);
             RenderTarget.DrawText(text, dxLabelFormat, lr, brush);
+        }
+
+        // ── Daily open per-session rendering ─────────────────────────────────
+        private void RenderDailyOpenLines(ChartControl cc, ChartScale cs)
+        {
+            if (dxDailyOpenBrush == null || dailyOpenEntries == null) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            List<DailyOpenEntry> snapshot;
+            lock (_sessionLock)
+            {
+                snapshot = dailyOpenEntries.ToList();
+            }
+
+            // If not showing historical opens, only render the most recent (current) entry
+            if (!ShowHistoricalDailyOpens && snapshot.Count > 0)
+                snapshot = new List<DailyOpenEntry> { snapshot[snapshot.Count - 1] };
+
+            float barHalfWidth = cc.GetBarPaintWidth(ChartBars) / 2f;
+
+            foreach (var entry in snapshot)
+            {
+                if (entry.OpenPrice == 0) continue;
+
+                int startIdx = Math.Max(ChartBars.FromIndex, entry.StartBarIndex);
+                int endIdx   = Math.Min(ChartBars.ToIndex,   entry.EndBarIndex);
+                if (startIdx > endIdx) continue;
+
+                float xLeft  = cc.GetXByBarIndex(ChartBars, startIdx) - barHalfWidth;
+                float xRight = cc.GetXByBarIndex(ChartBars, endIdx)   + barHalfWidth;
+                float y      = cs.GetYByValue(entry.OpenPrice);
+
+                DrawStyledLine(xLeft, y, xRight, y, dxDailyOpenBrush, 1.5f, DailyOpenLineStyle);
+
+                if (dxLabelFormat != null)
+                {
+                    string txt  = "DO " + Instrument.MasterInstrument.FormatPrice(entry.OpenPrice);
+                    var    rect = new SharpDX.RectangleF(xRight + 4f, y + 4f, 120f, 16f);
+                    rt.DrawText(txt, dxLabelFormat, rect, dxDailyOpenBrush);
+                }
+            }
         }
 
         // ── Pivot rendering ───────────────────────────────────────────────────
