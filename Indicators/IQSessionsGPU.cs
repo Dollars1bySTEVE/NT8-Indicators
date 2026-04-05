@@ -1801,7 +1801,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!dxReady)
             {
                 try { CreateDXResources(); }
-                catch { return; }
+                catch (Exception ex)
+                {
+                    Print("IQSessionsGPU: Unexpected exception from CreateDXResources: " + ex.Message);
+                    return;
+                }
             }
 
             if (!dxReady)
@@ -1859,11 +1863,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowDstTable)
                     RenderDstTable(chartControl, chartScale, rtW, rtH);
             }
-            catch
+            catch (SharpDX.SharpDXException sdxEx)
             {
-                // A bad frame is silently skipped; rendering resumes on the next call.
-                // Reset dxReady so resources are recreated cleanly on the next frame.
+                // Device lost / render target invalidated — dispose and recreate DX resources on next frame.
+                Print("IQSessionsGPU: SharpDX device error in OnRender, recreating resources: " + sdxEx.Message);
                 dxReady = false;
+                DisposeDXResources();
+            }
+            catch (Exception ex)
+            {
+                // Drawing-logic error — log it but keep GPU resources alive.
+                // The bad frame is skipped; rendering continues on the next call.
+                Print("IQSessionsGPU: Drawing error in OnRender [" + ex.GetType().Name + "]: " + ex.Message);
             }
         }
 
@@ -1939,6 +1950,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void RenderEmas(ChartControl cc, ChartScale cs, int fromBar, int toBar)
         {
             var rt = RenderTarget;
+            if (rt == null) return;
+
+            // Guard: EMA indicator references are set in State.DataLoaded; skip if not ready.
+            if (ema5Ind == null || ema13Ind == null || ema50Ind == null ||
+                ema200Ind == null || ema800Ind == null || stdDev100Ind == null)
+                return;
 
             // Pre-gather previous bar X for continuity
             float prevX5 = 0, prevX13 = 0, prevX50 = 0, prevX200 = 0, prevX800 = 0;
@@ -2356,8 +2373,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 dxReady = true;
             }
-            catch
+            catch (Exception ex)
             {
+                Print("IQSessionsGPU: CreateDXResources failed [" + ex.GetType().Name + "]: " + ex.Message);
                 dxReady = false;
                 DisposeDXResources();
             }
