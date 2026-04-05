@@ -1973,12 +1973,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 int off = CurrentBar - barIdx;
                 if (off < 0) continue;
 
-                // Per-indicator guards: need enough bars calculated AND offset within valid range
-                bool has5   = CurrentBar >= 5   && barIdx >= 5   && off <= CurrentBar - 5;
-                bool has13  = CurrentBar >= 13  && barIdx >= 13  && off <= CurrentBar - 13;
-                bool has50  = CurrentBar >= 50  && barIdx >= 50  && off <= CurrentBar - 50;
-                bool has200 = CurrentBar >= 200 && barIdx >= 200 && off <= CurrentBar - 200;
-                bool has800 = CurrentBar >= 800 && barIdx >= 800 && off <= CurrentBar - 800;
+                // Per-indicator count guards: need enough bars calculated AND within buffered range.
+                // ema*Ind.Count reflects the actual capacity of each series buffer, protecting
+                // against ArgumentOutOfRangeException when the series hasn't grown to cover 'off'.
+                bool has5   = barIdx >= 5   && off < ema5Ind.Count;
+                bool has13  = barIdx >= 13  && off < ema13Ind.Count;
+                bool has50  = barIdx >= 50  && off < ema50Ind.Count;
+                bool has200 = barIdx >= 200 && off < ema200Ind.Count;
+                bool has800 = barIdx >= 800 && off < ema800Ind.Count;
 
                 double e5   = has5   ? ema5Ind[off]   : 0;
                 double e13  = has13  ? ema13Ind[off]   : 0;
@@ -1994,7 +1996,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 double sdOff = 0;
                 float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && has50 && barIdx >= 100 && CurrentBar >= 100 && off <= CurrentBar - 100)
+                if (ShowEma50Cloud && has50 && barIdx >= 100 && off < stdDev100Ind.Count)
                 {
                     sdOff = stdDev100Ind[off] / 4.0;
                     yClU  = cs.GetYByValue(e50 + sdOff);
