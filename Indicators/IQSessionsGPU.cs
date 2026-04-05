@@ -1821,61 +1821,69 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (fromBar > toBar)
                 return;
 
+            // Each render step is wrapped individually so that a failure in one step
+            // (e.g. EMA series access) does not silently suppress all subsequent features.
+            // SharpDX device-lost exceptions always cause an immediate DX reset and return;
+            // all other exceptions are logged and execution continues with the next step.
+
+            // ── 1. Session boxes ──────────────────────────────────────────────
+            try { RenderSessionBoxes(chartControl, chartScale, rtW, rtH); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderSessionBoxes [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 2. EMA lines + cloud ──────────────────────────────────────────
+            try { RenderEmas(chartControl, chartScale, fromBar, toBar); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderEmas [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 3. Pivot levels ───────────────────────────────────────────────
+            try { if (currentPivot != null) RenderPivots(chartControl, chartScale, rtW); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderPivots [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 4. Yesterday / last week Hi/Lo ────────────────────────────────
+            try { RenderYesterdayLevels(chartControl, chartScale, rtW); RenderLastWeekLevels(chartControl, chartScale, rtW); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderYesterday/LastWeek [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 5. ADR / AWR / AMR / RD / RW ─────────────────────────────────
             try
             {
-                // ── 1. Session boxes ──────────────────────────────────────────────
-                RenderSessionBoxes(chartControl, chartScale, rtW, rtH);
-
-                // ── 2. EMA lines + cloud ──────────────────────────────────────────
-                RenderEmas(chartControl, chartScale, fromBar, toBar);
-
-                // ── 3. Pivot levels ───────────────────────────────────────────────
-                if (currentPivot != null)
-                    RenderPivots(chartControl, chartScale, rtW);
-
-                // ── 4. Yesterday / last week Hi/Lo ────────────────────────────────
-                RenderYesterdayLevels(chartControl, chartScale, rtW);
-                RenderLastWeekLevels(chartControl, chartScale, rtW);
-
-                // ── 5. ADR / AWR / AMR / RD / RW ─────────────────────────────────
                 if (adrValue > 0 && ShowAdr)  RenderHorizontalBand(chartControl, chartScale, rtW, adrHigh, adrLow, dxAdrBrush, "ADR H", "ADR L", ShowAdrLabels, adrHigh, adrLow, ShowAdr50, AdrLineStyle);
                 if (awrValue > 0 && ShowAwr)  RenderHorizontalBand(chartControl, chartScale, rtW, awrHigh, awrLow, dxAwrBrush, "AWR H", "AWR L", ShowAwrLabels, awrHigh, awrLow, ShowAwr50, AwrLineStyle);
                 if (amrValue > 0 && ShowAmr)  RenderHorizontalBand(chartControl, chartScale, rtW, amrHigh, amrLow, dxAmrBrush, "AMR H", "AMR L", ShowAmrLabels, amrHigh, amrLow, ShowAmr50, AmrLineStyle);
                 if (rdValue  > 0 && ShowRd)   RenderHorizontalBand(chartControl, chartScale, rtW, rdHigh,  rdLow,  dxRdBrush,  "RD H",  "RD L",  ShowRdLabels,  rdHigh,  rdLow,  false);
                 if (rwValue  > 0 && ShowRw)   RenderHorizontalBand(chartControl, chartScale, rtW, rwHigh,  rwLow,  dxRwBrush,  "RW H",  "RW L",  ShowRwLabels,  rwHigh,  rwLow,  false);
+            }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderBands [" + ex.GetType().Name + "]: " + ex.Message); }
 
-                // ── 6. Daily open ─────────────────────────────────────────────────
-                if (ShowDailyOpen && dailyOpen > 0)
-                    RenderSingleLine(chartControl, chartScale, rtW, dailyOpen, dxDailyOpenBrush, "DO", ShowDailyOpen);
+            // ── 6. Daily open ─────────────────────────────────────────────────
+            try { if (ShowDailyOpen && dailyOpen > 0) RenderSingleLine(chartControl, chartScale, rtW, dailyOpen, dxDailyOpenBrush, "DO", ShowDailyOpen); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderDailyOpen [" + ex.GetType().Name + "]: " + ex.Message); }
 
-                // ── 7. Weekly Psy levels ──────────────────────────────────────────
+            // ── 7. Weekly Psy levels ──────────────────────────────────────────
+            try
+            {
                 if (ShowPsyLevels && psyWeekHigh > 0)
                 {
                     RenderSingleLine(chartControl, chartScale, rtW, psyWeekHigh, dxPsyBrush, "Psy H", ShowPsyLabels);
                     RenderSingleLine(chartControl, chartScale, rtW, psyWeekLow,  dxPsyBrush, "Psy L", ShowPsyLabels);
                 }
+            }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderPsy [" + ex.GetType().Name + "]: " + ex.Message); }
 
-                // ── 8. ADR/AWR/AMR Dashboard table ────────────────────────────────
-                if (ShowRangeTable)
-                    RenderRangeTable(chartControl, chartScale, rtW, rtH);
+            // ── 8. ADR/AWR/AMR Dashboard table ────────────────────────────────
+            try { if (ShowRangeTable) RenderRangeTable(chartControl, chartScale, rtW, rtH); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderRangeTable [" + ex.GetType().Name + "]: " + ex.Message); }
 
-                // ── 9. DST reference table ────────────────────────────────────────
-                if (ShowDstTable)
-                    RenderDstTable(chartControl, chartScale, rtW, rtH);
-            }
-            catch (SharpDX.SharpDXException sdxEx)
-            {
-                // Device lost / render target invalidated — dispose and recreate DX resources on next frame.
-                Print("IQSessionsGPU: SharpDX device error in OnRender, recreating resources: " + sdxEx.Message);
-                dxReady = false;
-                DisposeDXResources();
-            }
-            catch (Exception ex)
-            {
-                // Drawing-logic error — log it but keep GPU resources alive.
-                // The bad frame is skipped; rendering continues on the next call.
-                Print("IQSessionsGPU: Drawing error in OnRender [" + ex.GetType().Name + "]: " + ex.Message);
-            }
+            // ── 9. DST reference table ────────────────────────────────────────
+            try { if (ShowDstTable) RenderDstTable(chartControl, chartScale, rtW, rtH); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQSessionsGPU: RenderDstTable [" + ex.GetType().Name + "]: " + ex.Message); }
         }
 
         // ── Session box rendering ─────────────────────────────────────────────
@@ -1973,20 +1981,33 @@ namespace NinjaTrader.NinjaScript.Indicators
                 int off = CurrentBar - barIdx;
                 if (off < 0) continue;
 
-                // Per-indicator count guards: need enough bars calculated AND within buffered range.
-                // ema*Ind.Count reflects the actual capacity of each series buffer, protecting
-                // against ArgumentOutOfRangeException when the series hasn't grown to cover 'off'.
+                // Per-indicator availability guards.
+                // barIdx >= period: enough bars for the EMA to have a valid value (0-indexed, EMA(5) needs 5 bars).
+                // off < Count: the series buffer covers this bar offset (guards against transiently short buffers).
                 bool has5   = barIdx >= 5   && off < ema5Ind.Count;
                 bool has13  = barIdx >= 13  && off < ema13Ind.Count;
                 bool has50  = barIdx >= 50  && off < ema50Ind.Count;
                 bool has200 = barIdx >= 200 && off < ema200Ind.Count;
                 bool has800 = barIdx >= 800 && off < ema800Ind.Count;
 
-                double e5   = has5   ? ema5Ind[off]   : 0;
-                double e13  = has13  ? ema13Ind[off]   : 0;
-                double e50  = has50  ? ema50Ind[off]   : 0;
-                double e200 = has200 ? ema200Ind[off]  : 0;
-                double e800 = has800 ? ema800Ind[off]  : 0;
+                // Access EMA series values with explicit guards to handle any transient
+                // ArgumentOutOfRangeException that can occur when the render thread reads
+                // a series whose internal buffer is concurrently being updated.
+                double e5 = 0, e13 = 0, e50 = 0, e200 = 0, e800 = 0;
+                try
+                {
+                    if (has5)   e5   = ema5Ind[off];
+                    if (has13)  e13  = ema13Ind[off];
+                    if (has50)  e50  = ema50Ind[off];
+                    if (has200) e200 = ema200Ind[off];
+                    if (has800) e800 = ema800Ind[off];
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    // EMA series not yet populated for this bar offset — skip this bar.
+                    firstBar = false;
+                    continue;
+                }
 
                 float y5   = has5   ? cs.GetYByValue(e5)   : 0;
                 float y13  = has13  ? cs.GetYByValue(e13)  : 0;
