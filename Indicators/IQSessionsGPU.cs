@@ -1965,7 +1965,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ema200Ind == null || ema800Ind == null || stdDev100Ind == null)
                 return;
 
-            // With MaximumBarsLookBack.TwoHundredFiftySix, series buffers hold max 256 values (indices 0-255)
+            // With MaximumBarsLookBack.TwoHundredFiftySix, the series buffer holds max 256 values (indices 0-255).
+            // The .Count property is unreliable for this check, so we use a hard limit.
             const int maxLookback = 255;
 
             // Pre-gather previous bar X for continuity
@@ -1982,15 +1983,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Offset from CurrentBar; skip if render is ahead of calculation
                 int off = CurrentBar - barIdx;
-                if (off < 0 || off >= 256) continue;  // Skip bars outside lookback window
 
                 // Per-indicator availability guards.
                 // barIdx >= period: enough bars for the EMA to have a valid value.
-                bool has5   = barIdx >= 5   && off <= maxLookback;
-                bool has13  = barIdx >= 13  && off <= maxLookback;
-                bool has50  = barIdx >= 50  && off <= maxLookback;
-                bool has200 = barIdx >= 200 && off <= maxLookback;
-                bool has800 = barIdx >= 800 && off <= maxLookback;
+                bool has5   = barIdx >= 5   && off >= 0 && off <= maxLookback;
+                bool has13  = barIdx >= 13  && off >= 0 && off <= maxLookback;
+                bool has50  = barIdx >= 50  && off >= 0 && off <= maxLookback;
+                bool has200 = barIdx >= 200 && off >= 0 && off <= maxLookback;
+                bool has800 = barIdx >= 800 && off >= 0 && off <= maxLookback;
 
                 double e5 = 0, e13 = 0, e50 = 0, e200 = 0, e800 = 0;
                 if (has5)   e5   = ema5Ind[off];
