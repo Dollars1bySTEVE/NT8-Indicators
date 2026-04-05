@@ -172,7 +172,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Label at the right edge of the EMA line — small and subtle
             if (ShowLabel && ShowEma50)
                 Draw.Text(this, "Ema50Label", false, "50", 0, ema + (TickSize * 2), 0, Ema50Color,
-                    new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9), TextAlignment.Left,
+                    new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9), System.Windows.TextAlignment.Left,
                     Brushes.Transparent, Brushes.Transparent, 0);
             else
                 RemoveDrawObject("Ema50Label");
