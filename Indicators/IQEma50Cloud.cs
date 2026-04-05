@@ -228,6 +228,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null) return;
 
+            // Clamp fromBar to the 256-bar lookback window.
+            // With TwoHundredFiftySix, only bars within CurrentBar-255 to CurrentBar are accessible.
+            // Iterating outside this range would cause ArgumentOutOfRangeException even with
+            // the per-bar off > 255 guard, because IsValidDataPointAt can still return true
+            // for indices that throw on actual series access.
+            int minAllowedBar = Math.Max(0, CurrentBar - 255);
+            fromBar = Math.Max(fromBar, minAllowedBar);
+
+            if (fromBar > toBar)
+                return;
+
             float prevX50 = 0, prevY50 = 0;
             float prevYCloudU = 0, prevYCloudL = 0;
             bool  first50   = true;
