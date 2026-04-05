@@ -1979,7 +1979,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Offset from CurrentBar; skip if render is ahead of calculation
                 int off = CurrentBar - barIdx;
-                if (off < 0) continue;
+                if (off < 0 || off >= 256) continue;  // Skip bars outside lookback window
 
                 // Per-indicator availability guards.
                 // barIdx >= period: enough bars for the EMA to have a valid value.
@@ -2102,10 +2102,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawStyledLine(0f, y, rtW, y, brush, 1f, style);
             if (showLabel && label.Length > 0 && dxLabelFormat != null)
             {
-                string txt    = label + " " + price.ToString("F5");
+                string txt    = label + " " + Instrument.MasterInstrument.FormatPrice(price);
                 int    lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
                 float  labelX = ChartControl.GetXByBarIndex(ChartBars, lblBar) + 6f;
-                var    rect   = new SharpDX.RectangleF(labelX, y - 8f, 120f, 16f);
+                var    rect   = new SharpDX.RectangleF(labelX, y + 4f, 120f, 16f);
                 RenderTarget.DrawText(txt, dxLabelFormat, rect, brush);
             }
         }
@@ -2132,10 +2132,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawStyledLine(0f, y, rtW, y, brush, 1.5f, IQSLineStyle.Solid);
             if (showLabel && label.Length > 0 && dxLabelFormat != null)
             {
-                string txt    = label + " " + price.ToString("F5");
+                string txt    = label + " " + Instrument.MasterInstrument.FormatPrice(price);
                 int    lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
                 float  labelX = cc.GetXByBarIndex(ChartBars, lblBar) + 6f;
-                var    rect   = new SharpDX.RectangleF(labelX, y - 8f, 120f, 16f);
+                var    rect   = new SharpDX.RectangleF(labelX, y + 4f, 120f, 16f);
                 RenderTarget.DrawText(txt, dxLabelFormat, rect, brush);
             }
         }
@@ -2155,10 +2155,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 int   lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
                 float labelX = cc.GetXByBarIndex(ChartBars, lblBar) + 6f;
-                RenderTarget.DrawText(highLabel + " " + high.ToString("F5"), dxLabelFormat,
-                    new SharpDX.RectangleF(labelX, yH - 8f, 140f, 16f), brush);
-                RenderTarget.DrawText(lowLabel  + " " + low.ToString("F5"),  dxLabelFormat,
-                    new SharpDX.RectangleF(labelX, yL - 8f, 140f, 16f), brush);
+                RenderTarget.DrawText(highLabel + " " + Instrument.MasterInstrument.FormatPrice(high), dxLabelFormat,
+                    new SharpDX.RectangleF(labelX, yH + 4f, 140f, 16f), brush);
+                RenderTarget.DrawText(lowLabel  + " " + Instrument.MasterInstrument.FormatPrice(low),  dxLabelFormat,
+                    new SharpDX.RectangleF(labelX, yL + 4f, 140f, 16f), brush);
             }
             if (show50)
             {
