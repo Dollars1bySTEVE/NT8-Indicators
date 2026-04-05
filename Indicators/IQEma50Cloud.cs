@@ -169,14 +169,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RemoveDrawObject("EmaCloud");
             }
 
-            // Label at the rightmost bar
-            if (CurrentBar == Count - 1)
-            {
-                if (ShowLabel && ShowEma50)
-                    Draw.Text(this, "Ema50Label", "50", 0, ema + (stdDev * 0.5), Ema50Color);
-                else
-                    RemoveDrawObject("Ema50Label");
-            }
+            // Label at the right edge of the EMA line
+            if (ShowLabel && ShowEma50)
+                Draw.Text(this, "Ema50Label", "50", 0, ema + (TickSize * 2), Ema50Color);
+            else
+                RemoveDrawObject("Ema50Label");
         }
 
         #endregion
