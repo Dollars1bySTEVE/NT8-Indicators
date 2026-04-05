@@ -1285,7 +1285,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // EMA labels at rightmost bar
-            if (IsLastBarOnChart && ShowEmaLabels)
+            if (CurrentBar == Count - 2 && ShowEmaLabels)
             {
                 if (ShowEma5 && CurrentBar >= 5)
                     Draw.Text(this, "Ema5Label", false, "5", 0, ema5Ind[0], 0, Ema5Color,
