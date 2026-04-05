@@ -11,6 +11,7 @@ using System.Xml.Serialization;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -27,12 +28,6 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class IQEma50Cloud : Indicator
     {
-        // ════════════════════════════════════════════════════════════════════════
-        #region Private fields
-
-        private NinjaTrader.Gui.Tools.SimpleFont labelFont;
-
-        #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters
 
@@ -137,9 +132,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Sync EMA50 plot stroke to user-configured color and thickness
                 Plots[0].Brush = Ema50Color;
                 Plots[0].Width = Ema50Thickness;
-
-                // Create label font once to avoid per-bar allocation
-                labelFont = new NinjaTrader.Gui.Tools.SimpleFont("Consolas", 12);
             }
         }
 
@@ -178,13 +170,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Label at the rightmost bar
-            if (IsLastBarOnChart)
+            if (CurrentBar >= Count - 2)
             {
                 if (ShowLabel && ShowEma50)
-                    Draw.Text(this, "Ema50Label", false, "50", 0, ema, 0,
-                        Ema50Color, labelFont,
-                        System.Windows.TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Transparent, 0);
+                    Draw.Text(this, "Ema50Label", "50", 0, ema + (stdDev * 0.5), Ema50Color);
                 else
                     RemoveDrawObject("Ema50Label");
             }
