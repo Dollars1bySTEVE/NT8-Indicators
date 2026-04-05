@@ -16,6 +16,7 @@ using NinjaTrader.Gui.Chart;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // NinjaTrader 8 requires custom enums declared OUTSIDE all namespaces
@@ -94,6 +95,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private NinjaTrader.NinjaScript.Indicators.EMA    ema5Ind, ema13Ind, ema50Ind, ema200Ind, ema800Ind;
         private NinjaTrader.NinjaScript.Indicators.StdDev stdDev100Ind;
 
+        // ── EMA label font ────────────────────────────────────────────────────
+        private NinjaTrader.Gui.Tools.SimpleFont labelFont;
+
         // ── Pivot data ────────────────────────────────────────────────────────
         private PivotSnapshot currentPivot;
         private double        dayHigh, dayLow, dayClose;
@@ -146,15 +150,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.DirectWrite.Factory        dxWriteFactory;
         private SharpDX.DirectWrite.TextFormat     dxLabelFormat;
         private SharpDX.DirectWrite.TextFormat     dxSmallFormat;
-
-        // EMA brushes
-        private SharpDX.Direct2D1.SolidColorBrush dxEma5Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma13Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma50Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma200Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma800Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxCloudFillBrush;
-        private SharpDX.Direct2D1.SolidColorBrush dxCloudBorderBrush;
 
         // Pivot brushes
         private SharpDX.Direct2D1.SolidColorBrush dxPPBrush;
@@ -1023,6 +1018,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Ema800Thickness  = 2;
                 ShowEmaLabels    = true;
 
+                // EMA plots: 5 lines + 2 transparent cloud band series
+                AddPlot(new Stroke(Ema5Color,          Ema5Thickness),   PlotStyle.Line, "EMA5");
+                AddPlot(new Stroke(Ema13Color,         Ema13Thickness),  PlotStyle.Line, "EMA13");
+                AddPlot(new Stroke(Ema50Color,         Ema50Thickness),  PlotStyle.Line, "EMA50");
+                AddPlot(new Stroke(Ema200Color,        Ema200Thickness), PlotStyle.Line, "EMA200");
+                AddPlot(new Stroke(Ema800Color,        Ema800Thickness), PlotStyle.Line, "EMA800");
+                AddPlot(new Stroke(Brushes.Transparent, 1),              PlotStyle.Line, "CloudUpper");
+                AddPlot(new Stroke(Brushes.Transparent, 1),              PlotStyle.Line, "CloudLower");
+
                 // 3. Pivot Points
                 ShowPP           = true;
                 ShowLevel1       = true;
@@ -1217,6 +1221,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ema200Ind    = EMA(200);
                 ema800Ind    = EMA(800);
                 stdDev100Ind = StdDev(Close, 100);
+
+                // Sync EMA plot strokes to user-configured colors/widths
+                Plots[0].Brush = Ema5Color;   Plots[0].Width = Ema5Thickness;
+                Plots[1].Brush = Ema13Color;  Plots[1].Width = Ema13Thickness;
+                Plots[2].Brush = Ema50Color;  Plots[2].Width = Ema50Thickness;
+                Plots[3].Brush = Ema200Color; Plots[3].Width = Ema200Thickness;
+                Plots[4].Brush = Ema800Color; Plots[4].Width = Ema800Thickness;
+
+                labelFont = new NinjaTrader.Gui.Tools.SimpleFont("Consolas", 12);
             }
             else if (State == State.Terminated)
             {
@@ -1237,6 +1250,78 @@ namespace NinjaTrader.NinjaScript.Indicators
             // EMA child indicators handle their own per-period guards in the render loop.
             if (CurrentBar < 1)
                 return;
+
+            // ── 0. EMA plot series (built-in rendering replaces GPU EMA drawing) ─
+            Values[0][0] = (ShowEma5   && CurrentBar >= 5)   ? ema5Ind[0]   : double.NaN;
+            Values[1][0] = (ShowEma13  && CurrentBar >= 13)  ? ema13Ind[0]  : double.NaN;
+            Values[2][0] = (ShowEma50  && CurrentBar >= 50)  ? ema50Ind[0]  : double.NaN;
+            Values[3][0] = (ShowEma200 && CurrentBar >= 200) ? ema200Ind[0] : double.NaN;
+            Values[4][0] = (ShowEma800 && CurrentBar >= 800) ? ema800Ind[0] : double.NaN;
+
+            if (CurrentBar >= 100)
+            {
+                double ema50val = ema50Ind[0];
+                double stdDev   = stdDev100Ind[0] / 4.0;
+                Values[5][0]    = ema50val + stdDev;
+                Values[6][0]    = ema50val - stdDev;
+            }
+            else
+            {
+                Values[5][0] = double.NaN;
+                Values[6][0] = double.NaN;
+            }
+
+            // EMA50 cloud (same pattern as IQEma50Cloud)
+            if (ShowEma50Cloud && CurrentBar >= 100)
+            {
+                int   barsBack     = Math.Max(0, Math.Min(CurrentBar - 100, 254));
+                Brush outlineBrush = Brushes.Transparent;
+                Draw.Region(this, "Ema50Cloud", 0, barsBack,
+                    Values[5], Values[6], outlineBrush, CloudFillColor, CloudFillOpacity);
+            }
+            else
+            {
+                RemoveDrawObject("Ema50Cloud");
+            }
+
+            // EMA labels at rightmost bar
+            if (IsLastBarOnChart && ShowEmaLabels)
+            {
+                if (ShowEma5 && CurrentBar >= 5)
+                    Draw.Text(this, "Ema5Label", false, "5", 0, ema5Ind[0], 0, Ema5Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("Ema5Label");
+
+                if (ShowEma13 && CurrentBar >= 13)
+                    Draw.Text(this, "Ema13Label", false, "13", 0, ema13Ind[0], 0, Ema13Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("Ema13Label");
+
+                if (ShowEma50 && CurrentBar >= 50)
+                    Draw.Text(this, "Ema50Label", false, "50", 0, ema50Ind[0], 0, Ema50Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("Ema50Label");
+
+                if (ShowEma200 && CurrentBar >= 200)
+                    Draw.Text(this, "Ema200Label", false, "200", 0, ema200Ind[0], 0, Ema200Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("Ema200Label");
+
+                if (ShowEma800 && CurrentBar >= 800)
+                    Draw.Text(this, "Ema800Label", false, "800", 0, ema800Ind[0], 0, Ema800Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("Ema800Label");
+            }
 
             // ── 1. Day / week / month tracking ───────────────────────────────
             if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
@@ -1880,10 +1965,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderSessionBoxes [" + ex.GetType().Name + "]: " + ex.Message); }
 
-            // ── 2. EMA lines + cloud ──────────────────────────────────────────
-            try { RenderEmas(chartControl, chartScale, fromBar, toBar); }
-            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
-            catch (Exception ex) { Print("IQSessionsGPU: RenderEmas [" + ex.GetType().Name + "]: " + ex.Message); }
+            // ── 2. EMA lines + cloud — now rendered via AddPlot/Draw.Region (see OnBarUpdate) ─
+            // (GPU EMA rendering removed; built-in plot rendering handles EMAs)
 
             // ── 3. Pivot levels ───────────────────────────────────────────────
             try { if (currentPivot != null) RenderPivots(chartControl, chartScale, rtW); }
@@ -2001,124 +2084,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                         rt.DrawText(lbl, dxLabelFormat, lr, dxSessionBorderBrush[sid]);
                 }
             }
-        }
-
-        // ── EMA rendering ─────────────────────────────────────────────────────
-        private void RenderEmas(ChartControl cc, ChartScale cs, int fromBar, int toBar)
-        {
-            var rt = RenderTarget;
-            if (rt == null) return;
-
-            // Guard: EMA indicator references are set in State.DataLoaded; skip if not ready.
-            if (ema5Ind == null || ema13Ind == null || ema50Ind == null ||
-                ema200Ind == null || ema800Ind == null || stdDev100Ind == null)
-                return;
-
-            // With MaximumBarsLookBack.TwoHundredFiftySix, the series buffer holds max 256 values (indices 0-255).
-            // The .Count property is unreliable for this check, so we use a hard limit.
-            const int maxLookback = 255;
-
-            // Pre-gather previous bar X for continuity
-            float prevX5 = 0, prevX13 = 0, prevX50 = 0, prevX200 = 0, prevX800 = 0;
-            float prevY5 = 0, prevY13 = 0, prevY50 = 0, prevY200 = 0, prevY800 = 0;
-            float prevYCloudU = 0, prevYCloudL = 0;
-            // Track first valid bar per EMA so we don't draw a line from (0,0)
-            bool first5 = true, first13 = true, first50 = true, first200 = true, first800 = true;
-            bool firstBar = true;
-
-            for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
-            {
-                float x = cc.GetXByBarIndex(ChartBars, barIdx);
-
-                // Offset from CurrentBar; skip if render is ahead of calculation
-                int off = CurrentBar - barIdx;
-
-                // Per-indicator availability guards.
-                // barIdx >= period: enough bars for the EMA to have a valid value.
-                bool has5   = barIdx >= 5   && off >= 0 && off <= maxLookback;
-                bool has13  = barIdx >= 13  && off >= 0 && off <= maxLookback;
-                bool has50  = barIdx >= 50  && off >= 0 && off <= maxLookback;
-                bool has200 = barIdx >= 200 && off >= 0 && off <= maxLookback;
-                bool has800 = barIdx >= 800 && off >= 0 && off <= maxLookback;
-
-                double e5 = 0, e13 = 0, e50 = 0, e200 = 0, e800 = 0;
-                if (has5)   e5   = ema5Ind[off];
-                if (has13)  e13  = ema13Ind[off];
-                if (has50)  e50  = ema50Ind[off];
-                if (has200) e200 = ema200Ind[off];
-                if (has800) e800 = ema800Ind[off];
-
-                float y5   = has5   ? cs.GetYByValue(e5)   : 0;
-                float y13  = has13  ? cs.GetYByValue(e13)  : 0;
-                float y50  = has50  ? cs.GetYByValue(e50)  : 0;
-                float y200 = has200 ? cs.GetYByValue(e200) : 0;
-                float y800 = has800 ? cs.GetYByValue(e800) : 0;
-
-                double sdOff = 0;
-                float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && has50 && barIdx >= 100 && off <= maxLookback)
-                {
-                    sdOff = stdDev100Ind[off] / 4.0;
-                    yClU  = cs.GetYByValue(e50 + sdOff);
-                    yClL  = cs.GetYByValue(e50 - sdOff);
-                }
-
-                if (!firstBar)
-                {
-                    // Cloud fill — bounding-rect fill per bar segment.
-                    // Replaces per-bar PathGeometry creation (major GPU churn culprit).
-                    if (ShowEma50Cloud && has50 && !first50 && dxCloudFillBrush != null)
-                    {
-                        float cloudTop    = Math.Min(Math.Min(prevYCloudU, prevYCloudL), Math.Min(yClU, yClL));
-                        float cloudBottom = Math.Max(Math.Max(prevYCloudU, prevYCloudL), Math.Max(yClU, yClL));
-                        var   segRect     = new SharpDX.RectangleF(prevX50, cloudTop, x - prevX50, cloudBottom - cloudTop);
-                        rt.FillRectangle(segRect, dxCloudFillBrush);
-                    }
-
-                    if (ShowEma5   && has5   && !first5   && dxEma5Brush   != null) rt.DrawLine(new SharpDX.Vector2(prevX5,   prevY5),   new SharpDX.Vector2(x, y5),   dxEma5Brush,   Ema5Thickness);
-                    if (ShowEma13  && has13  && !first13  && dxEma13Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX13,  prevY13),  new SharpDX.Vector2(x, y13),  dxEma13Brush,  Ema13Thickness);
-                    if (ShowEma50  && has50  && !first50  && dxEma50Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX50,  prevY50),  new SharpDX.Vector2(x, y50),  dxEma50Brush,  Ema50Thickness);
-                    if (ShowEma200 && has200 && !first200 && dxEma200Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX200, prevY200), new SharpDX.Vector2(x, y200), dxEma200Brush, Ema200Thickness);
-                    if (ShowEma800 && has800 && !first800 && dxEma800Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX800, prevY800), new SharpDX.Vector2(x, y800), dxEma800Brush, Ema800Thickness);
-                }
-
-                if (has5)   { prevX5   = x; prevY5   = y5;   first5   = false; }
-                if (has13)  { prevX13  = x; prevY13  = y13;  first13  = false; }
-                if (has50)  { prevX50  = x; prevY50  = y50;  prevYCloudU = yClU; prevYCloudL = yClL; first50 = false; }
-                if (has200) { prevX200 = x; prevY200 = y200; first200 = false; }
-                if (has800) { prevX800 = x; prevY800 = y800; first800 = false; }
-                firstBar = false;
-            }
-
-            // Labels at rightmost visible bar — use the rightmost X of any enabled EMA
-            if (ShowEmaLabels && !firstBar && dxLabelFormat != null)
-            {
-                float labelX = 0f;
-                if (ShowEma5   && !first5)   labelX = Math.Max(labelX, prevX5);
-                if (ShowEma13  && !first13)  labelX = Math.Max(labelX, prevX13);
-                if (ShowEma50  && !first50)  labelX = Math.Max(labelX, prevX50);
-                if (ShowEma200 && !first200) labelX = Math.Max(labelX, prevX200);
-                if (ShowEma800 && !first800) labelX = Math.Max(labelX, prevX800);
-
-                // Only draw if at least one EMA was visible in the current range
-                if (labelX > 0f)
-                {
-                    labelX += 6f;
-                    if (ShowEma5   && !first5)   DrawLineLabel(labelX, prevY5,   "5",   dxEma5Brush);
-                    if (ShowEma13  && !first13)  DrawLineLabel(labelX, prevY13,  "13",  dxEma13Brush);
-                    if (ShowEma50  && !first50)  DrawLineLabel(labelX, prevY50,  "50",  dxEma50Brush);
-                    if (ShowEma200 && !first200) DrawLineLabel(labelX, prevY200, "200", dxEma200Brush);
-                    if (ShowEma800 && !first800) DrawLineLabel(labelX, prevY800, "800", dxEma800Brush);
-                }
-            }
-        }
-
-        private void DrawLineLabel(float x, float y, string text,
-            SharpDX.Direct2D1.SolidColorBrush brush)
-        {
-            if (brush == null || dxLabelFormat == null) return;
-            var lr = new SharpDX.RectangleF(x, y - 8f, 40f, 16f);
-            RenderTarget.DrawText(text, dxLabelFormat, lr, brush);
         }
 
         // ── Daily open per-session rendering ─────────────────────────────────
@@ -2423,15 +2388,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas",  9f);
                 dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 11f);
 
-                // EMA brushes
-                dxEma5Brush   = MakeBrush(rt, Ema5Color,   1f);
-                dxEma13Brush  = MakeBrush(rt, Ema13Color,  1f);
-                dxEma50Brush  = MakeBrush(rt, Ema50Color,  1f);
-                dxEma200Brush = MakeBrush(rt, Ema200Color, 1f);
-                dxEma800Brush = MakeBrush(rt, Ema800Color, 1f);
-                dxCloudFillBrush   = MakeBrush(rt, CloudFillColor, CloudFillOpacity / 100f);
-                dxCloudBorderBrush = MakeBrush(rt, Ema50Color, 0.35f);
-
                 // Pivot brushes
                 dxPPBrush     = MakeBrush(rt, PPColor,      0.85f);
                 dxRLevelBrush = MakeBrush(rt, RLevelColor,  0.85f);
@@ -2515,13 +2471,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxLabelFormat);
             DisposeRef(ref dxSmallFormat);
             DisposeRef(ref dxDashFormat);
-            DisposeRef(ref dxEma5Brush);
-            DisposeRef(ref dxEma13Brush);
-            DisposeRef(ref dxEma50Brush);
-            DisposeRef(ref dxEma200Brush);
-            DisposeRef(ref dxEma800Brush);
-            DisposeRef(ref dxCloudFillBrush);
-            DisposeRef(ref dxCloudBorderBrush);
             DisposeRef(ref dxPPBrush);
             DisposeRef(ref dxRLevelBrush);
             DisposeRef(ref dxSLevelBrush);
