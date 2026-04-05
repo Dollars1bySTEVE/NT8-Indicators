@@ -1,5 +1,4 @@
 // IQ Sessions GPU — Comprehensive GPU-accelerated Sessions & Levels indicator for NinjaTrader 8
-// Replicates all session, pivot, EMA, and range features from the Traders Reality "trmain" indicator.
 // Companion to IQCandlesGPU.cs — uses identical SharpDX rendering patterns.
 
 #region Using declarations
@@ -31,16 +30,15 @@ public enum IQSLineStyle { Solid, Dashed, Dotted }
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
-    /// IQ Sessions GPU — Comprehensive GPU-accelerated market sessions, pivots, EMAs, and range
+    /// IQ Sessions GPU — Comprehensive GPU-accelerated market sessions, pivots, and range
     /// levels indicator for NinjaTrader 8. Companion to IQCandlesGPU.
     ///
     /// Features:
-    ///  • 5 EMAs (5, 13, 50, 200, 800) with EMA50 cloud (StdDev bands)
     ///  • Classic Floor Pivot Points (PP, R1-R3, S1-S3) with M-level midpoints
     ///  • Yesterday and Last Week High/Low as step lines
     ///  • ADR / AWR / AMR (Average Daily/Weekly/Monthly Range) with 50% levels
     ///  • Range Daily Hi/Lo and Range Weekly Hi/Lo
-    ///  • Daily Open horizontal line
+    ///  • Daily Open per-session line (scoped to each trading day's bar range)
     ///  • 8 Market Sessions with opening-range boxes and DST handling
     ///    (London, New York, Tokyo, Hong Kong, Sydney, EU Brinks, US Brinks, Frankfurt)
     ///  • Weekly Psy (Psychological) High/Low levels
@@ -77,14 +75,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int    StartBarIndex;
         }
 
+        /// <summary>Tracks the open price and bar range for a single trading day.</summary>
+        private class DailyOpenEntry
+        {
+            public double OpenPrice;
+            public int    StartBarIndex;
+            public int    EndBarIndex;
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields
-
-        // ── Cached EMA/StdDev indicator references (set in State.DataLoaded) ──
-        // Caching avoids repeated lookups from the render thread which is not thread-safe.
-        private NinjaTrader.NinjaScript.Indicators.EMA    ema5Ind, ema13Ind, ema50Ind, ema200Ind, ema800Ind;
-        private NinjaTrader.NinjaScript.Indicators.StdDev stdDev100Ind;
 
         // ── Pivot data ────────────────────────────────────────────────────────
         private PivotSnapshot currentPivot;
@@ -115,6 +116,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double dailyOpen;
         private bool   dailyOpenSet;
 
+        // ── Daily open per-session tracking ──────────────────────────────────
+        private List<DailyOpenEntry> dailyOpenEntries;
+        private DailyOpenEntry       currentDailyOpenEntry;
+
         // ── Session tracking ─────────────────────────────────────────────────
         private List<SessionBox> sessionBoxes;  // capped at 200
         private SessionBox[]     activeSessions; // one per session type (0-7)
@@ -134,15 +139,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.DirectWrite.Factory        dxWriteFactory;
         private SharpDX.DirectWrite.TextFormat     dxLabelFormat;
         private SharpDX.DirectWrite.TextFormat     dxSmallFormat;
-
-        // EMA brushes
-        private SharpDX.Direct2D1.SolidColorBrush dxEma5Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma13Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma50Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma200Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxEma800Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxCloudFillBrush;
-        private SharpDX.Direct2D1.SolidColorBrush dxCloudBorderBrush;
 
         // Pivot brushes
         private SharpDX.Direct2D1.SolidColorBrush dxPPBrush;
@@ -192,111 +188,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Label Y Offset (ticks)", Order = 2, GroupName = "1. Label Offsets",
             Description = "Vertical offset in ticks for line labels to avoid overlap.")]
         public int LabelOffsetTicks { get; set; }
-
-        #endregion
-        // ════════════════════════════════════════════════════════════════════════
-        #region Parameters — 2. EMAs
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA 5", Order = 1, GroupName = "2. EMAs")]
-        public bool ShowEma5 { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "EMA 5 Color", Order = 2, GroupName = "2. EMAs")]
-        [XmlIgnore]
-        public System.Windows.Media.Brush Ema5Color { get; set; }
-        [Browsable(false)]
-        public string Ema5ColorSerializable { get => Serialize.BrushToString(Ema5Color); set => Ema5Color = Serialize.StringToBrush(value); }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "EMA 5 Thickness", Order = 3, GroupName = "2. EMAs")]
-        public int Ema5Thickness { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA 13", Order = 4, GroupName = "2. EMAs")]
-        public bool ShowEma13 { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "EMA 13 Color", Order = 5, GroupName = "2. EMAs")]
-        [XmlIgnore]
-        public System.Windows.Media.Brush Ema13Color { get; set; }
-        [Browsable(false)]
-        public string Ema13ColorSerializable { get => Serialize.BrushToString(Ema13Color); set => Ema13Color = Serialize.StringToBrush(value); }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "EMA 13 Thickness", Order = 6, GroupName = "2. EMAs")]
-        public int Ema13Thickness { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA 50", Order = 7, GroupName = "2. EMAs")]
-        public bool ShowEma50 { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "EMA 50 Color", Order = 8, GroupName = "2. EMAs")]
-        [XmlIgnore]
-        public System.Windows.Media.Brush Ema50Color { get; set; }
-        [Browsable(false)]
-        public string Ema50ColorSerializable { get => Serialize.BrushToString(Ema50Color); set => Ema50Color = Serialize.StringToBrush(value); }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "EMA 50 Thickness", Order = 9, GroupName = "2. EMAs")]
-        public int Ema50Thickness { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA 50 Cloud", Order = 10, GroupName = "2. EMAs",
-            Description = "Draw fill between EMA50 +/- StdDev(Close,100)/4 bands.")]
-        public bool ShowEma50Cloud { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Cloud Fill Color", Order = 11, GroupName = "2. EMAs")]
-        [XmlIgnore]
-        public System.Windows.Media.Brush CloudFillColor { get; set; }
-        [Browsable(false)]
-        public string CloudFillColorSerializable { get => Serialize.BrushToString(CloudFillColor); set => CloudFillColor = Serialize.StringToBrush(value); }
-
-        [NinjaScriptProperty]
-        [Range(1, 100)]
-        [Display(Name = "Cloud Fill Opacity %", Order = 12, GroupName = "2. EMAs")]
-        public int CloudFillOpacity { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA 200", Order = 13, GroupName = "2. EMAs")]
-        public bool ShowEma200 { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "EMA 200 Color", Order = 14, GroupName = "2. EMAs")]
-        [XmlIgnore]
-        public System.Windows.Media.Brush Ema200Color { get; set; }
-        [Browsable(false)]
-        public string Ema200ColorSerializable { get => Serialize.BrushToString(Ema200Color); set => Ema200Color = Serialize.StringToBrush(value); }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "EMA 200 Thickness", Order = 15, GroupName = "2. EMAs")]
-        public int Ema200Thickness { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA 800", Order = 16, GroupName = "2. EMAs")]
-        public bool ShowEma800 { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "EMA 800 Color", Order = 17, GroupName = "2. EMAs")]
-        [XmlIgnore]
-        public System.Windows.Media.Brush Ema800Color { get; set; }
-        [Browsable(false)]
-        public string Ema800ColorSerializable { get => Serialize.BrushToString(Ema800Color); set => Ema800Color = Serialize.StringToBrush(value); }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "EMA 800 Thickness", Order = 18, GroupName = "2. EMAs")]
-        public int Ema800Thickness { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show EMA Labels", Order = 19, GroupName = "2. EMAs")]
-        public bool ShowEmaLabels { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -980,38 +871,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LabelOffsetBars  = 2;
                 LabelOffsetTicks = 1;
 
-                // 2. EMAs
-                ShowEma5         = true;
-                var ema5Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 74));
-                ema5Brush.Freeze();
-                Ema5Color        = ema5Brush;
-                Ema5Thickness    = 1;
-                ShowEma13        = true;
-                var ema13Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(253, 84, 87));
-                ema13Brush.Freeze();
-                Ema13Color       = ema13Brush;
-                Ema13Thickness   = 1;
-                ShowEma50        = true;
-                var ema50Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 188, 211));
-                ema50Brush.Freeze();
-                Ema50Color       = ema50Brush;
-                Ema50Thickness   = 2;
-                ShowEma50Cloud   = true;
-                var cloudBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(155, 47, 174));
-                cloudBrush.Freeze();
-                CloudFillColor   = cloudBrush;
-                CloudFillOpacity = 24;
-                ShowEma200       = true;
-                Ema200Color      = Brushes.White;
-                Ema200Thickness  = 2;
-                ShowEma800       = true;
-                var ema800Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(50, 34, 144));
-                ema800Brush.Freeze();
-                Ema800Color      = ema800Brush;
-                Ema800Thickness  = 2;
-                ShowEmaLabels    = true;
-
-                // 3. Pivot Points
+                // 2. Pivot Points
                 ShowPP           = true;
                 ShowLevel1       = true;
                 ShowLevel2       = true;
@@ -1194,14 +1054,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 alertAwrHighFired = alertAwrLowFired = false;
                 alertAmrHighFired = alertAmrLowFired = false;
 
-                // Cache EMA/StdDev indicators so the render thread can access them
-                // safely without calling the EMA() helper (which is not render-thread-safe).
-                ema5Ind      = EMA(5);
-                ema13Ind     = EMA(13);
-                ema50Ind     = EMA(50);
-                ema200Ind    = EMA(200);
-                ema800Ind    = EMA(800);
-                stdDev100Ind = StdDev(Close, 100);
+                dailyOpenEntries     = new List<DailyOpenEntry>(200);
+                currentDailyOpenEntry = null;
             }
             else if (State == State.Terminated)
             {
@@ -1253,6 +1107,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         ComputePivots();
                     }
 
+                    // Close out the previous daily open entry
+                    if (currentDailyOpenEntry != null)
+                        currentDailyOpenEntry.EndBarIndex = CurrentBar - 1;
+
                     // Reset day tracking
                     dayHigh      = High[0];
                     dayLow       = Low[0];
@@ -1260,6 +1118,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                     dailyOpen    = Open[0];
                     dailyOpenSet = true;
                     prevDayLoaded = true;
+
+                    // Create new daily open entry
+                    currentDailyOpenEntry = new DailyOpenEntry
+                    {
+                        OpenPrice     = Open[0],
+                        StartBarIndex = CurrentBar,
+                        EndBarIndex   = CurrentBar
+                    };
+                    lock (_sessionLock)
+                    {
+                        if (dailyOpenEntries.Count >= 200) dailyOpenEntries.RemoveAt(0);
+                        dailyOpenEntries.Add(currentDailyOpenEntry);
+                    }
 
                     // Reset ADR alerts
                     alertAdrHighFired = alertAdrLowFired = false;
@@ -1270,11 +1141,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         dailyOpen    = Open[0];
                         dailyOpenSet = true;
+
+                        // Create daily open entry for mid-day startup
+                        currentDailyOpenEntry = new DailyOpenEntry
+                        {
+                            OpenPrice     = Open[0],
+                            StartBarIndex = CurrentBar,
+                            EndBarIndex   = CurrentBar
+                        };
+                        lock (_sessionLock)
+                        {
+                            if (dailyOpenEntries.Count >= 200) dailyOpenEntries.RemoveAt(0);
+                            dailyOpenEntries.Add(currentDailyOpenEntry);
+                        }
                     }
                     if (High[0] > dayHigh) dayHigh = High[0];
                     if (Low[0]  < dayLow)  dayLow  = Low[0];
                     dayClose = Close[0];
                 }
+
+                // Keep current daily open entry's end bar up to date
+                if (currentDailyOpenEntry != null)
+                    currentDailyOpenEntry.EndBarIndex = CurrentBar;
 
                 // Detect new week (Monday or day-of-week rolls over)
                 int dow = (int)barTime.DayOfWeek;
@@ -1822,7 +1710,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             // Each render step is wrapped individually so that a failure in one step
-            // (e.g. EMA series access) does not silently suppress all subsequent features.
+            // does not silently suppress all subsequent features.
             // SharpDX device-lost exceptions always cause an immediate DX reset and return;
             // all other exceptions are logged and execution continues with the next step.
 
@@ -1831,12 +1719,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderSessionBoxes [" + ex.GetType().Name + "]: " + ex.Message); }
 
-            // ── 2. EMA lines + cloud ──────────────────────────────────────────
-            try { RenderEmas(chartControl, chartScale, fromBar, toBar); }
-            catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
-            catch (Exception ex) { Print("IQSessionsGPU: RenderEmas [" + ex.GetType().Name + "]: " + ex.Message); }
-
-            // ── 3. Pivot levels ───────────────────────────────────────────────
+            // ── 2. Pivot levels ───────────────────────────────────────────────
             try { if (currentPivot != null) RenderPivots(chartControl, chartScale, rtW); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderPivots [" + ex.GetType().Name + "]: " + ex.Message); }
@@ -1858,8 +1741,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderBands [" + ex.GetType().Name + "]: " + ex.Message); }
 
-            // ── 6. Daily open ─────────────────────────────────────────────────
-            try { if (ShowDailyOpen && dailyOpen > 0) RenderSingleLine(chartControl, chartScale, rtW, dailyOpen, dxDailyOpenBrush, "DO", ShowDailyOpen); }
+            // ── 6. Daily open (per-session) ───────────────────────────────────
+            try { if (ShowDailyOpen) RenderDailyOpenLines(chartControl, chartScale); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQSessionsGPU: SharpDX error in OnRender, recreating resources: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQSessionsGPU: RenderDailyOpen [" + ex.GetType().Name + "]: " + ex.Message); }
 
@@ -1954,122 +1837,46 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        // ── EMA rendering ─────────────────────────────────────────────────────
-        private void RenderEmas(ChartControl cc, ChartScale cs, int fromBar, int toBar)
+        // ── Daily open per-session rendering ─────────────────────────────────
+        private void RenderDailyOpenLines(ChartControl cc, ChartScale cs)
         {
+            if (dxDailyOpenBrush == null || dailyOpenEntries == null) return;
             var rt = RenderTarget;
             if (rt == null) return;
 
-            // Guard: EMA indicator references are set in State.DataLoaded; skip if not ready.
-            if (ema5Ind == null || ema13Ind == null || ema50Ind == null ||
-                ema200Ind == null || ema800Ind == null || stdDev100Ind == null)
-                return;
-
-            // With MaximumBarsLookBack.TwoHundredFiftySix, the series buffer holds max 256 values (indices 0-255).
-            // The .Count property is unreliable for this check, so we use a hard limit.
-            const int maxLookback = 255;
-
-            // Pre-gather previous bar X for continuity
-            float prevX5 = 0, prevX13 = 0, prevX50 = 0, prevX200 = 0, prevX800 = 0;
-            float prevY5 = 0, prevY13 = 0, prevY50 = 0, prevY200 = 0, prevY800 = 0;
-            float prevYCloudU = 0, prevYCloudL = 0;
-            // Track first valid bar per EMA so we don't draw a line from (0,0)
-            bool first5 = true, first13 = true, first50 = true, first200 = true, first800 = true;
-            bool firstBar = true;
-
-            for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
+            List<DailyOpenEntry> snapshot;
+            lock (_sessionLock)
             {
-                float x = cc.GetXByBarIndex(ChartBars, barIdx);
-
-                // Offset from CurrentBar; skip if render is ahead of calculation
-                int off = CurrentBar - barIdx;
-
-                // Per-indicator availability guards.
-                // barIdx >= period: enough bars for the EMA to have a valid value.
-                bool has5   = barIdx >= 5   && off >= 0 && off <= maxLookback;
-                bool has13  = barIdx >= 13  && off >= 0 && off <= maxLookback;
-                bool has50  = barIdx >= 50  && off >= 0 && off <= maxLookback;
-                bool has200 = barIdx >= 200 && off >= 0 && off <= maxLookback;
-                bool has800 = barIdx >= 800 && off >= 0 && off <= maxLookback;
-
-                double e5 = 0, e13 = 0, e50 = 0, e200 = 0, e800 = 0;
-                if (has5)   e5   = ema5Ind[off];
-                if (has13)  e13  = ema13Ind[off];
-                if (has50)  e50  = ema50Ind[off];
-                if (has200) e200 = ema200Ind[off];
-                if (has800) e800 = ema800Ind[off];
-
-                float y5   = has5   ? cs.GetYByValue(e5)   : 0;
-                float y13  = has13  ? cs.GetYByValue(e13)  : 0;
-                float y50  = has50  ? cs.GetYByValue(e50)  : 0;
-                float y200 = has200 ? cs.GetYByValue(e200) : 0;
-                float y800 = has800 ? cs.GetYByValue(e800) : 0;
-
-                double sdOff = 0;
-                float  yClU  = y50, yClL = y50;
-                if (ShowEma50Cloud && has50 && barIdx >= 100 && off <= maxLookback)
-                {
-                    sdOff = stdDev100Ind[off] / 4.0;
-                    yClU  = cs.GetYByValue(e50 + sdOff);
-                    yClL  = cs.GetYByValue(e50 - sdOff);
-                }
-
-                if (!firstBar)
-                {
-                    // Cloud fill — bounding-rect fill per bar segment.
-                    // Replaces per-bar PathGeometry creation (major GPU churn culprit).
-                    if (ShowEma50Cloud && has50 && !first50 && dxCloudFillBrush != null)
-                    {
-                        float cloudTop    = Math.Min(Math.Min(prevYCloudU, prevYCloudL), Math.Min(yClU, yClL));
-                        float cloudBottom = Math.Max(Math.Max(prevYCloudU, prevYCloudL), Math.Max(yClU, yClL));
-                        var   segRect     = new SharpDX.RectangleF(prevX50, cloudTop, x - prevX50, cloudBottom - cloudTop);
-                        rt.FillRectangle(segRect, dxCloudFillBrush);
-                    }
-
-                    if (ShowEma5   && has5   && !first5   && dxEma5Brush   != null) rt.DrawLine(new SharpDX.Vector2(prevX5,   prevY5),   new SharpDX.Vector2(x, y5),   dxEma5Brush,   Ema5Thickness);
-                    if (ShowEma13  && has13  && !first13  && dxEma13Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX13,  prevY13),  new SharpDX.Vector2(x, y13),  dxEma13Brush,  Ema13Thickness);
-                    if (ShowEma50  && has50  && !first50  && dxEma50Brush  != null) rt.DrawLine(new SharpDX.Vector2(prevX50,  prevY50),  new SharpDX.Vector2(x, y50),  dxEma50Brush,  Ema50Thickness);
-                    if (ShowEma200 && has200 && !first200 && dxEma200Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX200, prevY200), new SharpDX.Vector2(x, y200), dxEma200Brush, Ema200Thickness);
-                    if (ShowEma800 && has800 && !first800 && dxEma800Brush != null) rt.DrawLine(new SharpDX.Vector2(prevX800, prevY800), new SharpDX.Vector2(x, y800), dxEma800Brush, Ema800Thickness);
-                }
-
-                if (has5)   { prevX5   = x; prevY5   = y5;   first5   = false; }
-                if (has13)  { prevX13  = x; prevY13  = y13;  first13  = false; }
-                if (has50)  { prevX50  = x; prevY50  = y50;  prevYCloudU = yClU; prevYCloudL = yClL; first50 = false; }
-                if (has200) { prevX200 = x; prevY200 = y200; first200 = false; }
-                if (has800) { prevX800 = x; prevY800 = y800; first800 = false; }
-                firstBar = false;
+                snapshot = dailyOpenEntries.ToList();
             }
 
-            // Labels at rightmost visible bar — use the rightmost X of any enabled EMA
-            if (ShowEmaLabels && !firstBar && dxLabelFormat != null)
-            {
-                float labelX = 0f;
-                if (ShowEma5   && !first5)   labelX = Math.Max(labelX, prevX5);
-                if (ShowEma13  && !first13)  labelX = Math.Max(labelX, prevX13);
-                if (ShowEma50  && !first50)  labelX = Math.Max(labelX, prevX50);
-                if (ShowEma200 && !first200) labelX = Math.Max(labelX, prevX200);
-                if (ShowEma800 && !first800) labelX = Math.Max(labelX, prevX800);
+            // If not showing historical opens, only render the most recent (current) entry
+            if (!ShowHistoricalDailyOpens && snapshot.Count > 0)
+                snapshot = new List<DailyOpenEntry> { snapshot[snapshot.Count - 1] };
 
-                // Only draw if at least one EMA was visible in the current range
-                if (labelX > 0f)
+            float barHalfWidth = cc.GetBarPaintWidth(ChartBars) / 2f;
+
+            foreach (var entry in snapshot)
+            {
+                if (entry.OpenPrice == 0) continue;
+
+                int startIdx = Math.Max(ChartBars.FromIndex, entry.StartBarIndex);
+                int endIdx   = Math.Min(ChartBars.ToIndex,   entry.EndBarIndex);
+                if (startIdx > endIdx) continue;
+
+                float xLeft  = cc.GetXByBarIndex(ChartBars, startIdx) - barHalfWidth;
+                float xRight = cc.GetXByBarIndex(ChartBars, endIdx)   + barHalfWidth;
+                float y      = cs.GetYByValue(entry.OpenPrice);
+
+                DrawStyledLine(xLeft, y, xRight, y, dxDailyOpenBrush, 1.5f, DailyOpenLineStyle);
+
+                if (dxLabelFormat != null)
                 {
-                    labelX += 6f;
-                    if (ShowEma5   && !first5)   DrawLineLabel(labelX, prevY5,   "5",   dxEma5Brush);
-                    if (ShowEma13  && !first13)  DrawLineLabel(labelX, prevY13,  "13",  dxEma13Brush);
-                    if (ShowEma50  && !first50)  DrawLineLabel(labelX, prevY50,  "50",  dxEma50Brush);
-                    if (ShowEma200 && !first200) DrawLineLabel(labelX, prevY200, "200", dxEma200Brush);
-                    if (ShowEma800 && !first800) DrawLineLabel(labelX, prevY800, "800", dxEma800Brush);
+                    string txt  = "DO " + Instrument.MasterInstrument.FormatPrice(entry.OpenPrice);
+                    var    rect = new SharpDX.RectangleF(xRight + 4f, y + 4f, 120f, 16f);
+                    rt.DrawText(txt, dxLabelFormat, rect, dxDailyOpenBrush);
                 }
             }
-        }
-
-        private void DrawLineLabel(float x, float y, string text,
-            SharpDX.Direct2D1.SolidColorBrush brush)
-        {
-            if (brush == null || dxLabelFormat == null) return;
-            var lr = new SharpDX.RectangleF(x, y - 8f, 40f, 16f);
-            RenderTarget.DrawText(text, dxLabelFormat, lr, brush);
         }
 
         // ── Pivot rendering ───────────────────────────────────────────────────
@@ -2332,15 +2139,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas",  9f);
                 dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 11f);
 
-                // EMA brushes
-                dxEma5Brush   = MakeBrush(rt, Ema5Color,   1f);
-                dxEma13Brush  = MakeBrush(rt, Ema13Color,  1f);
-                dxEma50Brush  = MakeBrush(rt, Ema50Color,  1f);
-                dxEma200Brush = MakeBrush(rt, Ema200Color, 1f);
-                dxEma800Brush = MakeBrush(rt, Ema800Color, 1f);
-                dxCloudFillBrush   = MakeBrush(rt, CloudFillColor, CloudFillOpacity / 100f);
-                dxCloudBorderBrush = MakeBrush(rt, Ema50Color, 0.35f);
-
                 // Pivot brushes
                 dxPPBrush     = MakeBrush(rt, PPColor,      0.85f);
                 dxRLevelBrush = MakeBrush(rt, RLevelColor,  0.85f);
@@ -2424,13 +2222,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxLabelFormat);
             DisposeRef(ref dxSmallFormat);
             DisposeRef(ref dxDashFormat);
-            DisposeRef(ref dxEma5Brush);
-            DisposeRef(ref dxEma13Brush);
-            DisposeRef(ref dxEma50Brush);
-            DisposeRef(ref dxEma200Brush);
-            DisposeRef(ref dxEma800Brush);
-            DisposeRef(ref dxCloudFillBrush);
-            DisposeRef(ref dxCloudBorderBrush);
             DisposeRef(ref dxPPBrush);
             DisposeRef(ref dxRLevelBrush);
             DisposeRef(ref dxSLevelBrush);
