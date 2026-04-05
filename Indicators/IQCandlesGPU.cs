@@ -1063,8 +1063,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zone.IsRecovered)
                     continue;
 
-                double topPrice = ULZIncludeWicks ? zone.PartialRecoveryHigh : zone.BodyHighPrice;
-                double botPrice = ULZIncludeWicks ? zone.PartialRecoveryLow  : zone.BodyLowPrice;
+                double topPrice = zone.PartialRecoveryHigh;
+                double botPrice = zone.PartialRecoveryLow;
 
                 if (topPrice <= botPrice)
                     continue;
@@ -1098,11 +1098,32 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 try
                 {
-                    // Zones always extend from the full left edge (x=0) to the full right edge
-                    // of the chart so they remain continuously visible regardless of where the
-                    // origin bar sits on screen (including when the zone was just created and
-                    // its origin bar is at or beyond the visible right boundary).
-                    rt.FillRectangle(new SharpDX.RectangleF(0f, rectTop, chartWidth, zoneH), zoneBrush);
+                    // Zone starts at the origin candle's X position and extends to the right
+                    // edge of the chart.  If the origin bar has scrolled off the left edge,
+                    // clamp to 0 so the zone remains visible in the current viewport.
+                    float xLeft;
+                    if (zone.OriginBarIndex < ChartBars.FromIndex)
+                    {
+                        // Origin bar is to the left of the visible area — start at left edge
+                        xLeft = 0f;
+                    }
+                    else if (zone.OriginBarIndex > ChartBars.ToIndex)
+                    {
+                        // Origin bar is off to the right — zone not yet visible, skip
+                        continue;
+                    }
+                    else
+                    {
+                        xLeft = cc.GetXByBarIndex(ChartBars, zone.OriginBarIndex);
+                        if (float.IsNaN(xLeft) || xLeft < 0f)
+                            xLeft = 0f;
+                    }
+
+                    float zoneW = Math.Max(0f, chartWidth - xLeft);
+                    if (zoneW <= 0f)
+                        continue;
+
+                    rt.FillRectangle(new SharpDX.RectangleF(xLeft, rectTop, zoneW, zoneH), zoneBrush);
                 }
                 catch { /* Silently skip individual zone render errors to keep the chart stable */ }
             }
@@ -1286,7 +1307,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             double zoneBodyHigh = Math.Max(bodyTop, bodyBot);
             double zoneBodyLow  = Math.Min(bodyTop, bodyBot);
 
-            if (zoneHigh == zoneLow)
+            if (zoneBodyHigh == zoneBodyLow)
                 return;
 
             AddLiquidityZone(new LiquidityZone
@@ -1300,8 +1321,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 IsBullish            = isBullish,
                 IsAbsorption         = isAbsorption,
                 IsRecovered          = false,
-                PartialRecoveryHigh  = zoneHigh,
-                PartialRecoveryLow   = zoneLow
+                PartialRecoveryHigh  = zoneBodyHigh,
+                PartialRecoveryLow   = zoneBodyLow
             });
         }
 
@@ -1625,75 +1646,50 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // price returns UP to touch the zone from below.  The zone was created by
                 // a bearish candle, so price is AT or BELOW the zone after creation.
                 //
-                // When ULZIncludeWicks is enabled, wicks that enter—but do not fully
-                // cross—the zone cause partial recovery: PartialRecoveryHigh shrinks
-                // downward (bullish) or PartialRecoveryLow rises upward (bearish) to show
-                // only the untouched portion of the zone.
+                // Zones are defined by the candle body (Open↔Close).  Wicks that enter—but
+                // do not fully cross—the zone cause partial recovery: PartialRecoveryHigh
+                // shrinks downward (bullish) or PartialRecoveryLow rises upward (bearish)
+                // to show only the untouched portion of the zone.
                 bool zoneRecovered = false;
 
                 if (z.IsBullish)
                 {
                     // Bullish zone is BELOW current price after the green/blue candle.
-                    // Recovery: price comes DOWN and the wick (or body) enters the zone.
-                    double topBoundary = z.PartialRecoveryHigh;  // shrinks downward with each touch
-                    double botBoundary = z.PartialRecoveryLow;   // fixed at original low
+                    // Recovery: a down-wick enters or clears the body-defined zone.
+                    double topBoundary = z.PartialRecoveryHigh;  // shrinks downward with each wick touch
+                    double botBoundary = z.PartialRecoveryLow;   // fixed at original body low
 
-                    if (ULZIncludeWicks)
+                    if (curLow <= botBoundary)
                     {
-                        if (curLow <= botBoundary)
-                        {
-                            // Wick went all the way below the zone's bottom → full recovery.
-                            zoneRecovered = true;
-                        }
-                        else if (curLow < topBoundary)
-                        {
-                            // Wick entered zone from above — clean the top portion down to the wick low.
-                            z.PartialRecoveryHigh = Math.Min(z.PartialRecoveryHigh, curLow);
-                            if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
-                                zoneRecovered = true;
-                        }
+                        // Wick went all the way below the zone's bottom → full recovery.
+                        zoneRecovered = true;
                     }
-                    else
+                    else if (curLow < topBoundary)
                     {
-                        // Body-only mode: use Close to determine recovery.
-                        if (curClose <= z.BodyLowPrice)
-                            zoneRecovered = true;   // body closed below entire zone
-                        else if (curClose < z.BodyHighPrice)
-                            zoneRecovered = true;   // body closed inside the zone
+                        // Wick entered zone from above — shrink the top portion down to the wick low.
+                        z.PartialRecoveryHigh = Math.Min(z.PartialRecoveryHigh, curLow);
+                        if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
+                            zoneRecovered = true;
                     }
                 }
                 else
                 {
                     // Bearish zone is ABOVE current price after the red/pink candle.
-                    // Recovery: price comes UP and the wick (or body) enters the zone.
-                    double topBoundary = z.PartialRecoveryHigh;  // fixed at original high
-                    double botBoundary = z.PartialRecoveryLow;   // rises upward with each touch
+                    // Recovery: an up-wick enters or clears the body-defined zone.
+                    double topBoundary = z.PartialRecoveryHigh;  // fixed at original body high
+                    double botBoundary = z.PartialRecoveryLow;   // rises upward with each wick touch
 
-                    if (ULZIncludeWicks)
+                    if (curHigh >= topBoundary)
                     {
-                        if (curHigh >= topBoundary)
-                        {
-                            // Wick went all the way above the zone's top → full recovery.
-                            zoneRecovered = true;
-                        }
-                        else if (curHigh > botBoundary)
-                        {
-                            // Wick entered zone from below — clean the bottom portion up to the wick high.
-                            z.PartialRecoveryLow = Math.Max(z.PartialRecoveryLow, curHigh);
-                            if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
-                                zoneRecovered = true;
-                        }
+                        // Wick went all the way above the zone's top → full recovery.
+                        zoneRecovered = true;
                     }
-                    else
+                    else if (curHigh > botBoundary)
                     {
-                        // Body-only mode: bearish zone is recovered only when price closes
-                        // at or above the zone body top (the open of the bearish candle).
-                        // Requiring the full close above BodyHighPrice prevents immediate
-                        // recovery from the tiny bounces that commonly follow bearish climax
-                        // candles, which was causing RED/PINK zones to disappear on the
-                        // very first tick after creation.
-                        if (curClose >= z.BodyHighPrice)
-                            zoneRecovered = true;   // body closed above entire zone
+                        // Wick entered zone from below — shrink the bottom portion up to the wick high.
+                        z.PartialRecoveryLow = Math.Max(z.PartialRecoveryLow, curHigh);
+                        if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
+                            zoneRecovered = true;
                     }
                 }
 
