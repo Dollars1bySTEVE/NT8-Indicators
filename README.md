@@ -261,12 +261,14 @@ This indicator was inspired by and builds upon concepts from:
 - **NinjaTrader Community** — Countless forum discussions and shared knowledge https://ninjatrader.com/
 
 Special thanks to all the traders and educators who have shared their knowledge freely, making tools like this possible.
-
+- Fellow Trader/Mentor of Dollars1bySTEVE: Mike Swartz - https://www.youtube.com/@Mike_Swartz/featured  https://www.epitometrading.com/
+- Fellow Trader/Mentor of Dollars1bySTEVE: known as Osho
+  
 ---
 
 ## 📄 License
 
-This indicator is provided free for personal use. Feel free to modify and improve!
+This indicator is provided free for personal use. Feel free to modify and improve,Just give me a little credit!
 
 ---
 
@@ -276,18 +278,19 @@ Contributions welcome! If you have improvements or bug fixes:
 1. Fork the repository
 2. Create a feature branch
 3. Submit a pull request
+4: REACH OUT AND LET ME KNOW!
 
 ---
 
 ## ⭐ If You Find This Useful
 
-Consider starring the repository! It helps others discover these free tools.
+Consider starring the repository! It helps others discover these free tools. I could have made these thing cost ya!
 
 ---
 
 **Happy Trading!** 📈💰
 
-*Built with ❤️ for the NinjaTrader community*
+*Built with ❤️ for the NinjaTrader community and every trader that dreams of being a success*
 
 ---
 
