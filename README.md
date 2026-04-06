@@ -1,10 +1,11 @@
-# IQMainGPU — Traders Reality Main Indicator
+# IQMainGPU — Traders Reality inspired Main Indicator
 
 **The Ultimate All-in-One NinjaTrader 8 Indicator**
 
 GPU-accelerated • Institutional-Grade • Fully Customizable
 
-> 📸 *[Screenshot placeholder — add a screenshot of your chart with IQMainGPU enabled here]*
+> 📸 *[<img width="2200" height="1316" alt="image" src="https://github.com/user-attachments/assets/ed4210db-44b7-43ca-b8bc-b1f88f728cc7" />
+]*
 
 ---
 
@@ -256,8 +257,10 @@ This indicator was inspired by and builds upon concepts from:
 - **PVSRA (Price Volume Spread Analysis)** — Original concept for volume-based candle analysis
 - **Smart Money Concepts (SMC)** — Liquidity zones, market structure
 - **ICT (Inner Circle Trader)** — Session timing, killzones, institutional order flow concepts
-- **Traders Reality** — The namesake inspiration for combining multiple analysis methods
-- **NinjaTrader Community** — Countless forum discussions and shared knowledge
+- **Traders Reality** — The namesake inspiration for combining multiple analysis methods https://tradersreality.com/
+- **NinjaTrader Community** — Countless forum discussions and shared knowledge https://ninjatrader.com/
+- **Mike Swartz** - Mentor and Fellow Trader Watch him live! https://www.youtube.com/@Mike_Swartz/featured
+- ** OSHO**- Mentor and Friend. A professional former pit floor Trader with years of experience 
 
 Special thanks to all the traders and educators who have shared their knowledge freely, making tools like this possible.
 
