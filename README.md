@@ -257,8 +257,8 @@ This indicator was inspired by and builds upon concepts from:
 - **PVSRA (Price Volume Spread Analysis)** — Original concept for volume-based candle analysis
 - **Smart Money Concepts (SMC)** — Liquidity zones, market structure
 - **ICT (Inner Circle Trader)** — Session timing, killzones, institutional order flow concepts
-- **Traders Reality** — The namesake inspiration for combining multiple analysis methods
-- **NinjaTrader Community** — Countless forum discussions and shared knowledge
+- **Traders Reality** — The namesake inspiration for combining multiple analysis methods https://tradersreality.com/
+- **NinjaTrader Community** — Countless forum discussions and shared knowledge https://ninjatrader.com/
 
 Special thanks to all the traders and educators who have shared their knowledge freely, making tools like this possible.
 
