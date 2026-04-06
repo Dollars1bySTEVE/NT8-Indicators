@@ -188,6 +188,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private double psyWeekHigh, psyWeekLow;
         private int    psyWeekStartBar;
+        private double psyDayHigh, psyDayLow;
+        private int    psyDayStartBar;
 
         private bool alertAdrHighFired, alertAdrLowFired;
         private bool alertAwrHighFired, alertAwrLowFired;
@@ -1007,19 +1009,28 @@ namespace NinjaTrader.NinjaScript.Indicators
         public IQMLineStyle DailyOpenLineStyle { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly Psy Levels", Order = 11, GroupName = "6. Daily/Weekly Levels")]
-        public bool ShowPsyLevels { get; set; }
+        [Display(Name = "Show Daily Psy Levels", Order = 11, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowDailyPsy { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Psy Use Crypto (Sydney) Start", Order = 12, GroupName = "6. Daily/Weekly Levels")]
+        [Display(Name = "Show Weekly Psy Levels", Order = 12, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowWeeklyPsy { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 1000)]
+        [Display(Name = "Psy Round Increment (ticks)", Order = 13, GroupName = "6. Daily/Weekly Levels")]
+        public int PsyRoundIncrement { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Psy Use Crypto (Sydney) Start", Order = 14, GroupName = "6. Daily/Weekly Levels")]
         public bool PsyUseSydney { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Psy Labels", Order = 13, GroupName = "6. Daily/Weekly Levels")]
+        [Display(Name = "Show Psy Labels", Order = 15, GroupName = "6. Daily/Weekly Levels")]
         public bool ShowPsyLabels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Psy Level Color", Order = 14, GroupName = "6. Daily/Weekly Levels")]
+        [Display(Name = "Psy Level Color", Order = 16, GroupName = "6. Daily/Weekly Levels")]
         [XmlIgnore]
         public System.Windows.Media.Brush PsyColor { get; set; }
         [Browsable(false)]
@@ -1027,7 +1038,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Psy Opacity %", Order = 15, GroupName = "6. Daily/Weekly Levels")]
+        [Display(Name = "Psy Opacity %", Order = 17, GroupName = "6. Daily/Weekly Levels")]
         public int PsyOpacity { get; set; }
 
         #endregion
@@ -1282,6 +1293,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Name                     = "IQMainGPU";
                 Calculate                = Calculate.OnEachTick;
                 IsOverlay                = true;
+                IsAutoScale              = false;
                 DisplayInDataBox         = true;
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
@@ -1471,7 +1483,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dailyOpenBrush.Freeze();
                 DailyOpenColor           = dailyOpenBrush;
                 DailyOpenLineStyle       = IQMLineStyle.Solid;
-                ShowPsyLevels            = true;
+                ShowDailyPsy             = true;
+                ShowWeeklyPsy            = true;
+                PsyRoundIncrement        = 50;
                 PsyUseSydney             = false;
                 ShowPsyLabels            = true;
                 PsyColor                 = Brushes.Orange;
@@ -1712,6 +1726,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     dailyOpenSet = true;
                     prevDayLoaded = true;
 
+                    psyDayHigh     = High[0];
+                    psyDayLow      = Low[0];
+                    psyDayStartBar = CurrentBar;
+
                     currentDailyOpenEntry = new DailyOpenEntry
                     {
                         OpenPrice     = Open[0],
@@ -1747,6 +1765,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (High[0] > dayHigh) dayHigh = High[0];
                     if (Low[0]  < dayLow)  dayLow  = Low[0];
                     dayClose = Close[0];
+
+                    if (psyDayStartBar > 0)
+                    {
+                        if (High[0] > psyDayHigh) psyDayHigh = High[0];
+                        if (Low[0]  < psyDayLow)  psyDayLow  = Low[0];
+                    }
                 }
 
                 if (currentDailyOpenEntry != null)
@@ -2228,13 +2252,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderDailyOpen: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQMainGPU: RenderDailyOpen [" + ex.GetType().Name + "]: " + ex.Message); }
 
-            // ── 7. Weekly Psy levels ──────────────────────────────────────────
+            // ── 7. Psy levels (daily + weekly round numbers) ─────────────────
             try
             {
-                if (ShowPsyLevels && psyWeekHigh > 0)
+                double psyStep = PsyRoundIncrement * TickSize;
+                if (psyStep > 0 && dxPsyBrush != null)
                 {
-                    RenderSingleLine(chartControl, chartScale, rtW, psyWeekHigh, dxPsyBrush, "Psy H", ShowPsyLabels);
-                    RenderSingleLine(chartControl, chartScale, rtW, psyWeekLow,  dxPsyBrush, "Psy L", ShowPsyLabels);
+                    if (ShowDailyPsy && psyDayHigh > 0)
+                    {
+                        double dPsyH = Math.Ceiling(psyDayHigh / psyStep) * psyStep;
+                        double dPsyL = Math.Floor(psyDayLow   / psyStep) * psyStep;
+                        RenderSingleLine(chartControl, chartScale, rtW, dPsyH, dxPsyBrush, ShowPsyLabels ? "DPsy H" : "", ShowPsyLabels);
+                        RenderSingleLine(chartControl, chartScale, rtW, dPsyL, dxPsyBrush, ShowPsyLabels ? "DPsy L" : "", ShowPsyLabels);
+                    }
+                    if (ShowWeeklyPsy && psyWeekHigh > 0)
+                    {
+                        double wPsyH = Math.Ceiling(psyWeekHigh / psyStep) * psyStep;
+                        double wPsyL = Math.Floor(psyWeekLow   / psyStep) * psyStep;
+                        RenderSingleLine(chartControl, chartScale, rtW, wPsyH, dxPsyBrush, ShowPsyLabels ? "WPsy H" : "", ShowPsyLabels);
+                        RenderSingleLine(chartControl, chartScale, rtW, wPsyL, dxPsyBrush, ShowPsyLabels ? "WPsy L" : "", ShowPsyLabels);
+                    }
                 }
             }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderPsy: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
@@ -2360,31 +2397,35 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (currentPivot == null) return;
 
-            if (ShowPP     && dxPPBrush     != null) RenderPivotLine(cs, rtW, currentPivot.PP, dxPPBrush,     "PP", ShowPivotLabels, PivotLineStyle);
-            if (ShowLevel1 && dxRLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.R1, dxRLevelBrush, "R1", ShowPivotLabels, PivotLineStyle);
-            if (ShowLevel1 && dxSLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.S1, dxSLevelBrush, "S1", ShowPivotLabels, PivotLineStyle);
-            if (ShowLevel2 && dxRLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.R2, dxRLevelBrush, "R2", ShowPivotLabels, PivotLineStyle);
-            if (ShowLevel2 && dxSLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.S2, dxSLevelBrush, "S2", ShowPivotLabels, PivotLineStyle);
-            if (ShowLevel3 && dxRLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.R3, dxRLevelBrush, "R3", ShowPivotLabels, PivotLineStyle);
-            if (ShowLevel3 && dxSLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.S3, dxSLevelBrush, "S3", ShowPivotLabels, PivotLineStyle);
+            float barHalfWidth = cc.GetBarPaintWidth(ChartBars) / 2f;
+            int   startIdx     = Math.Max(ChartBars.FromIndex, currentPivot.StartBarIndex);
+            float xLeft        = cc.GetXByBarIndex(ChartBars, startIdx) - barHalfWidth;
+
+            if (ShowPP     && dxPPBrush     != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.PP, dxPPBrush,     "PP", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel1 && dxRLevelBrush != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.R1, dxRLevelBrush, "R1", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel1 && dxSLevelBrush != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.S1, dxSLevelBrush, "S1", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel2 && dxRLevelBrush != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.R2, dxRLevelBrush, "R2", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel2 && dxSLevelBrush != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.S2, dxSLevelBrush, "S2", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel3 && dxRLevelBrush != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.R3, dxRLevelBrush, "R3", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel3 && dxSLevelBrush != null) RenderPivotLine(cs, xLeft, rtW, currentPivot.S3, dxSLevelBrush, "S3", ShowPivotLabels, PivotLineStyle);
 
             if (ShowMLevels && dxMLevelBrush != null)
             {
-                RenderPivotLine(cs, rtW, currentPivot.M0, dxMLevelBrush, ShowMLabels ? "M0" : "", ShowMLabels, MLevelLineStyle);
-                RenderPivotLine(cs, rtW, currentPivot.M1, dxMLevelBrush, ShowMLabels ? "M1" : "", ShowMLabels, MLevelLineStyle);
-                RenderPivotLine(cs, rtW, currentPivot.M2, dxMLevelBrush, ShowMLabels ? "M2" : "", ShowMLabels, MLevelLineStyle);
-                RenderPivotLine(cs, rtW, currentPivot.M3, dxMLevelBrush, ShowMLabels ? "M3" : "", ShowMLabels, MLevelLineStyle);
-                RenderPivotLine(cs, rtW, currentPivot.M4, dxMLevelBrush, ShowMLabels ? "M4" : "", ShowMLabels, MLevelLineStyle);
-                RenderPivotLine(cs, rtW, currentPivot.M5, dxMLevelBrush, ShowMLabels ? "M5" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, xLeft, rtW, currentPivot.M0, dxMLevelBrush, ShowMLabels ? "M0" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, xLeft, rtW, currentPivot.M1, dxMLevelBrush, ShowMLabels ? "M1" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, xLeft, rtW, currentPivot.M2, dxMLevelBrush, ShowMLabels ? "M2" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, xLeft, rtW, currentPivot.M3, dxMLevelBrush, ShowMLabels ? "M3" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, xLeft, rtW, currentPivot.M4, dxMLevelBrush, ShowMLabels ? "M4" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, xLeft, rtW, currentPivot.M5, dxMLevelBrush, ShowMLabels ? "M5" : "", ShowMLabels, MLevelLineStyle);
             }
         }
 
-        private void RenderPivotLine(ChartScale cs, float rtW, double price,
+        private void RenderPivotLine(ChartScale cs, float xLeft, float rtW, double price,
             SharpDX.Direct2D1.SolidColorBrush brush, string label, bool showLabel, IQMLineStyle style)
         {
             if (price == 0) return;
             float y = cs.GetYByValue(price);
-            DrawStyledLine(0f, y, rtW, y, brush, 1f, style);
+            DrawStyledLine(xLeft, y, rtW, y, brush, 1f, style);
             if (showLabel && label.Length > 0 && dxLabelFormat != null)
             {
                 string txt    = label + " " + Instrument.MasterInstrument.FormatPrice(price);
@@ -2822,8 +2863,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             const float PadX   = 8f;
             const float PadY   = 6f;
-            const float LineH  = 16f;
-            const float PanelW = 380f;
+            const float LineH  = 18f;
+            const float PanelW = 420f;
 
             string activeSessName = "—";
             if (activeSessions != null)

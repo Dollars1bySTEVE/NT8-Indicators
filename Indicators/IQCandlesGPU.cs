@@ -499,6 +499,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Name                     = "IQCandlesGPU";
                 Calculate                = Calculate.OnEachTick;
                 IsOverlay                = true;
+                IsAutoScale              = false;
                 DisplayInDataBox         = true;
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
