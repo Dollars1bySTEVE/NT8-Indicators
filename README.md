@@ -177,7 +177,7 @@ This is why the **"Auto render" setting must remain OFF** — the indicator mana
 ## ⚙️ Installation
 
 1. Download `IQMainGPU.cs` from the `Indicators` folder
-2. In NinjaTrader 8, go to **Tools → Import → NinjaScript Add-On**
+2. In NinjaTrader 8, go to **Tools → Import → NinjaScript...**
 3. Select the downloaded file
 4. The indicator will compile automatically
 
