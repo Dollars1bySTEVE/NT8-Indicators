@@ -1,4 +1,4 @@
-# IQMainGPU — Traders Reality Main Indicator-
+# IQMainGPU — THE Main Indicator-
 
 **The Ultimate All-in-One NinjaTrader 8 Indicator**
 
