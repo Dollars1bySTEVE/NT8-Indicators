@@ -107,6 +107,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int    EndBarIndex;
         }
 
+        /// <summary>Tracks the open price and bar range for a timed session open (ETH, Asia, London, US).</summary>
+        private class SessionOpenEntry
+        {
+            public double   OpenPrice;
+            public int      StartBarIndex;
+            public int      EndBarIndex;
+            public DateTime SessionStart;
+            public DateTime SessionEnd;
+        }
+
         /// <summary>Per-bar computed microstructure snapshot.</summary>
         private class BarSnapshot
         {
@@ -181,6 +191,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private List<DailyOpenEntry> dailyOpenEntries;
         private DailyOpenEntry       currentDailyOpenEntry;
+
+        // ETH Daily Open (6 PM ET) and RTH Session Opens (Asia, London, US)
+        private List<SessionOpenEntry> ethOpenEntries;
+        private SessionOpenEntry       currentEthOpenEntry;
+        private List<SessionOpenEntry> rthAsiaOpenEntries;
+        private SessionOpenEntry       currentRthAsiaEntry;
+        private List<SessionOpenEntry> rthLondonOpenEntries;
+        private SessionOpenEntry       currentRthLondonEntry;
+        private List<SessionOpenEntry> rthUsOpenEntries;
+        private SessionOpenEntry       currentRthUsEntry;
 
         private List<SessionBox> sessionBoxes;
         private SessionBox[]     activeSessions;
@@ -274,6 +294,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Daily open brush
         private SharpDX.Direct2D1.SolidColorBrush dxDailyOpenBrush;
+
+        // ETH Daily Open and RTH Session Open brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxEthDailyOpenBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxAsiaOpenBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxLondonOpenBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxUsOpenBrush;
 
         // Session box brushes
         private SharpDX.Direct2D1.SolidColorBrush[] dxSessionBoxBrush;
@@ -1041,6 +1067,70 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Psy Opacity %", Order = 17, GroupName = "6. Daily/Weekly Levels")]
         public int PsyOpacity { get; set; }
 
+        // ── ETH Daily Open (6 PM ET) ──────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show ETH Daily Open (6PM ET)", Order = 18, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowEthDailyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ETH Daily Open Color", Order = 19, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush EthDailyOpenColor { get; set; }
+        [Browsable(false)]
+        public string EthDailyOpenColorSerializable { get => Serialize.BrushToString(EthDailyOpenColor); set => EthDailyOpenColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ETH Daily Open Label", Order = 20, GroupName = "6. Daily/Weekly Levels")]
+        public string EthDailyOpenLabel { get; set; }
+
+        // ── Asia RTH Session Open ─────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia Open (00:00–06:00 UTC)", Order = 21, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowAsiaOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asia Open Color", Order = 22, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AsiaOpenColor { get; set; }
+        [Browsable(false)]
+        public string AsiaOpenColorSerializable { get => Serialize.BrushToString(AsiaOpenColor); set => AsiaOpenColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asia Open Label", Order = 23, GroupName = "6. Daily/Weekly Levels")]
+        public string AsiaOpenLabel { get; set; }
+
+        // ── London RTH Session Open ───────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show London Open (UK DST)", Order = 24, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowLondonOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Open Color", Order = 25, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush LondonOpenColor { get; set; }
+        [Browsable(false)]
+        public string LondonOpenColorSerializable { get => Serialize.BrushToString(LondonOpenColor); set => LondonOpenColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Open Label", Order = 26, GroupName = "6. Daily/Weekly Levels")]
+        public string LondonOpenLabel { get; set; }
+
+        // ── US RTH Session Open ───────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show US Open (US DST)", Order = 27, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowUsOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "US Open Color", Order = 28, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush UsOpenColor { get; set; }
+        [Browsable(false)]
+        public string UsOpenColorSerializable { get => Serialize.BrushToString(UsOpenColor); set => UsOpenColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "US Open Label", Order = 29, GroupName = "6. Daily/Weekly Levels")]
+        public string UsOpenLabel { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters — 7. PVSRA Vectors
@@ -1491,6 +1581,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PsyColor                 = Brushes.Orange;
                 PsyOpacity               = 30;
 
+                // 6. ETH Daily Open
+                ShowEthDailyOpen = true;
+                var ethOpenBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 200, 50));
+                ethOpenBrush.Freeze();
+                EthDailyOpenColor = ethOpenBrush;
+                EthDailyOpenLabel = "ETH Open";
+
+                // 6. Asia RTH Open
+                ShowAsiaOpen  = true;
+                AsiaOpenColor = System.Windows.Media.Brushes.Crimson;
+                AsiaOpenLabel = "Asia Open";
+
+                // 6. London RTH Open
+                ShowLondonOpen  = true;
+                LondonOpenColor = System.Windows.Media.Brushes.SteelBlue;
+                LondonOpenLabel = "LDN Open";
+
+                // 6. US RTH Open
+                ShowUsOpen  = true;
+                UsOpenColor = System.Windows.Media.Brushes.ForestGreen;
+                UsOpenLabel = "US Open";
+
                 // 7. PVSRA Vectors
                 EnablePVSRA          = true;
                 PVSRALookback        = 10;
@@ -1572,6 +1684,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 dailyOpenEntries      = new List<DailyOpenEntry>(200);
                 currentDailyOpenEntry = null;
+
+                ethOpenEntries        = new List<SessionOpenEntry>(200);
+                currentEthOpenEntry   = null;
+                rthAsiaOpenEntries    = new List<SessionOpenEntry>(200);
+                currentRthAsiaEntry   = null;
+                rthLondonOpenEntries  = new List<SessionOpenEntry>(200);
+                currentRthLondonEntry = null;
+                rthUsOpenEntries      = new List<SessionOpenEntry>(200);
+                currentRthUsEntry     = null;
 
                 // Candle / microstructure collections
                 snapshots      = new List<BarSnapshot>(1000);
@@ -1900,6 +2021,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     DateTime.SpecifyKind(Time[0], DateTimeKind.Unspecified),
                     Bars.TradingHours.TimeZoneInfo);
                 UpdateSessions(barUtc);
+                UpdateEthAndRthOpens(barUtc);
 
                 if (psyWeekStartBar > 0)
                 {
@@ -2252,6 +2374,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderDailyOpen: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQMainGPU: RenderDailyOpen [" + ex.GetType().Name + "]: " + ex.Message); }
 
+            // ── 6b. ETH Daily Open (6 PM ET) ─────────────────────────────────
+            try { if (ShowEthDailyOpen) RenderSessionOpenLines(chartControl, chartScale, ethOpenEntries, dxEthDailyOpenBrush, EthDailyOpenLabel); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderEthOpen: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderEthOpen [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 6c. RTH Session Opens (Asia, London, US) ──────────────────────
+            try
+            {
+                if (ShowAsiaOpen)   RenderSessionOpenLines(chartControl, chartScale, rthAsiaOpenEntries,   dxAsiaOpenBrush,   AsiaOpenLabel);
+                if (ShowLondonOpen) RenderSessionOpenLines(chartControl, chartScale, rthLondonOpenEntries, dxLondonOpenBrush, LondonOpenLabel);
+                if (ShowUsOpen)     RenderSessionOpenLines(chartControl, chartScale, rthUsOpenEntries,     dxUsOpenBrush,     UsOpenLabel);
+            }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderRthOpens: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderRthOpens [" + ex.GetType().Name + "]: " + ex.Message); }
+
             // ── 7. Psy levels (daily + weekly round numbers) ─────────────────
             try
             {
@@ -2389,6 +2526,43 @@ namespace NinjaTrader.NinjaScript.Indicators
                     string txt  = "DO " + Instrument.MasterInstrument.FormatPrice(entry.OpenPrice);
                     rt.DrawText(txt, dxLabelFormat,
                         new SharpDX.RectangleF(xRight + 4f, y + 4f, 120f, 16f), dxDailyOpenBrush);
+                }
+            }
+        }
+
+        private void RenderSessionOpenLines(ChartControl cc, ChartScale cs,
+            List<SessionOpenEntry> entries, SharpDX.Direct2D1.SolidColorBrush brush, string labelText)
+        {
+            if (brush == null || entries == null) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            List<SessionOpenEntry> snapshot;
+            lock (_sessionLock)
+            {
+                snapshot = entries.ToList();
+            }
+
+            float barHalfWidth = cc.GetBarPaintWidth(ChartBars) / 2f;
+
+            foreach (var entry in snapshot)
+            {
+                if (entry.OpenPrice == 0) continue;
+                int startIdx = Math.Max(ChartBars.FromIndex, entry.StartBarIndex);
+                int endIdx   = Math.Min(ChartBars.ToIndex,   entry.EndBarIndex);
+                if (startIdx > endIdx) continue;
+
+                float xLeft  = cc.GetXByBarIndex(ChartBars, startIdx) - barHalfWidth;
+                float xRight = cc.GetXByBarIndex(ChartBars, endIdx)   + barHalfWidth;
+                float y      = cs.GetYByValue(entry.OpenPrice);
+
+                DrawStyledLine(xLeft, y, xRight, y, brush, 1.5f, DailyOpenLineStyle);
+
+                if (dxLabelFormat != null)
+                {
+                    string txt = labelText + " " + Instrument.MasterInstrument.FormatPrice(entry.OpenPrice);
+                    rt.DrawText(txt, dxLabelFormat,
+                        new SharpDX.RectangleF(xRight + 4f, y + 4f, 120f, 16f), brush);
                 }
             }
         }
@@ -3146,6 +3320,95 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        private void UpdateEthAndRthOpens(DateTime barUtc)
+        {
+            DateTime day = barUtc.Date;
+
+            // ── ETH Daily Open (6 PM ET) ──────────────────────────────────────
+            // 6 PM ET = 22:00 UTC during US DST (EDT), 23:00 UTC during US standard (EST)
+            DateTime ethStart = GetEthSessionStart(barUtc);
+            DateTime ethEnd   = ethStart.AddHours(24);
+            if (currentEthOpenEntry == null || currentEthOpenEntry.SessionStart != ethStart)
+            {
+                if (currentEthOpenEntry != null)
+                    currentEthOpenEntry.EndBarIndex = CurrentBar - 1;
+                currentEthOpenEntry = new SessionOpenEntry
+                {
+                    OpenPrice     = Open[0],
+                    StartBarIndex = CurrentBar,
+                    EndBarIndex   = CurrentBar,
+                    SessionStart  = ethStart,
+                    SessionEnd    = ethEnd
+                };
+                lock (_sessionLock)
+                {
+                    if (ethOpenEntries.Count >= 200) ethOpenEntries.RemoveAt(0);
+                    ethOpenEntries.Add(currentEthOpenEntry);
+                }
+            }
+            else
+                currentEthOpenEntry.EndBarIndex = CurrentBar;
+
+            // ── Asia RTH Open (00:00 – 06:00 UTC, no DST) ────────────────────
+            DateTime asiaStart = day;
+            DateTime asiaEnd   = day.AddHours(6);
+            bool inAsia = barUtc >= asiaStart && barUtc < asiaEnd;
+            UpdateRthEntry(inAsia, asiaStart, asiaEnd, ref currentRthAsiaEntry, rthAsiaOpenEntries);
+
+            // ── London RTH Open (07:00/08:00 – 16:00/17:00 UTC with UK DST) ──
+            int      lndOffset = IsUkDst(day) ? 0 : 1;
+            DateTime lndStart  = day.AddHours(7 + lndOffset);
+            DateTime lndEnd    = day.AddHours(16 + lndOffset);
+            bool inLondon = barUtc >= lndStart && barUtc < lndEnd;
+            UpdateRthEntry(inLondon, lndStart, lndEnd, ref currentRthLondonEntry, rthLondonOpenEntries);
+
+            // ── US RTH Open (13:30/14:30 – 21:00/22:00 UTC with US DST) ──────
+            int      usOffset = IsUsDst(day) ? 0 : 1;
+            DateTime usStart  = day.AddHours(13 + usOffset).AddMinutes(30);
+            DateTime usEnd    = day.AddHours(21 + usOffset);
+            bool inUs = barUtc >= usStart && barUtc < usEnd;
+            UpdateRthEntry(inUs, usStart, usEnd, ref currentRthUsEntry, rthUsOpenEntries);
+        }
+
+        private static DateTime GetEthSessionStart(DateTime barUtc)
+        {
+            DateTime day     = barUtc.Date;
+            int      ethHour = IsUsDst(day) ? 22 : 23;
+            DateTime todayEth = day.AddHours(ethHour);
+            if (barUtc >= todayEth)
+                return todayEth;
+            DateTime prevDay     = day.AddDays(-1);
+            int      prevEthHour = IsUsDst(prevDay) ? 22 : 23;
+            return prevDay.AddHours(prevEthHour);
+        }
+
+        private void UpdateRthEntry(bool inSession, DateTime sessionStart, DateTime sessionEnd,
+            ref SessionOpenEntry currentEntry, List<SessionOpenEntry> entryList)
+        {
+            if (!inSession) return;
+
+            if (currentEntry == null || currentEntry.SessionStart != sessionStart)
+            {
+                if (currentEntry != null)
+                    currentEntry.EndBarIndex = CurrentBar - 1;
+                currentEntry = new SessionOpenEntry
+                {
+                    OpenPrice     = Open[0],
+                    StartBarIndex = CurrentBar,
+                    EndBarIndex   = CurrentBar,
+                    SessionStart  = sessionStart,
+                    SessionEnd    = sessionEnd
+                };
+                lock (_sessionLock)
+                {
+                    if (entryList.Count >= 200) entryList.RemoveAt(0);
+                    entryList.Add(currentEntry);
+                }
+            }
+            else
+                currentEntry.EndBarIndex = CurrentBar;
+        }
+
         private void CheckPivotCrossAlert(double prev, double curr, double level, string name)
         {
             if (level == 0) return;
@@ -3613,6 +3876,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Daily open
                 dxDailyOpenBrush = MakeBrush(rt, DailyOpenColor, 0.9f);
 
+                // ETH Daily Open and RTH Session Open brushes
+                dxEthDailyOpenBrush = MakeBrush(rt, EthDailyOpenColor, 0.9f);
+                dxAsiaOpenBrush     = MakeBrush(rt, AsiaOpenColor,     0.9f);
+                dxLondonOpenBrush   = MakeBrush(rt, LondonOpenColor,   0.9f);
+                dxUsOpenBrush       = MakeBrush(rt, UsOpenColor,       0.9f);
+
                 // Session brushes — per session
                 dxSessionBoxBrush    = new SharpDX.Direct2D1.SolidColorBrush[8];
                 dxSessionBorderBrush = new SharpDX.Direct2D1.SolidColorBrush[8];
@@ -3733,6 +4002,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxRdBrush);
             DisposeRef(ref dxRwBrush);
             DisposeRef(ref dxDailyOpenBrush);
+            DisposeRef(ref dxEthDailyOpenBrush);
+            DisposeRef(ref dxAsiaOpenBrush);
+            DisposeRef(ref dxLondonOpenBrush);
+            DisposeRef(ref dxUsOpenBrush);
             DisposeRef(ref dxPsyBrush);
             DisposeRef(ref dxDashBgBrush);
             DisposeRef(ref dxDashTextBrush);
