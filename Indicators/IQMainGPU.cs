@@ -4252,12 +4252,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
                 if (d0 == null || d1 == null) continue;
 
-                double upper0, lower0, upper1, lower1;
+                double upper0 = 0, lower0 = 0, upper1 = 0, lower1 = 0;
                 switch (bandNum)
                 {
                     case 1: upper0 = d0.Band1Upper; lower0 = d0.Band1Lower; upper1 = d1.Band1Upper; lower1 = d1.Band1Lower; break;
                     case 2: upper0 = d0.Band2Upper; lower0 = d0.Band2Lower; upper1 = d1.Band2Upper; lower1 = d1.Band2Lower; break;
-                    default: upper0 = d0.Band3Upper; lower0 = d0.Band3Lower; upper1 = d1.Band3Upper; lower1 = d1.Band3Lower; break;
+                    case 3: upper0 = d0.Band3Upper; lower0 = d0.Band3Lower; upper1 = d1.Band3Upper; lower1 = d1.Band3Lower; break;
+                    default: continue;
                 }
 
                 float yU0 = cs.GetYByValue(upper0);
@@ -4274,8 +4275,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Optional fill between upper and lower band
                 if (VwapFillBands && dxVwapFillBrush != null)
                 {
-                    float fillTop    = Math.Min(Math.Min(yU0, yU1), Math.Min(yL0, yL1));
-                    float fillBottom = Math.Max(Math.Max(yU0, yU1), Math.Max(yL0, yL1));
+                    float fillTop    = Math.Min(yU0, yU1);   // highest point of upper band
+                    float fillBottom = Math.Max(yL0, yL1);   // lowest point of lower band
                     float width      = x1 - x0;
                     if (width > 0 && fillBottom > fillTop)
                         rt.FillRectangle(
