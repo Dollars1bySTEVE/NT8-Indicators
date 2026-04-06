@@ -1,0 +1,3745 @@
+// IQMainGPU — Combined GPU-accelerated indicator for NinjaTrader 8
+// Merges IQSessionsGPU (sessions, EMAs, pivots, ranges) +
+//        IQCandlesGPU (PVSRA candles, liquidity zones, volume delta).
+// All logic from both source indicators is fully preserved.
+
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+// NinjaTrader 8 requires custom enums declared OUTSIDE all namespaces
+// so the auto-generated partial class code can resolve them without ambiguity.
+// Reference: forum.ninjatrader.com threads #1182932, #95909, #1046853
+
+/// <summary>Dashboard anchor corner on the chart for IQMainGPU.</summary>
+public enum IQMDashboardPosition { TopLeft, TopRight, BottomLeft, BottomRight }
+
+/// <summary>Line style for pivots, M-levels, ADR lines, etc.</summary>
+public enum IQMLineStyle { Solid, Dashed, Dotted }
+
+/// <summary>Asset class profile for tick/pip size calibration.</summary>
+public enum IQMAssetClass { Futures, Crypto, Stocks, Forex, Indices }
+
+/// <summary>Candle coloring mode.</summary>
+public enum IQMCandleColorMode
+{
+    Composite,
+    PVSRA,
+    VolumeDelta,
+    Absorption,
+    Imbalance,
+    FakeBreakout,
+    Classic
+}
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+    /// <summary>
+    /// IQMainGPU — Combined Traders Reality Main indicator.
+    /// Merges IQSessionsGPU (sessions, EMAs, pivots, ranges) +
+    ///        IQCandlesGPU (PVSRA candles, liquidity zones, volume delta).
+    ///
+    /// Features:
+    ///  • 5 EMAs (5, 13, 50, 200, 800) with EMA50 cloud
+    ///  • Classic Floor Pivot Points (PP, R1-R3, S1-S3) with M-level midpoints
+    ///  • Yesterday and Last Week High/Low as step lines
+    ///  • ADR / AWR / AMR (Average Daily/Weekly/Monthly Range) with 50% levels
+    ///  • Range Daily Hi/Lo and Range Weekly Hi/Lo
+    ///  • Daily Open horizontal line
+    ///  • 8 Market Sessions with opening-range boxes and DST handling
+    ///  • Weekly Psy (Psychological) High/Low levels
+    ///  • ADR/AWR/AMR statistics dashboard table
+    ///  • DST reference table
+    ///  • GPU-rendered candles colored by volume delta / absorption / imbalance / fake-breakout
+    ///  • Level 1 + Level 2 order book via OnMarketDepth
+    ///  • Volume delta microstructure: buy/sell pressure, delta%, cumulative delta
+    ///  • 5 fake-breakout filters
+    ///  • Smart money absorption detection
+    ///  • Imbalance flagging with rolling percentile thresholds
+    ///  • Order-book wall detection
+    ///  • Unified on-chart dashboard
+    ///  • All SharpDX types fully qualified — no namespace conflicts
+    /// </summary>
+    public class IQMainGPU : Indicator
+    {
+        // ════════════════════════════════════════════════════════════════════════
+        #region Inner types
+
+        /// <summary>One completed session window for rendering the session box.</summary>
+        private class SessionBox
+        {
+            public DateTime StartTime;
+            public DateTime EndTime;
+            public int      StartBarIndex;
+            public int      EndBarIndex;
+            public double   SessionHigh;
+            public double   SessionLow;
+            public bool     IsComplete;
+            public int      SessionId;   // 0=London,1=NY,2=Tokyo,3=HK,4=Sydney,5=EUBrinks,6=USBrinks,7=Frankfurt
+        }
+
+        /// <summary>Snapshot of pivot levels for a trading day.</summary>
+        private class PivotSnapshot
+        {
+            public double PP, R1, R2, R3, S1, S2, S3;
+            public double M0, M1, M2, M3, M4, M5;
+            public int    StartBarIndex;
+        }
+
+        /// <summary>Tracks the open price and bar range for a single trading day.</summary>
+        private class DailyOpenEntry
+        {
+            public double OpenPrice;
+            public int    StartBarIndex;
+            public int    EndBarIndex;
+        }
+
+        /// <summary>Per-bar computed microstructure snapshot.</summary>
+        private class BarSnapshot
+        {
+            public double BuyVolume;
+            public double SellVolume;
+            public double Delta;
+            public double DeltaPct;
+            public double CumDelta;
+            public bool IsAbsorption;
+            public bool IsImbalance;
+            public bool IsFakeBreakout;
+            public int FakeBreakoutDir;
+        }
+
+        /// <summary>Single level in the order book snapshot.</summary>
+        private class BookLevel
+        {
+            public double Price;
+            public long   Size;
+            public bool   IsSpoof;
+        }
+
+        /// <summary>Unrecovered liquidity zone left behind by a PVSRA candle.</summary>
+        private class LiquidityZone
+        {
+            public double HighPrice;
+            public double LowPrice;
+            public double BodyHighPrice;
+            public double BodyLowPrice;
+            public int    CreatedBar;
+            public int    OriginBarIndex;
+            public bool   IsBullish;
+            public bool   IsAbsorption;
+            public bool   IsRecovered;
+            public double PartialRecoveryHigh;
+            public double PartialRecoveryLow;
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Private fields — Sessions / Pivots / Ranges
+
+        private NinjaTrader.NinjaScript.Indicators.EMA    ema5Ind, ema13Ind, ema50Ind, ema200Ind, ema800Ind;
+        private NinjaTrader.NinjaScript.Indicators.StdDev stdDev100Ind;
+        private NinjaTrader.Gui.Tools.SimpleFont labelFont;
+
+        private PivotSnapshot currentPivot;
+        private double        dayHigh, dayLow, dayClose;
+        private double        prevDayHigh, prevDayLow, prevDayClose;
+        private bool          prevDayLoaded;
+
+        private double yesterdayHigh, yesterdayLow;
+        private double lastWeekHigh, lastWeekLow;
+        private int    currentDayOfWeek;
+        private double weekHigh, weekLow;
+        private bool   weekDataLoaded;
+        private int    currentMonth;
+        private double monthHigh, monthLow;
+        private bool   monthDataLoaded;
+
+        private Queue<double> dailyRanges;
+        private Queue<double> weeklyRanges;
+        private Queue<double> monthlyRanges;
+        private Queue<double> rdRanges;
+        private Queue<double> rwRanges;
+
+        private double adrValue, awrValue, amrValue, rdValue, rwValue;
+        private double adrHigh, adrLow, awrHigh, awrLow, amrHigh, amrLow;
+        private double rdHigh, rdLow, rwHigh, rwLow;
+        private double dailyOpen;
+        private bool   dailyOpenSet;
+
+        private List<DailyOpenEntry> dailyOpenEntries;
+        private DailyOpenEntry       currentDailyOpenEntry;
+
+        private List<SessionBox> sessionBoxes;
+        private SessionBox[]     activeSessions;
+        private readonly object  _sessionLock = new object();
+
+        private double psyWeekHigh, psyWeekLow;
+        private int    psyWeekStartBar;
+
+        private bool alertAdrHighFired, alertAdrLowFired;
+        private bool alertAwrHighFired, alertAwrLowFired;
+        private bool alertAmrHighFired, alertAmrLowFired;
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Private fields — Candles / Microstructure
+
+        private List<BarSnapshot>   snapshots;
+        private double              cumDelta;
+        private double              sessionBuyVol;
+        private double              sessionSellVol;
+        private double              prevTickPrice;
+        private long                prevTickVol;
+
+        private List<double>        deltaHistory;
+        private double              imbalanceLow;
+        private double              imbalanceHigh;
+
+        private List<double>        srLevels;
+
+        private Dictionary<double, BookLevel> bidBook;
+        private Dictionary<double, BookLevel> askBook;
+        private bool   level2Available;
+        private double bestBidPrice;
+        private double bestAskPrice;
+        private long   bestBidSize;
+        private long   bestAskSize;
+        private long   totalBidDepth;
+        private long   totalAskDepth;
+        private double wallBidPrice;
+        private long   wallBidSize;
+        private double wallAskPrice;
+        private long   wallAskSize;
+        private string l2StatusText = "L2: waiting…";
+
+        private double absorptionThreshold;
+        private int    confirmBarsCount;
+        private int    breakoutDir;
+        private double breakoutLevel;
+
+        private List<LiquidityZone> liquidityZones;
+        private int  activeZoneCount;
+        private int  recoveredZoneCount;
+
+        private string dashLine2 = "";
+        private string dashLine3 = "";
+        private string dashLine4 = "";
+        private string dashLine5 = "";
+        private string dashLine6 = "";
+        private string dashLine7 = "";
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Private fields — SharpDX GPU resources
+
+        private bool dxReady;
+
+        // Shared write factory and formats
+        private SharpDX.DirectWrite.Factory        dxWriteFactory;
+        private SharpDX.DirectWrite.TextFormat     dxLabelFormat;
+        private SharpDX.DirectWrite.TextFormat     dxSmallFormat;
+        private SharpDX.DirectWrite.TextFormat     dxDashFormat;
+
+        // Pivot brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxPPBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxRLevelBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxSLevelBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxMLevelBrush;
+
+        // Yesterday / last week brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxYesterdayBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxLastWeekBrush;
+
+        // ADR / AWR / AMR brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxAdrBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxAwrBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxAmrBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxRdBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxRwBrush;
+
+        // Daily open brush
+        private SharpDX.Direct2D1.SolidColorBrush dxDailyOpenBrush;
+
+        // Session box brushes
+        private SharpDX.Direct2D1.SolidColorBrush[] dxSessionBoxBrush;
+        private SharpDX.Direct2D1.SolidColorBrush[] dxSessionBorderBrush;
+
+        // Psy level brush
+        private SharpDX.Direct2D1.SolidColorBrush dxPsyBrush;
+
+        // Dashboard brushes (shared between session table and candle dashboard)
+        private SharpDX.Direct2D1.SolidColorBrush dxDashBgBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxDashTextBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxDashHeaderBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxDashAccentBrush;
+
+        // Candle body brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxBullBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxBearBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxAbsorbBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxImbalanceBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxFakeBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxWickBrush;
+
+        // Wall brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxWallBidBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxWallAskBrush;
+
+        // PVSRA brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraHighBullBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraHighBearBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraMidBullBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxPvsraMidBearBrush;
+
+        // Composite border brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxBorderAbsorbBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxBorderImbalanceBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxBorderFakeBrush;
+
+        // Zone fill brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBullishBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBearishBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxULZBlueBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxULZPinkBrush;
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 1. Core
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asset Class", Order = 1, GroupName = "1. Core",
+            Description = "Calibrates tick size and thresholds for the selected market type.")]
+        public IQMAssetClass AssetClass { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Candle Color Mode", Order = 2, GroupName = "1. Core")]
+        public IQMCandleColorMode ColorMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Level 2 (Order Book)", Order = 3, GroupName = "1. Core",
+            Description = "Subscribe to market depth (L2) data. Requires broker support.")]
+        public bool EnableLevel2 { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 2. EMAs
+
+        [NinjaScriptProperty]
+        [Range(0, 50)]
+        [Display(Name = "Label X Offset (bars)", Order = 1, GroupName = "2. EMAs")]
+        public int LabelOffsetBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Label Y Offset (ticks)", Order = 2, GroupName = "2. EMAs")]
+        public int LabelOffsetTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA 5", Order = 3, GroupName = "2. EMAs")]
+        public bool ShowEma5 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EMA 5 Color", Order = 4, GroupName = "2. EMAs")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Ema5Color { get; set; }
+        [Browsable(false)]
+        public string Ema5ColorSerializable { get => Serialize.BrushToString(Ema5Color); set => Ema5Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "EMA 5 Thickness", Order = 5, GroupName = "2. EMAs")]
+        public int Ema5Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA 13", Order = 6, GroupName = "2. EMAs")]
+        public bool ShowEma13 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EMA 13 Color", Order = 7, GroupName = "2. EMAs")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Ema13Color { get; set; }
+        [Browsable(false)]
+        public string Ema13ColorSerializable { get => Serialize.BrushToString(Ema13Color); set => Ema13Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "EMA 13 Thickness", Order = 8, GroupName = "2. EMAs")]
+        public int Ema13Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA 50", Order = 9, GroupName = "2. EMAs")]
+        public bool ShowEma50 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EMA 50 Color", Order = 10, GroupName = "2. EMAs")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Ema50Color { get; set; }
+        [Browsable(false)]
+        public string Ema50ColorSerializable { get => Serialize.BrushToString(Ema50Color); set => Ema50Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "EMA 50 Thickness", Order = 11, GroupName = "2. EMAs")]
+        public int Ema50Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA 50 Cloud", Order = 12, GroupName = "2. EMAs")]
+        public bool ShowEma50Cloud { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Cloud Fill Color", Order = 13, GroupName = "2. EMAs")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush CloudFillColor { get; set; }
+        [Browsable(false)]
+        public string CloudFillColorSerializable { get => Serialize.BrushToString(CloudFillColor); set => CloudFillColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Cloud Fill Opacity %", Order = 14, GroupName = "2. EMAs")]
+        public int CloudFillOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA 200", Order = 15, GroupName = "2. EMAs")]
+        public bool ShowEma200 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EMA 200 Color", Order = 16, GroupName = "2. EMAs")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Ema200Color { get; set; }
+        [Browsable(false)]
+        public string Ema200ColorSerializable { get => Serialize.BrushToString(Ema200Color); set => Ema200Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "EMA 200 Thickness", Order = 17, GroupName = "2. EMAs")]
+        public int Ema200Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA 800", Order = 18, GroupName = "2. EMAs")]
+        public bool ShowEma800 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EMA 800 Color", Order = 19, GroupName = "2. EMAs")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Ema800Color { get; set; }
+        [Browsable(false)]
+        public string Ema800ColorSerializable { get => Serialize.BrushToString(Ema800Color); set => Ema800Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "EMA 800 Thickness", Order = 20, GroupName = "2. EMAs")]
+        public int Ema800Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA Labels", Order = 21, GroupName = "2. EMAs")]
+        public bool ShowEmaLabels { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 3. Pivot Points
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Pivot PP", Order = 1, GroupName = "3. Pivot Points")]
+        public bool ShowPP { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show R1/S1", Order = 2, GroupName = "3. Pivot Points")]
+        public bool ShowLevel1 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show R2/S2", Order = 3, GroupName = "3. Pivot Points")]
+        public bool ShowLevel2 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show R3/S3", Order = 4, GroupName = "3. Pivot Points")]
+        public bool ShowLevel3 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Pivot Labels", Order = 5, GroupName = "3. Pivot Points")]
+        public bool ShowPivotLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Pivot Line Style", Order = 6, GroupName = "3. Pivot Points")]
+        public IQMLineStyle PivotLineStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "PP Color", Order = 7, GroupName = "3. Pivot Points")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush PPColor { get; set; }
+        [Browsable(false)]
+        public string PPColorSerializable { get => Serialize.BrushToString(PPColor); set => PPColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "R Levels Color", Order = 8, GroupName = "3. Pivot Points")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush RLevelColor { get; set; }
+        [Browsable(false)]
+        public string RLevelColorSerializable { get => Serialize.BrushToString(RLevelColor); set => RLevelColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "S Levels Color", Order = 9, GroupName = "3. Pivot Points")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush SLevelColor { get; set; }
+        [Browsable(false)]
+        public string SLevelColorSerializable { get => Serialize.BrushToString(SLevelColor); set => SLevelColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show M Levels", Order = 10, GroupName = "3. Pivot Points")]
+        public bool ShowMLevels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show M Labels", Order = 11, GroupName = "3. Pivot Points")]
+        public bool ShowMLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "M Level Color", Order = 12, GroupName = "3. Pivot Points")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush MLevelColor { get; set; }
+        [Browsable(false)]
+        public string MLevelColorSerializable { get => Serialize.BrushToString(MLevelColor); set => MLevelColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "M Level Opacity %", Order = 13, GroupName = "3. Pivot Points")]
+        public int MLevelOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "M Line Style", Order = 14, GroupName = "3. Pivot Points")]
+        public IQMLineStyle MLevelLineStyle { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — London
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London Session", Order = 1, GroupName = "4. Sessions — London")]
+        public bool ShowLondon { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Label", Order = 2, GroupName = "4. Sessions — London")]
+        public string LondonLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Show Label", Order = 3, GroupName = "4. Sessions — London")]
+        public bool LondonShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Show Opening Range", Order = 4, GroupName = "4. Sessions — London")]
+        public bool LondonShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Box Color", Order = 5, GroupName = "4. Sessions — London")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush LondonColor { get; set; }
+        [Browsable(false)]
+        public string LondonColorSerializable { get => Serialize.BrushToString(LondonColor); set => LondonColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "London Opacity %", Order = 6, GroupName = "4. Sessions — London")]
+        public int LondonOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — New York
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show New York Session", Order = 1, GroupName = "4. Sessions — New York")]
+        public bool ShowNewYork { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "New York Label", Order = 2, GroupName = "4. Sessions — New York")]
+        public string NewYorkLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "New York Show Label", Order = 3, GroupName = "4. Sessions — New York")]
+        public bool NewYorkShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "New York Show Opening Range", Order = 4, GroupName = "4. Sessions — New York")]
+        public bool NewYorkShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "New York Box Color", Order = 5, GroupName = "4. Sessions — New York")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush NewYorkColor { get; set; }
+        [Browsable(false)]
+        public string NewYorkColorSerializable { get => Serialize.BrushToString(NewYorkColor); set => NewYorkColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "New York Opacity %", Order = 6, GroupName = "4. Sessions — New York")]
+        public int NewYorkOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — Tokyo
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Tokyo Session", Order = 1, GroupName = "4. Sessions — Tokyo")]
+        public bool ShowTokyo { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Tokyo Label", Order = 2, GroupName = "4. Sessions — Tokyo")]
+        public string TokyoLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Tokyo Show Label", Order = 3, GroupName = "4. Sessions — Tokyo")]
+        public bool TokyoShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Tokyo Show Opening Range", Order = 4, GroupName = "4. Sessions — Tokyo")]
+        public bool TokyoShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Tokyo Box Color", Order = 5, GroupName = "4. Sessions — Tokyo")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush TokyoColor { get; set; }
+        [Browsable(false)]
+        public string TokyoColorSerializable { get => Serialize.BrushToString(TokyoColor); set => TokyoColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Tokyo Opacity %", Order = 6, GroupName = "4. Sessions — Tokyo")]
+        public int TokyoOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — Hong Kong
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Hong Kong Session", Order = 1, GroupName = "4. Sessions — Hong Kong")]
+        public bool ShowHongKong { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Hong Kong Label", Order = 2, GroupName = "4. Sessions — Hong Kong")]
+        public string HongKongLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Hong Kong Show Label", Order = 3, GroupName = "4. Sessions — Hong Kong")]
+        public bool HongKongShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Hong Kong Show Opening Range", Order = 4, GroupName = "4. Sessions — Hong Kong")]
+        public bool HongKongShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Hong Kong Box Color", Order = 5, GroupName = "4. Sessions — Hong Kong")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush HongKongColor { get; set; }
+        [Browsable(false)]
+        public string HongKongColorSerializable { get => Serialize.BrushToString(HongKongColor); set => HongKongColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Hong Kong Opacity %", Order = 6, GroupName = "4. Sessions — Hong Kong")]
+        public int HongKongOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — Sydney
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Sydney Session", Order = 1, GroupName = "4. Sessions — Sydney")]
+        public bool ShowSydney { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Sydney Label", Order = 2, GroupName = "4. Sessions — Sydney")]
+        public string SydneyLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Sydney Show Label", Order = 3, GroupName = "4. Sessions — Sydney")]
+        public bool SydneyShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Sydney Show Opening Range", Order = 4, GroupName = "4. Sessions — Sydney")]
+        public bool SydneyShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Sydney Box Color", Order = 5, GroupName = "4. Sessions — Sydney")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush SydneyColor { get; set; }
+        [Browsable(false)]
+        public string SydneyColorSerializable { get => Serialize.BrushToString(SydneyColor); set => SydneyColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Sydney Opacity %", Order = 6, GroupName = "4. Sessions — Sydney")]
+        public int SydneyOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — EU Brinks
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show EU Brinks Session", Order = 1, GroupName = "4. Sessions — EU Brinks")]
+        public bool ShowEuBrinks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EU Brinks Label", Order = 2, GroupName = "4. Sessions — EU Brinks")]
+        public string EuBrinksLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EU Brinks Show Label", Order = 3, GroupName = "4. Sessions — EU Brinks")]
+        public bool EuBrinksShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EU Brinks Show Opening Range", Order = 4, GroupName = "4. Sessions — EU Brinks")]
+        public bool EuBrinksShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "EU Brinks Box Color", Order = 5, GroupName = "4. Sessions — EU Brinks")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush EuBrinksColor { get; set; }
+        [Browsable(false)]
+        public string EuBrinksColorSerializable { get => Serialize.BrushToString(EuBrinksColor); set => EuBrinksColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "EU Brinks Opacity %", Order = 6, GroupName = "4. Sessions — EU Brinks")]
+        public int EuBrinksOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — US Brinks
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show US Brinks Session", Order = 1, GroupName = "4. Sessions — US Brinks")]
+        public bool ShowUsBrinks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "US Brinks Label", Order = 2, GroupName = "4. Sessions — US Brinks")]
+        public string UsBrinksLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "US Brinks Show Label", Order = 3, GroupName = "4. Sessions — US Brinks")]
+        public bool UsBrinksShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "US Brinks Show Opening Range", Order = 4, GroupName = "4. Sessions — US Brinks")]
+        public bool UsBrinksShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "US Brinks Box Color", Order = 5, GroupName = "4. Sessions — US Brinks")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush UsBrinksColor { get; set; }
+        [Browsable(false)]
+        public string UsBrinksColorSerializable { get => Serialize.BrushToString(UsBrinksColor); set => UsBrinksColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "US Brinks Opacity %", Order = 6, GroupName = "4. Sessions — US Brinks")]
+        public int UsBrinksOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Sessions — Frankfurt
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Frankfurt Session", Order = 1, GroupName = "4. Sessions — Frankfurt")]
+        public bool ShowFrankfurt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Frankfurt Label", Order = 2, GroupName = "4. Sessions — Frankfurt")]
+        public string FrankfurtLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Frankfurt Show Label", Order = 3, GroupName = "4. Sessions — Frankfurt")]
+        public bool FrankfurtShowLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Frankfurt Show Opening Range", Order = 4, GroupName = "4. Sessions — Frankfurt")]
+        public bool FrankfurtShowOpeningRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Frankfurt Box Color", Order = 5, GroupName = "4. Sessions — Frankfurt")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush FrankfurtColor { get; set; }
+        [Browsable(false)]
+        public string FrankfurtColorSerializable { get => Serialize.BrushToString(FrankfurtColor); set => FrankfurtColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Frankfurt Opacity %", Order = 6, GroupName = "4. Sessions — Frankfurt")]
+        public int FrankfurtOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 5. Range Levels — ADR
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ADR", Order = 1, GroupName = "5. Range Levels — ADR")]
+        public bool ShowAdr { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 31)]
+        [Display(Name = "ADR Length (days)", Order = 2, GroupName = "5. Range Levels — ADR")]
+        public int AdrLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ADR Use Daily Open", Order = 3, GroupName = "5. Range Levels — ADR")]
+        public bool AdrUseDailyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ADR 50%", Order = 4, GroupName = "5. Range Levels — ADR")]
+        public bool ShowAdr50 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ADR Labels", Order = 5, GroupName = "5. Range Levels — ADR")]
+        public bool ShowAdrLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ADR Range Label", Order = 6, GroupName = "5. Range Levels — ADR")]
+        public bool ShowAdrRangeLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ADR Color", Order = 7, GroupName = "5. Range Levels — ADR")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AdrColor { get; set; }
+        [Browsable(false)]
+        public string AdrColorSerializable { get => Serialize.BrushToString(AdrColor); set => AdrColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "ADR Opacity %", Order = 8, GroupName = "5. Range Levels — ADR")]
+        public int AdrOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ADR Line Style", Order = 9, GroupName = "5. Range Levels — ADR")]
+        public IQMLineStyle AdrLineStyle { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 5. Range Levels — AWR
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show AWR", Order = 1, GroupName = "5. Range Levels — AWR")]
+        public bool ShowAwr { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 52)]
+        [Display(Name = "AWR Length (weeks)", Order = 2, GroupName = "5. Range Levels — AWR")]
+        public int AwrLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show AWR 50%", Order = 3, GroupName = "5. Range Levels — AWR")]
+        public bool ShowAwr50 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show AWR Labels", Order = 4, GroupName = "5. Range Levels — AWR")]
+        public bool ShowAwrLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "AWR Color", Order = 5, GroupName = "5. Range Levels — AWR")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AwrColor { get; set; }
+        [Browsable(false)]
+        public string AwrColorSerializable { get => Serialize.BrushToString(AwrColor); set => AwrColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "AWR Opacity %", Order = 6, GroupName = "5. Range Levels — AWR")]
+        public int AwrOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "AWR Line Style", Order = 7, GroupName = "5. Range Levels — AWR")]
+        public IQMLineStyle AwrLineStyle { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 5. Range Levels — AMR
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show AMR", Order = 1, GroupName = "5. Range Levels — AMR")]
+        public bool ShowAmr { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 24)]
+        [Display(Name = "AMR Length (months)", Order = 2, GroupName = "5. Range Levels — AMR")]
+        public int AmrLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show AMR 50%", Order = 3, GroupName = "5. Range Levels — AMR")]
+        public bool ShowAmr50 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show AMR Labels", Order = 4, GroupName = "5. Range Levels — AMR")]
+        public bool ShowAmrLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "AMR Color", Order = 5, GroupName = "5. Range Levels — AMR")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AmrColor { get; set; }
+        [Browsable(false)]
+        public string AmrColorSerializable { get => Serialize.BrushToString(AmrColor); set => AmrColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "AMR Opacity %", Order = 6, GroupName = "5. Range Levels — AMR")]
+        public int AmrOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "AMR Line Style", Order = 7, GroupName = "5. Range Levels — AMR")]
+        public IQMLineStyle AmrLineStyle { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 5. Range Levels — RD
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show RD Hi/Lo", Order = 1, GroupName = "5. Range Levels — RD")]
+        public bool ShowRd { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 31)]
+        [Display(Name = "RD Length (days)", Order = 2, GroupName = "5. Range Levels — RD")]
+        public int RdLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show RD Labels", Order = 3, GroupName = "5. Range Levels — RD")]
+        public bool ShowRdLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "RD Color", Order = 4, GroupName = "5. Range Levels — RD")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush RdColor { get; set; }
+        [Browsable(false)]
+        public string RdColorSerializable { get => Serialize.BrushToString(RdColor); set => RdColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "RD Opacity %", Order = 5, GroupName = "5. Range Levels — RD")]
+        public int RdOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 5. Range Levels — RW
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show RW Hi/Lo", Order = 1, GroupName = "5. Range Levels — RW")]
+        public bool ShowRw { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 52)]
+        [Display(Name = "RW Length (weeks)", Order = 2, GroupName = "5. Range Levels — RW")]
+        public int RwLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show RW Labels", Order = 3, GroupName = "5. Range Levels — RW")]
+        public bool ShowRwLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "RW Color", Order = 4, GroupName = "5. Range Levels — RW")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush RwColor { get; set; }
+        [Browsable(false)]
+        public string RwColorSerializable { get => Serialize.BrushToString(RwColor); set => RwColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "RW Opacity %", Order = 5, GroupName = "5. Range Levels — RW")]
+        public int RwOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 6. Daily/Weekly Levels
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Yesterday Hi/Lo", Order = 1, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowYesterday { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Yesterday Labels", Order = 2, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowYesterdayLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Yesterday Color", Order = 3, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush YesterdayColor { get; set; }
+        [Browsable(false)]
+        public string YesterdayColorSerializable { get => Serialize.BrushToString(YesterdayColor); set => YesterdayColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Last Week Hi/Lo", Order = 4, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowLastWeek { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Last Week Labels", Order = 5, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowLastWeekLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Last Week Color", Order = 6, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush LastWeekColor { get; set; }
+        [Browsable(false)]
+        public string LastWeekColorSerializable { get => Serialize.BrushToString(LastWeekColor); set => LastWeekColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Daily Open", Order = 7, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowDailyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Historical Daily Opens", Order = 8, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowHistoricalDailyOpens { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Daily Open Color", Order = 9, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush DailyOpenColor { get; set; }
+        [Browsable(false)]
+        public string DailyOpenColorSerializable { get => Serialize.BrushToString(DailyOpenColor); set => DailyOpenColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Daily Open Line Style", Order = 10, GroupName = "6. Daily/Weekly Levels")]
+        public IQMLineStyle DailyOpenLineStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Weekly Psy Levels", Order = 11, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowPsyLevels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Psy Use Crypto (Sydney) Start", Order = 12, GroupName = "6. Daily/Weekly Levels")]
+        public bool PsyUseSydney { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Psy Labels", Order = 13, GroupName = "6. Daily/Weekly Levels")]
+        public bool ShowPsyLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Psy Level Color", Order = 14, GroupName = "6. Daily/Weekly Levels")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush PsyColor { get; set; }
+        [Browsable(false)]
+        public string PsyColorSerializable { get => Serialize.BrushToString(PsyColor); set => PsyColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Psy Opacity %", Order = 15, GroupName = "6. Daily/Weekly Levels")]
+        public int PsyOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 7. PVSRA Vectors
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable PVSRA Vectors", Order = 1, GroupName = "7. PVSRA Vectors")]
+        public bool EnablePVSRA { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 50)]
+        [Display(Name = "PVSRA Lookback Bars", Order = 2, GroupName = "7. PVSRA Vectors")]
+        public int PVSRALookback { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(100, 300)]
+        [Display(Name = "High-Volume Threshold %", Order = 3, GroupName = "7. PVSRA Vectors")]
+        public int HighVolumeThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(100, 200)]
+        [Display(Name = "Mid-Volume Threshold %", Order = 4, GroupName = "7. PVSRA Vectors")]
+        public int MidVolumeThreshold { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 8. Liquidity Zones
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Liquidity Zones", Order = 1, GroupName = "8. Liquidity Zones")]
+        public bool EnableLiquidityZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Include Wicks in Zone Boundary", Order = 2, GroupName = "8. Liquidity Zones")]
+        public bool ULZIncludeWicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Zone Count on Dashboard", Order = 3, GroupName = "8. Liquidity Zones")]
+        public bool ShowZoneCount { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 100)]
+        [Display(Name = "Max Active Zones", Order = 4, GroupName = "8. Liquidity Zones")]
+        public int MaxActiveZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 80)]
+        [Display(Name = "Zone Opacity %", Order = 5, GroupName = "8. Liquidity Zones")]
+        public int ZoneOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bullish Zone Color", Order = 6, GroupName = "8. Liquidity Zones")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush ULZBullishColor { get; set; }
+        [Browsable(false)]
+        public string ULZBullishColorSerializable { get { return Serialize.BrushToString(ULZBullishColor); } set { ULZBullishColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bearish Zone Color", Order = 7, GroupName = "8. Liquidity Zones")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush ULZBearishColor { get; set; }
+        [Browsable(false)]
+        public string ULZBearishColorSerializable { get { return Serialize.BrushToString(ULZBearishColor); } set { ULZBearishColor = Serialize.StringToBrush(value); } }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 9. Volume Delta
+
+        [NinjaScriptProperty]
+        [Range(1, 500)]
+        [Display(Name = "Delta Lookback Bars", Order = 1, GroupName = "9. Volume Delta")]
+        public int DeltaLookback { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 100.0)]
+        [Display(Name = "Absorption Sensitivity %", Order = 2, GroupName = "9. Volume Delta")]
+        public double AbsorptionSensitivity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Cumulative Delta", Order = 3, GroupName = "9. Volume Delta")]
+        public bool ShowCumDelta { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 10. Fake Breakout
+
+        [NinjaScriptProperty]
+        [Range(1, 10)]
+        [Display(Name = "Confirmation Bars Required", Order = 1, GroupName = "10. Fake Breakout")]
+        public int ConfirmationBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 500.0)]
+        [Display(Name = "Volume Follow-Through %", Order = 2, GroupName = "10. Fake Breakout")]
+        public double VolumeFollowThrough { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Momentum RSI Period", Order = 3, GroupName = "10. Fake Breakout")]
+        public int MomentumPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "S/R Swing Strength", Order = 4, GroupName = "10. Fake Breakout")]
+        public int SRSwingStrength { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.1, 10.0)]
+        [Display(Name = "Min Risk/Reward Ratio", Order = 5, GroupName = "10. Fake Breakout")]
+        public double MinRiskReward { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 11. Order Book
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Wall Detection Multiplier", Order = 1, GroupName = "11. Order Book")]
+        public int WallMultiplier { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Anti-Spoofing Checks", Order = 2, GroupName = "11. Order Book")]
+        public int SpoofingChecks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Wall Lines", Order = 3, GroupName = "11. Order Book")]
+        public bool ShowWallLines { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 12. Dashboard
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Dashboard", Order = 1, GroupName = "12. Dashboard")]
+        public bool ShowDashboard { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Dashboard Position", Order = 2, GroupName = "12. Dashboard")]
+        public IQMDashboardPosition DashPosition { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 50)]
+        [Display(Name = "Dashboard Font Size", Order = 3, GroupName = "12. Dashboard")]
+        public int DashFontSize { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(20, 100)]
+        [Display(Name = "Dashboard Opacity %", Order = 4, GroupName = "12. Dashboard")]
+        public int DashOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Halo on Signals", Order = 5, GroupName = "12. Dashboard")]
+        public bool ShowHalo { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Halo Layers", Order = 6, GroupName = "12. Dashboard")]
+        public int HaloLayers { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bullish Color", Order = 7, GroupName = "12. Dashboard")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush BullishColor { get; set; }
+        [Browsable(false)]
+        public string BullishColorSerializable { get { return Serialize.BrushToString(BullishColor); } set { BullishColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bearish Color", Order = 8, GroupName = "12. Dashboard")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush BearishColor { get; set; }
+        [Browsable(false)]
+        public string BearishColorSerializable { get { return Serialize.BrushToString(BearishColor); } set { BearishColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Absorption Color", Order = 9, GroupName = "12. Dashboard")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AbsorptionColor { get; set; }
+        [Browsable(false)]
+        public string AbsorptionColorSerializable { get { return Serialize.BrushToString(AbsorptionColor); } set { AbsorptionColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Imbalance Color", Order = 10, GroupName = "12. Dashboard")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush ImbalanceColor { get; set; }
+        [Browsable(false)]
+        public string ImbalanceColorSerializable { get { return Serialize.BrushToString(ImbalanceColor); } set { ImbalanceColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Fake Breakout Color", Order = 11, GroupName = "12. Dashboard")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush FakeBreakoutColor { get; set; }
+        [Browsable(false)]
+        public string FakeBreakoutColorSerializable { get { return Serialize.BrushToString(FakeBreakoutColor); } set { FakeBreakoutColor = Serialize.StringToBrush(value); } }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 13. Tables
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Range Table", Order = 1, GroupName = "13. Tables")]
+        public bool ShowRangeTable { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ADR in Pips", Order = 2, GroupName = "13. Tables")]
+        public bool TableShowAdrPips { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ADR in Currency", Order = 3, GroupName = "13. Tables")]
+        public bool TableShowAdrCurrency { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show RD Pips", Order = 4, GroupName = "13. Tables")]
+        public bool TableShowRdPips { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Table Position", Order = 5, GroupName = "13. Tables")]
+        public IQMDashboardPosition TablePosition { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Table Background Color", Order = 6, GroupName = "13. Tables")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush TableBgColor { get; set; }
+        [Browsable(false)]
+        public string TableBgColorSerializable { get => Serialize.BrushToString(TableBgColor); set => TableBgColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Table Text Color", Order = 7, GroupName = "13. Tables")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush TableTextColor { get; set; }
+        [Browsable(false)]
+        public string TableTextColorSerializable { get => Serialize.BrushToString(TableTextColor); set => TableTextColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show DST Table", Order = 8, GroupName = "13. Tables")]
+        public bool ShowDstTable { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "DST Table Position", Order = 9, GroupName = "13. Tables")]
+        public IQMDashboardPosition DstTablePosition { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region State management — OnStateChange
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Description              = "IQMainGPU — Combined Traders Reality Main indicator. Merges IQSessionsGPU (sessions, EMAs, pivots, ranges) + IQCandlesGPU (PVSRA candles, liquidity zones, volume delta).";
+                Name                     = "IQMainGPU";
+                Calculate                = Calculate.OnEachTick;
+                IsOverlay                = true;
+                DisplayInDataBox         = true;
+                DrawOnPricePanel         = true;
+                PaintPriceMarkers        = false;
+                IsSuspendedWhileInactive = false;
+                MaximumBarsLookBack      = MaximumBarsLookBack.TwoHundredFiftySix;
+
+                // 1. Core
+                AssetClass   = IQMAssetClass.Futures;
+                ColorMode    = IQMCandleColorMode.VolumeDelta;
+                EnableLevel2 = false;
+
+                // 2. EMAs
+                LabelOffsetBars  = 2;
+                LabelOffsetTicks = 1;
+                ShowEma5         = true;
+                var ema5Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 74));
+                ema5Brush.Freeze();
+                Ema5Color        = ema5Brush;
+                Ema5Thickness    = 1;
+                ShowEma13        = true;
+                var ema13Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(253, 84, 87));
+                ema13Brush.Freeze();
+                Ema13Color       = ema13Brush;
+                Ema13Thickness   = 1;
+                ShowEma50        = true;
+                var ema50Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 188, 211));
+                ema50Brush.Freeze();
+                Ema50Color       = ema50Brush;
+                Ema50Thickness   = 2;
+                ShowEma50Cloud   = true;
+                var cloudBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(155, 47, 174));
+                cloudBrush.Freeze();
+                CloudFillColor   = cloudBrush;
+                CloudFillOpacity = 24;
+                ShowEma200       = true;
+                Ema200Color      = Brushes.White;
+                Ema200Thickness  = 2;
+                ShowEma800       = true;
+                var ema800Brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(50, 34, 144));
+                ema800Brush.Freeze();
+                Ema800Color      = ema800Brush;
+                Ema800Thickness  = 2;
+                ShowEmaLabels    = true;
+
+                // EMA plots: 5 lines + 2 transparent cloud band series
+                AddPlot(new Stroke(Ema5Color,           Ema5Thickness),   PlotStyle.Line, "EMA5");
+                AddPlot(new Stroke(Ema13Color,          Ema13Thickness),  PlotStyle.Line, "EMA13");
+                AddPlot(new Stroke(Ema50Color,          Ema50Thickness),  PlotStyle.Line, "EMA50");
+                AddPlot(new Stroke(Ema200Color,         Ema200Thickness), PlotStyle.Line, "EMA200");
+                AddPlot(new Stroke(Ema800Color,         Ema800Thickness), PlotStyle.Line, "EMA800");
+                AddPlot(new Stroke(Brushes.Transparent, 1),               PlotStyle.Line, "CloudUpper");
+                AddPlot(new Stroke(Brushes.Transparent, 1),               PlotStyle.Line, "CloudLower");
+
+                // 3. Pivot Points
+                ShowPP           = true;
+                ShowLevel1       = true;
+                ShowLevel2       = true;
+                ShowLevel3       = false;
+                ShowPivotLabels  = true;
+                PivotLineStyle   = IQMLineStyle.Dashed;
+                PPColor          = Brushes.Yellow;
+                RLevelColor      = Brushes.LimeGreen;
+                SLevelColor      = Brushes.IndianRed;
+                ShowMLevels      = true;
+                ShowMLabels      = true;
+                MLevelColor      = Brushes.White;
+                MLevelOpacity    = 50;
+                MLevelLineStyle  = IQMLineStyle.Dotted;
+
+                // 4. Sessions — London
+                ShowLondon             = true;
+                LondonLabel            = "London";
+                LondonShowLabel        = true;
+                LondonShowOpeningRange = true;
+                LondonColor            = System.Windows.Media.Brushes.SteelBlue;
+                LondonOpacity          = 15;
+
+                // 4. Sessions — New York
+                ShowNewYork             = true;
+                NewYorkLabel            = "New York";
+                NewYorkShowLabel        = true;
+                NewYorkShowOpeningRange = true;
+                NewYorkColor            = System.Windows.Media.Brushes.ForestGreen;
+                NewYorkOpacity          = 15;
+
+                // 4. Sessions — Tokyo
+                ShowTokyo             = true;
+                TokyoLabel            = "Tokyo";
+                TokyoShowLabel        = true;
+                TokyoShowOpeningRange = true;
+                TokyoColor            = System.Windows.Media.Brushes.Crimson;
+                TokyoOpacity          = 15;
+
+                // 4. Sessions — Hong Kong
+                ShowHongKong             = true;
+                HongKongLabel            = "Hong Kong";
+                HongKongShowLabel        = true;
+                HongKongShowOpeningRange = true;
+                HongKongColor            = System.Windows.Media.Brushes.Orange;
+                HongKongOpacity          = 15;
+
+                // 4. Sessions — Sydney
+                ShowSydney             = true;
+                SydneyLabel            = "Sydney";
+                SydneyShowLabel        = true;
+                SydneyShowOpeningRange = true;
+                SydneyColor            = System.Windows.Media.Brushes.DarkViolet;
+                SydneyOpacity          = 15;
+
+                // 4. Sessions — EU Brinks
+                ShowEuBrinks             = true;
+                EuBrinksLabel            = "EU Brinks";
+                EuBrinksShowLabel        = true;
+                EuBrinksShowOpeningRange = true;
+                EuBrinksColor            = System.Windows.Media.Brushes.DeepSkyBlue;
+                EuBrinksOpacity          = 20;
+
+                // 4. Sessions — US Brinks
+                ShowUsBrinks             = true;
+                UsBrinksLabel            = "US Brinks";
+                UsBrinksShowLabel        = true;
+                UsBrinksShowOpeningRange = true;
+                UsBrinksColor            = System.Windows.Media.Brushes.LimeGreen;
+                UsBrinksOpacity          = 20;
+
+                // 4. Sessions — Frankfurt
+                ShowFrankfurt             = true;
+                FrankfurtLabel            = "Frankfurt";
+                FrankfurtShowLabel        = true;
+                FrankfurtShowOpeningRange = true;
+                FrankfurtColor            = System.Windows.Media.Brushes.Gold;
+                FrankfurtOpacity          = 12;
+
+                // 5. ADR
+                ShowAdr          = true;
+                AdrLength        = 14;
+                AdrUseDailyOpen  = false;
+                ShowAdr50        = true;
+                ShowAdrLabels    = true;
+                ShowAdrRangeLabel= true;
+                AdrColor         = Brushes.DodgerBlue;
+                AdrOpacity       = 70;
+                AdrLineStyle     = IQMLineStyle.Dashed;
+
+                // 5. AWR
+                ShowAwr          = true;
+                AwrLength        = 4;
+                ShowAwr50        = true;
+                ShowAwrLabels    = true;
+                AwrColor         = Brushes.Orange;
+                AwrOpacity       = 50;
+                AwrLineStyle     = IQMLineStyle.Dashed;
+
+                // 5. AMR
+                ShowAmr          = true;
+                AmrLength        = 6;
+                ShowAmr50        = true;
+                ShowAmrLabels    = true;
+                AmrColor         = Brushes.IndianRed;
+                AmrOpacity       = 50;
+                AmrLineStyle     = IQMLineStyle.Dashed;
+
+                // 5. RD
+                ShowRd           = true;
+                RdLength         = 15;
+                ShowRdLabels     = true;
+                RdColor          = Brushes.Crimson;
+                RdOpacity        = 30;
+
+                // 5. RW
+                ShowRw           = true;
+                RwLength         = 13;
+                ShowRwLabels     = true;
+                RwColor          = Brushes.SteelBlue;
+                RwOpacity        = 30;
+
+                // 6. Daily/Weekly Levels
+                ShowYesterday            = true;
+                ShowYesterdayLabels      = true;
+                YesterdayColor           = Brushes.CornflowerBlue;
+                ShowLastWeek             = true;
+                ShowLastWeekLabels       = true;
+                LastWeekColor            = Brushes.MediumSeaGreen;
+                ShowDailyOpen            = true;
+                ShowHistoricalDailyOpens = false;
+                var dailyOpenBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 234, 78));
+                dailyOpenBrush.Freeze();
+                DailyOpenColor           = dailyOpenBrush;
+                DailyOpenLineStyle       = IQMLineStyle.Solid;
+                ShowPsyLevels            = true;
+                PsyUseSydney             = false;
+                ShowPsyLabels            = true;
+                PsyColor                 = Brushes.Orange;
+                PsyOpacity               = 30;
+
+                // 7. PVSRA Vectors
+                EnablePVSRA          = true;
+                PVSRALookback        = 10;
+                HighVolumeThreshold  = 200;
+                MidVolumeThreshold   = 150;
+
+                // 8. Liquidity Zones
+                EnableLiquidityZones = true;
+                ULZIncludeWicks      = false;
+                ShowZoneCount        = true;
+                MaxActiveZones       = 100;
+                ZoneOpacity          = 30;
+                ULZBullishColor      = Brushes.LimeGreen;
+                ULZBearishColor      = Brushes.IndianRed;
+
+                // 9. Volume Delta
+                DeltaLookback         = 100;
+                AbsorptionSensitivity = 60.0;
+                ShowCumDelta          = true;
+
+                // 10. Fake Breakout
+                ConfirmationBars    = 2;
+                VolumeFollowThrough = 120.0;
+                MomentumPeriod      = 14;
+                SRSwingStrength     = 5;
+                MinRiskReward       = 2.0;
+
+                // 11. Order Book
+                WallMultiplier = 5;
+                SpoofingChecks = 3;
+                ShowWallLines  = true;
+
+                // 12. Dashboard
+                ShowDashboard     = true;
+                DashPosition      = IQMDashboardPosition.TopRight;
+                DashFontSize      = 11;
+                DashOpacity       = 80;
+                ShowHalo          = true;
+                HaloLayers        = 5;
+                BullishColor      = Brushes.LimeGreen;
+                BearishColor      = Brushes.Crimson;
+                AbsorptionColor   = Brushes.Gold;
+                ImbalanceColor    = Brushes.DodgerBlue;
+                FakeBreakoutColor = Brushes.OrangeRed;
+
+                // 13. Tables
+                ShowRangeTable       = true;
+                TableShowAdrPips     = true;
+                TableShowAdrCurrency = false;
+                TableShowRdPips      = true;
+                TablePosition        = IQMDashboardPosition.TopRight;
+                TableBgColor         = Brushes.Black;
+                TableTextColor       = Brushes.White;
+                ShowDstTable         = false;
+                DstTablePosition     = IQMDashboardPosition.BottomLeft;
+            }
+            else if (State == State.DataLoaded)
+            {
+                // Sessions / pivot / range collections
+                dailyRanges   = new Queue<double>(32);
+                weeklyRanges  = new Queue<double>(56);
+                monthlyRanges = new Queue<double>(26);
+                rdRanges      = new Queue<double>(32);
+                rwRanges      = new Queue<double>(56);
+
+                sessionBoxes   = new List<SessionBox>(200);
+                activeSessions = new SessionBox[8];
+
+                prevDayLoaded    = false;
+                weekDataLoaded   = false;
+                currentDayOfWeek = -1;
+                monthDataLoaded  = false;
+                currentMonth     = -1;
+                dailyOpenSet     = false;
+
+                alertAdrHighFired = alertAdrLowFired = false;
+                alertAwrHighFired = alertAwrLowFired = false;
+                alertAmrHighFired = alertAmrLowFired = false;
+
+                dailyOpenEntries      = new List<DailyOpenEntry>(200);
+                currentDailyOpenEntry = null;
+
+                // Candle / microstructure collections
+                snapshots      = new List<BarSnapshot>(1000);
+                deltaHistory   = new List<double>(1000);
+                srLevels       = new List<double>(50);
+                bidBook        = new Dictionary<double, BookLevel>(200);
+                askBook        = new Dictionary<double, BookLevel>(200);
+                liquidityZones = new List<LiquidityZone>(100);
+
+                cumDelta       = 0;
+                sessionBuyVol  = 0;
+                sessionSellVol = 0;
+                prevTickPrice  = 0;
+                prevTickVol    = 0;
+                imbalanceLow   = 0;
+                imbalanceHigh  = double.MaxValue;
+                level2Available = false;
+                l2StatusText   = EnableLevel2 ? "L2: waiting…" : "L2: disabled";
+                activeZoneCount    = 0;
+                recoveredZoneCount = 0;
+
+                // Cache EMA/StdDev indicators
+                ema5Ind      = EMA(5);
+                ema13Ind     = EMA(13);
+                ema50Ind     = EMA(50);
+                ema200Ind    = EMA(200);
+                ema800Ind    = EMA(800);
+                stdDev100Ind = StdDev(Close, 100);
+
+                Plots[0].Brush = Ema5Color;   Plots[0].Width = Ema5Thickness;
+                Plots[1].Brush = Ema13Color;  Plots[1].Width = Ema13Thickness;
+                Plots[2].Brush = Ema50Color;  Plots[2].Width = Ema50Thickness;
+                Plots[3].Brush = Ema200Color; Plots[3].Width = Ema200Thickness;
+                Plots[4].Brush = Ema800Color; Plots[4].Width = Ema800Thickness;
+
+                labelFont = new NinjaTrader.Gui.Tools.SimpleFont("Consolas", 12);
+            }
+            else if (State == State.Terminated)
+            {
+                DisposeDXResources();
+            }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region OnBarUpdate — merged sessions + candles
+
+        protected override void OnBarUpdate()
+        {
+            if (CurrentBar < 1)
+                return;
+
+            // ── EMA plot series ───────────────────────────────────────────────
+            Values[0][0] = (ShowEma5   && CurrentBar >= 5)   ? ema5Ind[0]   : double.NaN;
+            Values[1][0] = (ShowEma13  && CurrentBar >= 13)  ? ema13Ind[0]  : double.NaN;
+            Values[2][0] = (ShowEma50  && CurrentBar >= 50)  ? ema50Ind[0]  : double.NaN;
+            Values[3][0] = (ShowEma200 && CurrentBar >= 200) ? ema200Ind[0] : double.NaN;
+            Values[4][0] = (ShowEma800 && CurrentBar >= 800) ? ema800Ind[0] : double.NaN;
+
+            if (CurrentBar >= 100)
+            {
+                double ema50val = ema50Ind[0];
+                double stdDev   = stdDev100Ind[0] / 4.0;
+                Values[5][0]    = ema50val + stdDev;
+                Values[6][0]    = ema50val - stdDev;
+            }
+            else
+            {
+                Values[5][0] = double.NaN;
+                Values[6][0] = double.NaN;
+            }
+
+            if (ShowEma50Cloud && CurrentBar >= 100)
+            {
+                int   barsBack     = Math.Max(0, Math.Min(CurrentBar - 100, 254));
+                Brush outlineBrush = Brushes.Transparent;
+                Draw.Region(this, "Ema50Cloud", 0, barsBack,
+                    Values[5], Values[6], outlineBrush, CloudFillColor, CloudFillOpacity);
+            }
+            else
+            {
+                RemoveDrawObject("Ema50Cloud");
+            }
+
+            // EMA labels at rightmost bar
+            if (CurrentBar == Count - 2 && ShowEmaLabels)
+            {
+                if (ShowEma5 && CurrentBar >= 5)
+                    Draw.Text(this, "Ema5Label", false, "5", 0, ema5Ind[0], 0, Ema5Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else RemoveDrawObject("Ema5Label");
+
+                if (ShowEma13 && CurrentBar >= 13)
+                    Draw.Text(this, "Ema13Label", false, "13", 0, ema13Ind[0], 0, Ema13Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else RemoveDrawObject("Ema13Label");
+
+                if (ShowEma50 && CurrentBar >= 50)
+                    Draw.Text(this, "Ema50Label", false, "50", 0, ema50Ind[0], 0, Ema50Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else RemoveDrawObject("Ema50Label");
+
+                if (ShowEma200 && CurrentBar >= 200)
+                    Draw.Text(this, "Ema200Label", false, "200", 0, ema200Ind[0], 0, Ema200Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else RemoveDrawObject("Ema200Label");
+
+                if (ShowEma800 && CurrentBar >= 800)
+                    Draw.Text(this, "Ema800Label", false, "800", 0, ema800Ind[0], 0, Ema800Color,
+                        labelFont, System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else RemoveDrawObject("Ema800Label");
+            }
+
+            // ── Sessions / day / week / month tracking ────────────────────────
+            if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
+            {
+                DateTime barTime = Time[0];
+                DateTime prevDate = CurrentBar > 0 ? Time[1].Date : barTime.Date;
+                bool newDay = barTime.Date != prevDate;
+
+                if (newDay || CurrentBar == 0)
+                {
+                    if (prevDayLoaded)
+                    {
+                        yesterdayHigh  = dayHigh;
+                        yesterdayLow   = dayLow;
+                        prevDayHigh    = dayHigh;
+                        prevDayLow     = dayLow;
+                        prevDayClose   = dayClose;
+
+                        double dRange = dayHigh - dayLow;
+                        if (dailyRanges.Count >= AdrLength) dailyRanges.Dequeue();
+                        dailyRanges.Enqueue(dRange);
+                        if (rdRanges.Count >= RdLength) rdRanges.Dequeue();
+                        rdRanges.Enqueue(dRange);
+
+                        ComputePivots();
+                    }
+
+                    if (currentDailyOpenEntry != null)
+                        currentDailyOpenEntry.EndBarIndex = CurrentBar - 1;
+
+                    dayHigh      = High[0];
+                    dayLow       = Low[0];
+                    dayClose     = Close[0];
+                    dailyOpen    = Open[0];
+                    dailyOpenSet = true;
+                    prevDayLoaded = true;
+
+                    currentDailyOpenEntry = new DailyOpenEntry
+                    {
+                        OpenPrice     = Open[0],
+                        StartBarIndex = CurrentBar,
+                        EndBarIndex   = CurrentBar
+                    };
+                    lock (_sessionLock)
+                    {
+                        if (dailyOpenEntries.Count >= 200) dailyOpenEntries.RemoveAt(0);
+                        dailyOpenEntries.Add(currentDailyOpenEntry);
+                    }
+
+                    alertAdrHighFired = alertAdrLowFired = false;
+                }
+                else
+                {
+                    if (!dailyOpenSet)
+                    {
+                        dailyOpen    = Open[0];
+                        dailyOpenSet = true;
+                        currentDailyOpenEntry = new DailyOpenEntry
+                        {
+                            OpenPrice     = Open[0],
+                            StartBarIndex = CurrentBar,
+                            EndBarIndex   = CurrentBar
+                        };
+                        lock (_sessionLock)
+                        {
+                            if (dailyOpenEntries.Count >= 200) dailyOpenEntries.RemoveAt(0);
+                            dailyOpenEntries.Add(currentDailyOpenEntry);
+                        }
+                    }
+                    if (High[0] > dayHigh) dayHigh = High[0];
+                    if (Low[0]  < dayLow)  dayLow  = Low[0];
+                    dayClose = Close[0];
+                }
+
+                if (currentDailyOpenEntry != null)
+                    currentDailyOpenEntry.EndBarIndex = CurrentBar;
+
+                int dow = (int)barTime.DayOfWeek;
+                if (dow != currentDayOfWeek)
+                {
+                    bool newWeek = (dow < currentDayOfWeek) || (currentDayOfWeek == -1);
+                    if (newWeek && weekDataLoaded)
+                    {
+                        lastWeekHigh = weekHigh;
+                        lastWeekLow  = weekLow;
+
+                        double wRange = weekHigh - weekLow;
+                        if (weeklyRanges.Count >= AwrLength) weeklyRanges.Dequeue();
+                        weeklyRanges.Enqueue(wRange);
+                        if (rwRanges.Count >= RwLength) rwRanges.Dequeue();
+                        rwRanges.Enqueue(wRange);
+
+                        alertAwrHighFired = alertAwrLowFired = false;
+
+                        weekHigh = High[0];
+                        weekLow  = Low[0];
+
+                        psyWeekHigh     = High[0];
+                        psyWeekLow      = Low[0];
+                        psyWeekStartBar = CurrentBar;
+                    }
+                    else if (!weekDataLoaded)
+                    {
+                        weekHigh = High[0];
+                        weekLow  = Low[0];
+                        psyWeekHigh     = High[0];
+                        psyWeekLow      = Low[0];
+                        psyWeekStartBar = CurrentBar;
+                    }
+
+                    currentDayOfWeek = dow;
+                    weekDataLoaded   = true;
+                }
+
+                if (weekDataLoaded)
+                {
+                    if (High[0] > weekHigh) weekHigh = High[0];
+                    if (Low[0]  < weekLow)  weekLow  = Low[0];
+                }
+
+                int mon = barTime.Month;
+                if (mon != currentMonth)
+                {
+                    if (monthDataLoaded && monthHigh > 0 && monthLow > 0)
+                    {
+                        double mRange = monthHigh - monthLow;
+                        if (monthlyRanges.Count >= AmrLength) monthlyRanges.Dequeue();
+                        monthlyRanges.Enqueue(mRange);
+                        alertAmrHighFired = alertAmrLowFired = false;
+                    }
+                    monthHigh       = High[0];
+                    monthLow        = Low[0];
+                    currentMonth    = mon;
+                    monthDataLoaded = true;
+                }
+                else if (monthDataLoaded)
+                {
+                    if (High[0] > monthHigh) monthHigh = High[0];
+                    if (Low[0]  < monthLow)  monthLow  = Low[0];
+                }
+            }
+
+            // ── ADR / AWR / AMR / RD / RW ─────────────────────────────────────
+            if (dailyRanges.Count > 0)
+            {
+                adrValue = dailyRanges.Average();
+                double todayRange = dayHigh - dayLow;
+                if (AdrUseDailyOpen && dailyOpen > 0)
+                {
+                    adrHigh = dailyOpen + adrValue / 2.0;
+                    adrLow  = dailyOpen - adrValue / 2.0;
+                }
+                else
+                {
+                    double slack = (adrValue - todayRange) / 2.0;
+                    adrHigh = dayHigh + slack;
+                    adrLow  = dayLow  - slack;
+                }
+            }
+
+            if (weeklyRanges.Count > 0)
+            {
+                awrValue = weeklyRanges.Average();
+                double wSlack = (awrValue - (weekHigh - weekLow)) / 2.0;
+                awrHigh = weekHigh + wSlack;
+                awrLow  = weekLow  - wSlack;
+            }
+
+            if (monthlyRanges.Count > 0)
+            {
+                amrValue = monthlyRanges.Average();
+                if (dailyOpen > 0)
+                {
+                    amrHigh = dailyOpen + amrValue / 2.0;
+                    amrLow  = dailyOpen - amrValue / 2.0;
+                }
+            }
+
+            if (rdRanges.Count > 0)
+            {
+                rdValue = rdRanges.Average();
+                double rdSlack = (rdValue - (dayHigh - dayLow)) / 2.0;
+                rdHigh = dayHigh + rdSlack;
+                rdLow  = dayLow  - rdSlack;
+            }
+
+            if (rwRanges.Count > 0)
+            {
+                rwValue = rwRanges.Average();
+                double rwSlack = (rwValue - (weekHigh - weekLow)) / 2.0;
+                rwHigh = weekHigh + rwSlack;
+                rwLow  = weekLow  - rwSlack;
+            }
+
+            // ── Session tracking ──────────────────────────────────────────────
+            if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
+            {
+                DateTime barUtc = TimeZoneInfo.ConvertTimeToUtc(
+                    DateTime.SpecifyKind(Time[0], DateTimeKind.Unspecified),
+                    Bars.TradingHours.TimeZoneInfo);
+                UpdateSessions(barUtc);
+
+                if (psyWeekStartBar > 0)
+                {
+                    if (High[0] > psyWeekHigh) psyWeekHigh = High[0];
+                    if (Low[0]  < psyWeekLow)  psyWeekLow  = Low[0];
+                }
+            }
+
+            // ── Sessions alerts ───────────────────────────────────────────────
+            if (IsFirstTickOfBar && adrValue > 0)
+            {
+                double c = Close[0];
+                if (!alertAdrHighFired && c >= adrHigh)
+                {
+                    alertAdrHighFired = true;
+                    Alert("IQM_AdrHigh", Priority.Medium, "IQMainGPU: ADR High reached",
+                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav", 10, Brushes.DodgerBlue, Brushes.Black);
+                }
+                if (!alertAdrLowFired && c <= adrLow)
+                {
+                    alertAdrLowFired = true;
+                    Alert("IQM_AdrLow", Priority.Medium, "IQMainGPU: ADR Low reached",
+                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav", 10, Brushes.DodgerBlue, Brushes.Black);
+                }
+                if (awrValue > 0)
+                {
+                    if (!alertAwrHighFired && c >= awrHigh)
+                    {
+                        alertAwrHighFired = true;
+                        Alert("IQM_AwrHigh", Priority.Low, "IQMainGPU: AWR High reached",
+                            NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10, Brushes.Orange, Brushes.Black);
+                    }
+                    if (!alertAwrLowFired && c <= awrLow)
+                    {
+                        alertAwrLowFired = true;
+                        Alert("IQM_AwrLow", Priority.Low, "IQMainGPU: AWR Low reached",
+                            NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10, Brushes.Orange, Brushes.Black);
+                    }
+                }
+                if (amrValue > 0 && !alertAmrHighFired && c >= amrHigh)
+                {
+                    alertAmrHighFired = true;
+                    Alert("IQM_AmrHigh", Priority.Low, "IQMainGPU: AMR High reached",
+                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert3.wav", 10, Brushes.IndianRed, Brushes.Black);
+                }
+                if (amrValue > 0 && !alertAmrLowFired && c <= amrLow)
+                {
+                    alertAmrLowFired = true;
+                    Alert("IQM_AmrLow", Priority.Low, "IQMainGPU: AMR Low reached",
+                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert3.wav", 10, Brushes.IndianRed, Brushes.Black);
+                }
+
+                if (currentPivot != null)
+                {
+                    double prev = CurrentBar > 0 ? Close[1] : c;
+                    CheckPivotCrossAlert(prev, c, currentPivot.PP, "PP");
+                    CheckPivotCrossAlert(prev, c, currentPivot.R1, "R1");
+                    CheckPivotCrossAlert(prev, c, currentPivot.R2, "R2");
+                    CheckPivotCrossAlert(prev, c, currentPivot.R3, "R3");
+                    CheckPivotCrossAlert(prev, c, currentPivot.S1, "S1");
+                    CheckPivotCrossAlert(prev, c, currentPivot.S2, "S2");
+                    CheckPivotCrossAlert(prev, c, currentPivot.S3, "S3");
+                }
+            }
+
+            // ── PVSRA-based liquidity zone creation ───────────────────────────
+            if (EnableLiquidityZones && IsFirstTickOfBar && CurrentBar > PVSRALookback + 1)
+            {
+                int vb = (Calculate == Calculate.OnBarClose) ? 0 : 1;
+                if (IsPVSRAGreen(vb))
+                    CreatePVSRAZone(true,  false, vb);
+                else if (IsPVSRARed(vb))
+                    CreatePVSRAZone(false, false, vb);
+                else if (IsPVSRABlue(vb))
+                    CreatePVSRAZone(true,  true,  vb);
+                else if (IsPVSRAPink(vb))
+                    CreatePVSRAZone(false, true,  vb);
+            }
+
+            // ── Candle microstructure — guard ─────────────────────────────────
+            if (CurrentBar < Math.Max(SRSwingStrength * 2 + 1, MomentumPeriod + 1))
+            {
+                ForceRefresh();
+                return;
+            }
+
+            // ── 1. Estimate buy / sell volume ─────────────────────────────────
+            double barBuy  = 0;
+            double barSell = 0;
+
+            if (Calculate == Calculate.OnEachTick)
+            {
+                double tickPrice = Close[0];
+                double tickVol   = Volume[0];
+
+                if (prevTickPrice == 0)
+                {
+                    barBuy  = tickVol * 0.5;
+                    barSell = tickVol * 0.5;
+                }
+                else if (tickPrice >= prevTickPrice)
+                {
+                    barBuy  = tickVol;
+                    barSell = 0;
+                }
+                else
+                {
+                    barBuy  = 0;
+                    barSell = tickVol;
+                }
+
+                prevTickPrice = tickPrice;
+            }
+            else
+            {
+                double barRange = High[0] - Low[0];
+                double bodyHigh = Math.Max(Open[0], Close[0]);
+                double bodyLow  = Math.Min(Open[0], Close[0]);
+                double bullFrac = barRange > 0 ? (bodyHigh - Low[0]) / barRange : 0.5;
+                barBuy  = Volume[0] * bullFrac;
+                barSell = Volume[0] * (1.0 - bullFrac);
+            }
+
+            // ── 2. Cumulative delta ───────────────────────────────────────────
+            double delta = barBuy - barSell;
+            if (IsFirstTickOfBar || Calculate != Calculate.OnEachTick)
+            {
+                cumDelta       += delta;
+                sessionBuyVol  += barBuy;
+                sessionSellVol += barSell;
+            }
+
+            double totalVol = barBuy + barSell;
+            double deltaPct = totalVol > 0 ? (delta / totalVol) * 100.0 : 0;
+
+            // ── 3. Imbalance percentile ───────────────────────────────────────
+            if (IsFirstTickOfBar || Calculate != Calculate.OnEachTick)
+            {
+                if (deltaHistory.Count >= 1000) deltaHistory.RemoveAt(0);
+                deltaHistory.Add(Math.Abs(delta));
+                UpdateImbalanceThresholds();
+            }
+
+            // ── 4. Absorption detection ───────────────────────────────────────
+            bool isAbsorption = false;
+            if (totalVol > 0)
+            {
+                double bodyPct     = Math.Abs(Close[0] - Open[0]) / (High[0] - Low[0] + TickSize);
+                double counterFrac = Close[0] >= Open[0] ? barSell / totalVol : barBuy / totalVol;
+                isAbsorption = bodyPct < 0.35 && counterFrac * 100.0 >= AbsorptionSensitivity;
+            }
+
+            // ── 5. Imbalance detection ────────────────────────────────────────
+            bool isImbalance = Math.Abs(delta) > imbalanceHigh ||
+                               (imbalanceHigh > 0 && Math.Abs(delta) > imbalanceHigh * 0.75);
+
+            // ── 6. S/R level auto-detection ───────────────────────────────────
+            if (IsFirstTickOfBar)
+                TryDetectSRLevel();
+
+            // ── 6a. Liquidity zone recovery ───────────────────────────────────
+            if (EnableLiquidityZones && IsFirstTickOfBar)
+                CheckLiquidityZoneRecovery();
+
+            // ── 7. Fake-breakout filters ──────────────────────────────────────
+            bool isFakeBreakout  = false;
+            int  fakeBreakoutDir = 0;
+            if (IsFirstTickOfBar)
+                CheckFakeBreakoutFilters(barBuy, barSell, totalVol, ref isFakeBreakout, ref fakeBreakoutDir);
+
+            // ── 8. Save snapshot ──────────────────────────────────────────────
+            if (IsFirstTickOfBar || snapshots.Count == 0)
+            {
+                if (snapshots.Count >= 1000) snapshots.RemoveAt(0);
+                snapshots.Add(new BarSnapshot
+                {
+                    BuyVolume       = barBuy,
+                    SellVolume      = barSell,
+                    Delta           = delta,
+                    DeltaPct        = deltaPct,
+                    CumDelta        = cumDelta,
+                    IsAbsorption    = isAbsorption,
+                    IsImbalance     = isImbalance,
+                    IsFakeBreakout  = isFakeBreakout,
+                    FakeBreakoutDir = fakeBreakoutDir
+                });
+            }
+
+            // ── 9. Dashboard strings ──────────────────────────────────────────
+            UpdateDashboardText(barBuy, barSell, delta, deltaPct, isAbsorption, isImbalance, isFakeBreakout);
+
+            // ── 10. Candle alerts ─────────────────────────────────────────────
+            if (IsFirstTickOfBar)
+            {
+                if (isFakeBreakout)
+                    Alert("IQM_FakeBreakout", Priority.Medium, "IQMainGPU: Fake Breakout detected",
+                          NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav", 10, Brushes.OrangeRed, Brushes.Black);
+                if (isAbsorption)
+                    Alert("IQM_Absorption", Priority.Low, "IQMainGPU: Absorption bar",
+                          NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10, Brushes.Gold, Brushes.Black);
+            }
+
+            ForceRefresh();
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region OnMarketDepth — Level 2 order book
+
+        protected override void OnMarketDepth(MarketDepthEventArgs e)
+        {
+            if (!EnableLevel2)
+                return;
+
+            if (!level2Available)
+            {
+                level2Available = true;
+                l2StatusText    = "L2: active";
+            }
+
+            bool isBid = e.MarketDataType == MarketDataType.Bid;
+            bool isAsk = e.MarketDataType == MarketDataType.Ask;
+
+            if (!isBid && !isAsk)
+                return;
+
+            Dictionary<double, BookLevel> book = isBid ? bidBook : askBook;
+            double price = e.Price;
+            long   size  = e.Volume;
+
+            switch (e.Operation)
+            {
+                case Operation.Add:
+                case Operation.Update:
+                    if (!book.ContainsKey(price))
+                        book[price] = new BookLevel { Price = price };
+                    book[price].Size   = size;
+                    book[price].IsSpoof = false;
+                    break;
+                case Operation.Remove:
+                    if (book.ContainsKey(price))
+                        book.Remove(price);
+                    break;
+            }
+
+            if (isBid && e.Position == 0)
+            {
+                bestBidPrice  = price;
+                bestBidSize   = size;
+                totalBidDepth = book.Values.Sum(b => b.Size);
+            }
+            else if (isAsk && e.Position == 0)
+            {
+                bestAskPrice  = price;
+                bestAskSize   = size;
+                totalAskDepth = book.Values.Sum(b => b.Size);
+            }
+
+            DetectOrderBookWalls(isBid ? bidBook : askBook, isBid);
+
+            if (bestBidPrice > 0 && bestAskPrice > 0)
+            {
+                double spread = bestAskPrice - bestBidPrice;
+                double imb    = (totalBidDepth + totalAskDepth) > 0
+                    ? (double)(totalBidDepth - totalAskDepth) / (totalBidDepth + totalAskDepth) * 100.0
+                    : 0;
+                l2StatusText = string.Format("L2 Bid {0:F2}×{1} | Ask {2:F2}×{3} | Sprd {4:F4} | Imb {5:+0;-0}%",
+                    bestBidPrice, bestBidSize, bestAskPrice, bestAskSize, spread, (int)imb);
+            }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region GPU Rendering — OnRenderTargetChanged / OnRender
+
+        public override void OnRenderTargetChanged()
+        {
+            DisposeDXResources();
+            dxReady = false;
+        }
+
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            base.OnRender(chartControl, chartScale);
+
+            if (Bars == null || ChartBars == null || RenderTarget == null)
+                return;
+
+            if (!dxReady)
+            {
+                try { CreateDXResources(); }
+                catch (Exception ex)
+                {
+                    Print("IQMainGPU: Unexpected exception from CreateDXResources: " + ex.Message);
+                    return;
+                }
+            }
+
+            if (!dxReady)
+                return;
+
+            var rt   = RenderTarget;
+            float rtW = rt.Size.Width;
+            float rtH = rt.Size.Height;
+
+            int fromBar = ChartBars.FromIndex;
+            int toBar   = ChartBars.ToIndex;
+
+            if (fromBar > toBar)
+                return;
+
+            // ── 1. Session boxes ──────────────────────────────────────────────
+            try { RenderSessionBoxes(chartControl, chartScale, rtW, rtH); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderSessionBoxes: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderSessionBoxes [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 2. Liquidity zones ────────────────────────────────────────────
+            try { if (EnableLiquidityZones) RenderLiquidityZones(chartControl, chartScale); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderLiquidityZones: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderLiquidityZones [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 3. Pivot levels ───────────────────────────────────────────────
+            try { if (currentPivot != null) RenderPivots(chartControl, chartScale, rtW); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderPivots: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderPivots [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 4. Yesterday / last week Hi/Lo ────────────────────────────────
+            try
+            {
+                RenderYesterdayLevels(chartControl, chartScale, rtW);
+                RenderLastWeekLevels(chartControl, chartScale, rtW);
+            }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderYesterday: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderYesterday [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 5. ADR / AWR / AMR / RD / RW bands ───────────────────────────
+            try
+            {
+                if (adrValue > 0 && ShowAdr) RenderHorizontalBand(chartControl, chartScale, rtW, adrHigh, adrLow, dxAdrBrush, "ADR H", "ADR L", ShowAdrLabels, adrHigh, adrLow, ShowAdr50, AdrLineStyle);
+                if (awrValue > 0 && ShowAwr) RenderHorizontalBand(chartControl, chartScale, rtW, awrHigh, awrLow, dxAwrBrush, "AWR H", "AWR L", ShowAwrLabels, awrHigh, awrLow, ShowAwr50, AwrLineStyle);
+                if (amrValue > 0 && ShowAmr) RenderHorizontalBand(chartControl, chartScale, rtW, amrHigh, amrLow, dxAmrBrush, "AMR H", "AMR L", ShowAmrLabels, amrHigh, amrLow, ShowAmr50, AmrLineStyle);
+                if (rdValue  > 0 && ShowRd)  RenderHorizontalBand(chartControl, chartScale, rtW, rdHigh,  rdLow,  dxRdBrush,  "RD H",  "RD L",  ShowRdLabels,  rdHigh,  rdLow,  false);
+                if (rwValue  > 0 && ShowRw)  RenderHorizontalBand(chartControl, chartScale, rtW, rwHigh,  rwLow,  dxRwBrush,  "RW H",  "RW L",  ShowRwLabels,  rwHigh,  rwLow,  false);
+            }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderBands: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderBands [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 6. Daily open lines ───────────────────────────────────────────
+            try { if (ShowDailyOpen) RenderDailyOpenLines(chartControl, chartScale); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderDailyOpen: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderDailyOpen [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 7. Weekly Psy levels ──────────────────────────────────────────
+            try
+            {
+                if (ShowPsyLevels && psyWeekHigh > 0)
+                {
+                    RenderSingleLine(chartControl, chartScale, rtW, psyWeekHigh, dxPsyBrush, "Psy H", ShowPsyLabels);
+                    RenderSingleLine(chartControl, chartScale, rtW, psyWeekLow,  dxPsyBrush, "Psy L", ShowPsyLabels);
+                }
+            }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderPsy: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderPsy [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 8. Candles ────────────────────────────────────────────────────
+            try { RenderCandles(chartControl, chartScale, fromBar, toBar); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderCandles: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderCandles [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 9. Wall lines ─────────────────────────────────────────────────
+            try { if (ShowWallLines && EnableLevel2 && level2Available) RenderWallLines(chartControl, chartScale); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderWallLines: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderWallLines [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 10. Range table ───────────────────────────────────────────────
+            try { if (ShowRangeTable) RenderRangeTable(chartControl, chartScale, rtW, rtH); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderRangeTable: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderRangeTable [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 11. DST table ─────────────────────────────────────────────────
+            try { if (ShowDstTable) RenderDstTable(chartControl, chartScale, rtW, rtH); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderDstTable: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderDstTable [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 12. Unified dashboard overlay ─────────────────────────────────
+            try { if (ShowDashboard) RenderDashboard(chartControl, chartScale); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderDashboard: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderDashboard [" + ex.GetType().Name + "]: " + ex.Message); }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Render helpers — sessions, pivots, bands, daily open
+
+        private void RenderSessionBoxes(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        {
+            if (sessionBoxes == null || sessionBoxes.Count == 0) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            List<SessionBox> snapshot;
+            lock (_sessionLock)
+            {
+                snapshot = sessionBoxes.ToList();
+            }
+
+            foreach (var box in snapshot)
+            {
+                if (!SessionShowOpeningRange(box.SessionId)) continue;
+                int sid = box.SessionId;
+                if (dxSessionBoxBrush == null || dxSessionBoxBrush[sid] == null) continue;
+
+                int startIdx = Math.Max(ChartBars.FromIndex, box.StartBarIndex);
+                int endIdx   = Math.Min(ChartBars.ToIndex,   box.EndBarIndex);
+                if (startIdx > endIdx) continue;
+
+                float xLeft  = cc.GetXByBarIndex(ChartBars, startIdx) - cc.GetBarPaintWidth(ChartBars) / 2f;
+                float xRight = cc.GetXByBarIndex(ChartBars, endIdx)   + cc.GetBarPaintWidth(ChartBars) / 2f;
+                float yHigh  = cs.GetYByValue(box.SessionHigh);
+                float yLow   = cs.GetYByValue(box.SessionLow);
+                float boxH   = Math.Max(1f, yLow - yHigh);
+                var   rect   = new SharpDX.RectangleF(xLeft, yHigh, xRight - xLeft, boxH);
+
+                rt.FillRectangle(rect, dxSessionBoxBrush[sid]);
+
+                if (dxSessionBorderBrush != null && dxSessionBorderBrush[sid] != null)
+                {
+                    rt.DrawLine(new SharpDX.Vector2(xLeft,  yHigh), new SharpDX.Vector2(xRight, yHigh), dxSessionBorderBrush[sid], 1.5f);
+                    rt.DrawLine(new SharpDX.Vector2(xLeft,  yLow),  new SharpDX.Vector2(xRight, yLow),  dxSessionBorderBrush[sid], 1.5f);
+                }
+
+                if (SessionShowLabel(sid) && dxLabelFormat != null)
+                {
+                    string lbl = GetSessionLabel(sid);
+                    var    lr  = new SharpDX.RectangleF(xLeft + 3f, yHigh + 2f, 120f, 16f);
+                    if (dxSessionBorderBrush != null && dxSessionBorderBrush[sid] != null)
+                        rt.DrawText(lbl, dxLabelFormat, lr, dxSessionBorderBrush[sid]);
+                }
+            }
+        }
+
+        private void RenderDailyOpenLines(ChartControl cc, ChartScale cs)
+        {
+            if (dxDailyOpenBrush == null || dailyOpenEntries == null) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            List<DailyOpenEntry> snapshot;
+            lock (_sessionLock)
+            {
+                snapshot = dailyOpenEntries.ToList();
+            }
+
+            if (!ShowHistoricalDailyOpens && snapshot.Count > 0)
+                snapshot = new List<DailyOpenEntry> { snapshot[snapshot.Count - 1] };
+
+            float barHalfWidth = cc.GetBarPaintWidth(ChartBars) / 2f;
+
+            foreach (var entry in snapshot)
+            {
+                if (entry.OpenPrice == 0) continue;
+                int startIdx = Math.Max(ChartBars.FromIndex, entry.StartBarIndex);
+                int endIdx   = Math.Min(ChartBars.ToIndex,   entry.EndBarIndex);
+                if (startIdx > endIdx) continue;
+
+                float xLeft  = cc.GetXByBarIndex(ChartBars, startIdx) - barHalfWidth;
+                float xRight = cc.GetXByBarIndex(ChartBars, endIdx)   + barHalfWidth;
+                float y      = cs.GetYByValue(entry.OpenPrice);
+
+                DrawStyledLine(xLeft, y, xRight, y, dxDailyOpenBrush, 1.5f, DailyOpenLineStyle);
+
+                if (dxLabelFormat != null)
+                {
+                    string txt  = "DO " + Instrument.MasterInstrument.FormatPrice(entry.OpenPrice);
+                    rt.DrawText(txt, dxLabelFormat,
+                        new SharpDX.RectangleF(xRight + 4f, y + 4f, 120f, 16f), dxDailyOpenBrush);
+                }
+            }
+        }
+
+        private void RenderPivots(ChartControl cc, ChartScale cs, float rtW)
+        {
+            if (currentPivot == null) return;
+
+            if (ShowPP     && dxPPBrush     != null) RenderPivotLine(cs, rtW, currentPivot.PP, dxPPBrush,     "PP", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel1 && dxRLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.R1, dxRLevelBrush, "R1", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel1 && dxSLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.S1, dxSLevelBrush, "S1", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel2 && dxRLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.R2, dxRLevelBrush, "R2", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel2 && dxSLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.S2, dxSLevelBrush, "S2", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel3 && dxRLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.R3, dxRLevelBrush, "R3", ShowPivotLabels, PivotLineStyle);
+            if (ShowLevel3 && dxSLevelBrush != null) RenderPivotLine(cs, rtW, currentPivot.S3, dxSLevelBrush, "S3", ShowPivotLabels, PivotLineStyle);
+
+            if (ShowMLevels && dxMLevelBrush != null)
+            {
+                RenderPivotLine(cs, rtW, currentPivot.M0, dxMLevelBrush, ShowMLabels ? "M0" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, rtW, currentPivot.M1, dxMLevelBrush, ShowMLabels ? "M1" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, rtW, currentPivot.M2, dxMLevelBrush, ShowMLabels ? "M2" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, rtW, currentPivot.M3, dxMLevelBrush, ShowMLabels ? "M3" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, rtW, currentPivot.M4, dxMLevelBrush, ShowMLabels ? "M4" : "", ShowMLabels, MLevelLineStyle);
+                RenderPivotLine(cs, rtW, currentPivot.M5, dxMLevelBrush, ShowMLabels ? "M5" : "", ShowMLabels, MLevelLineStyle);
+            }
+        }
+
+        private void RenderPivotLine(ChartScale cs, float rtW, double price,
+            SharpDX.Direct2D1.SolidColorBrush brush, string label, bool showLabel, IQMLineStyle style)
+        {
+            if (price == 0) return;
+            float y = cs.GetYByValue(price);
+            DrawStyledLine(0f, y, rtW, y, brush, 1f, style);
+            if (showLabel && label.Length > 0 && dxLabelFormat != null)
+            {
+                string txt    = label + " " + Instrument.MasterInstrument.FormatPrice(price);
+                int    lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
+                float  labelX = ChartControl.GetXByBarIndex(ChartBars, lblBar) + 6f;
+                RenderTarget.DrawText(txt, dxLabelFormat,
+                    new SharpDX.RectangleF(labelX, y + 4f, 120f, 16f), brush);
+            }
+        }
+
+        private void RenderYesterdayLevels(ChartControl cc, ChartScale cs, float rtW)
+        {
+            if (!ShowYesterday || yesterdayHigh == 0) return;
+            RenderSingleLine(cc, cs, rtW, yesterdayHigh, dxYesterdayBrush, ShowYesterdayLabels ? "YH" : "", ShowYesterdayLabels);
+            RenderSingleLine(cc, cs, rtW, yesterdayLow,  dxYesterdayBrush, ShowYesterdayLabels ? "YL" : "", ShowYesterdayLabels);
+        }
+
+        private void RenderLastWeekLevels(ChartControl cc, ChartScale cs, float rtW)
+        {
+            if (!ShowLastWeek || lastWeekHigh == 0) return;
+            RenderSingleLine(cc, cs, rtW, lastWeekHigh, dxLastWeekBrush, ShowLastWeekLabels ? "LWH" : "", ShowLastWeekLabels);
+            RenderSingleLine(cc, cs, rtW, lastWeekLow,  dxLastWeekBrush, ShowLastWeekLabels ? "LWL" : "", ShowLastWeekLabels);
+        }
+
+        private void RenderSingleLine(ChartControl cc, ChartScale cs, float rtW, double price,
+            SharpDX.Direct2D1.SolidColorBrush brush, string label, bool showLabel)
+        {
+            if (price == 0 || brush == null) return;
+            float y = cs.GetYByValue(price);
+            DrawStyledLine(0f, y, rtW, y, brush, 1.5f, IQMLineStyle.Solid);
+            if (showLabel && label.Length > 0 && dxLabelFormat != null)
+            {
+                string txt    = label + " " + Instrument.MasterInstrument.FormatPrice(price);
+                int    lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
+                float  labelX = cc.GetXByBarIndex(ChartBars, lblBar) + 6f;
+                RenderTarget.DrawText(txt, dxLabelFormat,
+                    new SharpDX.RectangleF(labelX, y + 4f, 120f, 16f), brush);
+            }
+        }
+
+        private void RenderHorizontalBand(ChartControl cc, ChartScale cs, float rtW,
+            double high, double low, SharpDX.Direct2D1.SolidColorBrush brush,
+            string highLabel, string lowLabel, bool showLabels,
+            double h, double l, bool show50,
+            IQMLineStyle lineStyle = IQMLineStyle.Dashed)
+        {
+            if (brush == null || high == 0 || low == 0) return;
+            float yH = cs.GetYByValue(high);
+            float yL = cs.GetYByValue(low);
+            DrawStyledLine(0f, yH, rtW, yH, brush, 1.5f, lineStyle);
+            DrawStyledLine(0f, yL, rtW, yL, brush, 1.5f, lineStyle);
+            if (showLabels && dxLabelFormat != null)
+            {
+                int   lblBar = Math.Min(CurrentBar, ChartBars.ToIndex);
+                float labelX = cc.GetXByBarIndex(ChartBars, lblBar) + 6f;
+                RenderTarget.DrawText(highLabel + " " + Instrument.MasterInstrument.FormatPrice(high),
+                    dxLabelFormat, new SharpDX.RectangleF(labelX, yH + 4f, 140f, 16f), brush);
+                RenderTarget.DrawText(lowLabel  + " " + Instrument.MasterInstrument.FormatPrice(low),
+                    dxLabelFormat, new SharpDX.RectangleF(labelX, yL + 4f, 140f, 16f), brush);
+            }
+            if (show50)
+            {
+                double mid  = (high + low) / 2.0;
+                float  yMid = cs.GetYByValue(mid);
+                DrawStyledLine(0f, yMid, rtW, yMid, brush, 1f, IQMLineStyle.Dotted);
+            }
+        }
+
+        private void DrawStyledLine(float x1, float y1, float x2, float y2,
+            SharpDX.Direct2D1.SolidColorBrush brush, float strokeWidth, IQMLineStyle style)
+        {
+            if (brush == null) return;
+            var rt = RenderTarget;
+
+            if (style == IQMLineStyle.Solid)
+            {
+                rt.DrawLine(new SharpDX.Vector2(x1, y1), new SharpDX.Vector2(x2, y2), brush, strokeWidth);
+                return;
+            }
+
+            float dashLen  = style == IQMLineStyle.Dashed ? 8f : 3f;
+            float gapLen   = style == IQMLineStyle.Dashed ? 4f : 3f;
+            float totalLen = (float)Math.Sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+            if (totalLen < 1f) return;
+            float dx = (x2 - x1) / totalLen;
+            float dy = (y2 - y1) / totalLen;
+            float pos    = 0f;
+            bool  drawing = true;
+
+            while (pos < totalLen)
+            {
+                float segLen = drawing ? dashLen : gapLen;
+                float endPos = Math.Min(pos + segLen, totalLen);
+                if (drawing)
+                {
+                    rt.DrawLine(
+                        new SharpDX.Vector2(x1 + dx * pos,    y1 + dy * pos),
+                        new SharpDX.Vector2(x1 + dx * endPos, y1 + dy * endPos),
+                        brush, strokeWidth);
+                }
+                pos    += segLen;
+                drawing = !drawing;
+            }
+        }
+
+        private void RenderRangeTable(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        {
+            if (dxDashBgBrush == null || dxDashTextBrush == null || dxDashFormat == null)
+                return;
+
+            double pipSize = TickSize;
+            string[] rows =
+            {
+                string.Format("ADR  {0,6:F0} pips", adrValue / pipSize),
+                string.Format("AWR  {0,6:F0} pips", awrValue / pipSize),
+                string.Format("AMR  {0,6:F0} pips", amrValue / pipSize),
+                string.Format("RD   {0,6:F0} pips", rdValue  / pipSize),
+                string.Format("RW   {0,6:F0} pips", rwValue  / pipSize),
+            };
+
+            float cellH  = 18f;
+            float tableW = 170f;
+            float tableH = rows.Length * cellH + 24f;
+            float margin = 8f;
+
+            float tx, ty;
+            GetTablePosition(TablePosition, rtW, rtH, tableW, tableH, margin, out tx, out ty);
+
+            RenderTarget.FillRectangle(new SharpDX.RectangleF(tx, ty, tableW, tableH), dxDashBgBrush);
+            RenderTarget.DrawText("Range Statistics", dxDashFormat,
+                new SharpDX.RectangleF(tx + 4f, ty + 2f, tableW - 8f, 18f), dxDashHeaderBrush ?? dxDashTextBrush);
+
+            for (int i = 0; i < rows.Length; i++)
+                RenderTarget.DrawText(rows[i], dxDashFormat,
+                    new SharpDX.RectangleF(tx + 4f, ty + 22f + i * cellH, tableW - 8f, cellH), dxDashTextBrush);
+        }
+
+        private void RenderDstTable(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        {
+            if (dxDashBgBrush == null || dxDashTextBrush == null || dxDashFormat == null)
+                return;
+
+            string[] rows =
+            {
+                "UK DST: Last Sun Mar → Last Sun Oct",
+                "US DST: 2nd Sun Mar → 1st Sun Nov",
+                "AU DST: 1st Sun Oct → 1st Sun Apr",
+                "London  08:00-16:30 UTC (UK DST -1)",
+                "NY      14:30-21:00 UTC (US DST -1)",
+                "Tokyo   00:00-06:00 UTC (no DST)",
+                "HK      01:30-08:00 UTC (no DST)",
+                "Sydney  22:00-06:00 UTC (AU DST -1)",
+                "EUBrnks 08:00-09:00 UTC (UK DST -1)",
+                "USBrnks 14:00-15:00 UTC (US DST -1)",
+                "Frankft 07:00-16:30 UTC (UK DST -1)",
+            };
+
+            float cellH  = 16f;
+            float tableW = 280f;
+            float tableH = rows.Length * cellH + 24f;
+            float margin = 8f;
+
+            float tx, ty;
+            GetTablePosition(DstTablePosition, rtW, rtH, tableW, tableH, margin, out tx, out ty);
+
+            RenderTarget.FillRectangle(new SharpDX.RectangleF(tx, ty, tableW, tableH), dxDashBgBrush);
+            RenderTarget.DrawText("DST Reference", dxDashFormat,
+                new SharpDX.RectangleF(tx + 4f, ty + 2f, tableW - 8f, 18f), dxDashHeaderBrush ?? dxDashTextBrush);
+
+            for (int i = 0; i < rows.Length; i++)
+                RenderTarget.DrawText(rows[i], dxSmallFormat ?? dxDashFormat,
+                    new SharpDX.RectangleF(tx + 4f, ty + 22f + i * cellH, tableW - 8f, cellH), dxDashTextBrush);
+        }
+
+        private static void GetTablePosition(IQMDashboardPosition pos,
+            float rtW, float rtH, float tableW, float tableH, float margin,
+            out float tx, out float ty)
+        {
+            switch (pos)
+            {
+                case IQMDashboardPosition.TopLeft:    tx = margin;                  ty = margin;                  break;
+                case IQMDashboardPosition.TopRight:   tx = rtW - tableW - margin;  ty = margin;                  break;
+                case IQMDashboardPosition.BottomLeft: tx = margin;                  ty = rtH - tableH - margin;  break;
+                default:                              tx = rtW - tableW - margin;  ty = rtH - tableH - margin;  break;
+            }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Render helpers — candles, walls, liquidity zones, unified dashboard
+
+        private void RenderCandles(ChartControl cc, ChartScale cs, int fromBar, int toBar)
+        {
+            var rt = RenderTarget;
+
+            for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
+            {
+                if (barIdx < 0 || barIdx >= Bars.Count) continue;
+
+                double o = Bars.GetOpen(barIdx);
+                double h = Bars.GetHigh(barIdx);
+                double l = Bars.GetLow(barIdx);
+                double c = Bars.GetClose(barIdx);
+
+                float x    = cc.GetXByBarIndex(ChartBars, barIdx);
+                float barW = Math.Max(1f, cc.GetBarPaintWidth(ChartBars) - 2f);
+                float halfW = barW / 2f;
+
+                float yH   = cs.GetYByValue(h);
+                float yL   = cs.GetYByValue(l);
+                float yO   = cs.GetYByValue(o);
+                float yC   = cs.GetYByValue(c);
+                float yTop = Math.Min(yO, yC);
+                float yBot = Math.Max(yO, yC);
+
+                // PVSRA inline classification
+                string pvsraClass = "";
+                if (EnablePVSRA && barIdx >= PVSRALookback)
+                {
+                    double barVol = Bars.GetVolume(barIdx);
+                    double sumPrev = 0;
+                    for (int k = 1; k <= PVSRALookback; k++)
+                        sumPrev += Bars.GetVolume(barIdx - k);
+                    double avgPrev = sumPrev / PVSRALookback;
+                    double volPct  = avgPrev > 0 ? barVol / avgPrev * 100.0 : 0;
+                    bool   isBull  = c >= o;
+                    if      (volPct >= HighVolumeThreshold) pvsraClass = isBull ? "HighBull" : "HighBear";
+                    else if (volPct >= MidVolumeThreshold)  pvsraClass = isBull ? "MidBull"  : "MidBear";
+                }
+
+                SharpDX.Direct2D1.SolidColorBrush bodyBrush = c >= o ? dxBullBrush : dxBearBrush;
+                BarSnapshot snap = GetSnapshot(barIdx);
+
+                if (snap != null)
+                {
+                    switch (ColorMode)
+                    {
+                        case IQMCandleColorMode.PVSRA:
+                            if      (pvsraClass == "HighBull") bodyBrush = dxPvsraHighBullBrush;
+                            else if (pvsraClass == "HighBear") bodyBrush = dxPvsraHighBearBrush;
+                            else if (pvsraClass == "MidBull")  bodyBrush = dxPvsraMidBullBrush;
+                            else if (pvsraClass == "MidBear")  bodyBrush = dxPvsraMidBearBrush;
+                            else                               bodyBrush = c >= o ? dxBullBrush : dxBearBrush;
+                            break;
+                        case IQMCandleColorMode.Composite:
+                            if      (pvsraClass == "HighBull") bodyBrush = dxPvsraHighBullBrush;
+                            else if (pvsraClass == "HighBear") bodyBrush = dxPvsraHighBearBrush;
+                            else if (pvsraClass == "MidBull")  bodyBrush = dxPvsraMidBullBrush;
+                            else if (pvsraClass == "MidBear")  bodyBrush = dxPvsraMidBearBrush;
+                            else                               bodyBrush = snap.Delta >= 0 ? dxBullBrush : dxBearBrush;
+                            break;
+                        case IQMCandleColorMode.VolumeDelta:
+                            bodyBrush = snap.Delta >= 0 ? dxBullBrush : dxBearBrush;
+                            break;
+                        case IQMCandleColorMode.Absorption:
+                            bodyBrush = snap.IsAbsorption ? dxAbsorbBrush : (c >= o ? dxBullBrush : dxBearBrush);
+                            break;
+                        case IQMCandleColorMode.Imbalance:
+                            bodyBrush = snap.IsImbalance ? dxImbalanceBrush : (c >= o ? dxBullBrush : dxBearBrush);
+                            break;
+                        case IQMCandleColorMode.FakeBreakout:
+                            bodyBrush = snap.IsFakeBreakout ? dxFakeBrush : (c >= o ? dxBullBrush : dxBearBrush);
+                            break;
+                        case IQMCandleColorMode.Classic:
+                            bodyBrush = c >= o ? dxBullBrush : dxBearBrush;
+                            break;
+                    }
+
+                    // Halo on signal bars
+                    if (ShowHalo && (snap.IsAbsorption || snap.IsFakeBreakout))
+                    {
+                        SharpDX.Direct2D1.SolidColorBrush haloBrush = snap.IsFakeBreakout ? dxFakeBrush : dxAbsorbBrush;
+                        float centerY = (yTop + yBot) / 2f;
+                        float baseR   = halfW + 2f;
+
+                        for (int layer = HaloLayers; layer >= 1; layer--)
+                        {
+                            float r     = baseR + layer * 2f;
+                            byte  alpha = (byte)(30 - layer * (30 / HaloLayers));
+                            var   haloColor    = haloBrush.Color;
+                            var   newHaloColor = new SharpDX.Color4(haloColor.Red, haloColor.Green, haloColor.Blue, alpha / 255f);
+                            using (var haloLayerBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, newHaloColor))
+                            {
+                                var ellipse = new SharpDX.Direct2D1.Ellipse(
+                                    new SharpDX.Vector2(x, centerY), r, r + (yBot - yTop) / 2f);
+                                rt.FillEllipse(ellipse, haloLayerBrush);
+                            }
+                        }
+                    }
+                }
+
+                // Wick
+                rt.DrawLine(new SharpDX.Vector2(x, yH), new SharpDX.Vector2(x, yL), dxWickBrush, 1f);
+
+                // Body
+                float bodyH = Math.Max(1f, yBot - yTop);
+                rt.FillRectangle(new SharpDX.RectangleF(x - halfW, yTop, barW, bodyH), bodyBrush);
+                rt.DrawRectangle(new SharpDX.RectangleF(x - halfW, yTop, barW, bodyH), dxWickBrush, 1f);
+
+                // Composite mode: multi-signal borders
+                if (snap != null && ColorMode == IQMCandleColorMode.Composite)
+                {
+                    float borderOffset = 0f;
+                    if (snap.IsAbsorption)
+                    {
+                        rt.DrawRectangle(
+                            new SharpDX.RectangleF(x - halfW - borderOffset - 1f, yTop - borderOffset - 1f,
+                                barW + (borderOffset + 1f) * 2f, bodyH + (borderOffset + 1f) * 2f),
+                            dxBorderAbsorbBrush, 2f);
+                        borderOffset += 3f;
+                    }
+                    if (snap.IsImbalance)
+                    {
+                        rt.DrawRectangle(
+                            new SharpDX.RectangleF(x - halfW - borderOffset - 1f, yTop - borderOffset - 1f,
+                                barW + (borderOffset + 1f) * 2f, bodyH + (borderOffset + 1f) * 2f),
+                            dxBorderImbalanceBrush, 2f);
+                        borderOffset += 3f;
+                    }
+                    if (snap.IsFakeBreakout)
+                    {
+                        rt.DrawRectangle(
+                            new SharpDX.RectangleF(x - halfW - borderOffset - 1f, yTop - borderOffset - 1f,
+                                barW + (borderOffset + 1f) * 2f, bodyH + (borderOffset + 1f) * 2f),
+                            dxBorderFakeBrush, 2f);
+                    }
+                }
+
+                // Gradient transparency on body based on delta magnitude (VolumeDelta mode)
+                if (snap != null && ColorMode == IQMCandleColorMode.VolumeDelta)
+                {
+                    double normalised = NormaliseValue(Math.Abs(snap.DeltaPct), 0, 100);
+                    byte   alpha      = (byte)(40 + normalised * 180);
+                    var    gradColor  = bodyBrush.Color;
+                    var    newGradColor = new SharpDX.Color4(gradColor.Red, gradColor.Green, gradColor.Blue, alpha / 255f);
+                    using (var gradBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, newGradColor))
+                    {
+                        rt.FillRectangle(new SharpDX.RectangleF(x - halfW, yTop, barW, bodyH), gradBrush);
+                    }
+                }
+
+                // Cumulative delta text
+                if (ShowCumDelta && snap != null && dxLabelFormat != null)
+                {
+                    string cdText = FormatDelta(snap.CumDelta);
+                    rt.DrawText(cdText, dxLabelFormat,
+                        new SharpDX.RectangleF(x - 30f, yL + 2f, 60f, 14f), dxDashTextBrush);
+                }
+            }
+        }
+
+        private void RenderWallLines(ChartControl cc, ChartScale cs)
+        {
+            var rt = RenderTarget;
+            float chartWidth = rt != null ? (float)rt.Size.Width : (float)cc.ActualWidth;
+
+            if (wallBidPrice > 0)
+            {
+                float y = cs.GetYByValue(wallBidPrice);
+                string label = string.Format("BID WALL ×{0:N0}", wallBidSize);
+                rt.DrawLine(new SharpDX.Vector2(0, y), new SharpDX.Vector2(chartWidth, y), dxWallBidBrush, 1.5f);
+                if (dxLabelFormat != null)
+                    rt.DrawText(label, dxLabelFormat, new SharpDX.RectangleF(4f, y - 14f, 160f, 14f), dxWallBidBrush);
+            }
+
+            if (wallAskPrice > 0)
+            {
+                float y = cs.GetYByValue(wallAskPrice);
+                string label = string.Format("ASK WALL ×{0:N0}", wallAskSize);
+                rt.DrawLine(new SharpDX.Vector2(0, y), new SharpDX.Vector2(chartWidth, y), dxWallAskBrush, 1.5f);
+                if (dxLabelFormat != null)
+                    rt.DrawText(label, dxLabelFormat, new SharpDX.RectangleF(4f, y + 2f, 160f, 14f), dxWallAskBrush);
+            }
+        }
+
+        private void RenderLiquidityZones(ChartControl cc, ChartScale cs)
+        {
+            if (liquidityZones == null || liquidityZones.Count == 0) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            float chartWidth = (float)rt.Size.Width;
+
+            foreach (LiquidityZone zone in liquidityZones.ToList())
+            {
+                if (zone.IsRecovered) continue;
+
+                double topPrice = zone.PartialRecoveryHigh;
+                double botPrice = zone.PartialRecoveryLow;
+
+                if (topPrice <= botPrice) continue;
+
+                float yTop = cs.GetYByValue(topPrice);
+                float yBot = cs.GetYByValue(botPrice);
+
+                if (float.IsNaN(yTop) || float.IsNaN(yBot)) continue;
+
+                float rectTop = Math.Min(yTop, yBot);
+                float zoneH   = Math.Abs(yBot - yTop);
+
+                if (zoneH < 1f) continue;
+
+                SharpDX.Direct2D1.SolidColorBrush zoneBrush;
+                if      ( zone.IsBullish && !zone.IsAbsorption) zoneBrush = dxULZBullishBrush;
+                else if ( zone.IsBullish &&  zone.IsAbsorption) zoneBrush = dxULZBlueBrush;
+                else if (!zone.IsBullish && !zone.IsAbsorption) zoneBrush = dxULZBearishBrush;
+                else                                             zoneBrush = dxULZPinkBrush;
+
+                if (zoneBrush == null) continue;
+
+                try
+                {
+                    float xLeft;
+                    if (zone.OriginBarIndex < ChartBars.FromIndex)
+                        xLeft = 0f;
+                    else if (zone.OriginBarIndex > ChartBars.ToIndex)
+                        continue;
+                    else
+                    {
+                        xLeft = cc.GetXByBarIndex(ChartBars, zone.OriginBarIndex);
+                        if (float.IsNaN(xLeft) || xLeft < 0f) xLeft = 0f;
+                    }
+
+                    float zoneW = Math.Max(0f, chartWidth - xLeft);
+                    if (zoneW <= 0f) continue;
+
+                    rt.FillRectangle(new SharpDX.RectangleF(xLeft, rectTop, zoneW, zoneH), zoneBrush);
+                }
+                catch { }
+            }
+        }
+
+        private void RenderDashboard(ChartControl cc, ChartScale cs)
+        {
+            var rt = RenderTarget;
+            const float PadX   = 8f;
+            const float PadY   = 6f;
+            const float LineH  = 16f;
+            const float PanelW = 380f;
+
+            string activeSessName = "—";
+            if (activeSessions != null)
+            {
+                for (int id = 0; id < 8; id++)
+                {
+                    if (activeSessions[id] != null && !activeSessions[id].IsComplete)
+                    {
+                        activeSessName = GetSessionLabel(id);
+                        break;
+                    }
+                }
+            }
+
+            string assetTag = AssetClass.ToString().ToUpper();
+            string[] lines = {
+                string.Format("IQ Main GPU  [{0}]  Session: {1}", assetTag, activeSessName),
+                dashLine2,
+                dashLine3,
+                dashLine4,
+                dashLine5,
+                dashLine6,
+                dashLine7,
+                adrValue > 0 ? string.Format("ADR {0:F0}p  AWR {1:F0}p  AMR {2:F0}p",
+                    adrValue / TickSize, awrValue / TickSize, amrValue / TickSize) : "ADR/AWR/AMR: loading…",
+                EnableLevel2 ? l2StatusText : ""
+            };
+
+            int   nonEmpty    = lines.Count(s => !string.IsNullOrEmpty(s));
+            float panelH      = PadY * 2 + nonEmpty * LineH;
+            float chartWidth  = RenderTarget != null ? (float)RenderTarget.Size.Width  : (float)cc.ActualWidth;
+            float chartHeight = RenderTarget != null ? (float)RenderTarget.Size.Height : (float)cc.ActualHeight;
+
+            float panelX, panelY;
+            switch (DashPosition)
+            {
+                case IQMDashboardPosition.TopLeft:
+                    panelX = PadX;  panelY = PadY;  break;
+                case IQMDashboardPosition.TopRight:
+                    panelX = chartWidth - PanelW - PadX;  panelY = PadY;  break;
+                case IQMDashboardPosition.BottomLeft:
+                    panelX = PadX;  panelY = chartHeight - panelH - PadY;  break;
+                default:
+                    panelX = chartWidth - PanelW - PadX;  panelY = chartHeight - panelH - PadY;  break;
+            }
+
+            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, PanelW, panelH), dxDashBgBrush);
+
+            float ty = panelY + PadY;
+            bool  first = true;
+            foreach (string line in lines)
+            {
+                if (string.IsNullOrEmpty(line)) continue;
+                if (dxDashFormat != null)
+                {
+                    var textBrush = first ? (dxDashHeaderBrush ?? dxDashTextBrush)
+                                  : (line.Contains("FAKE") || line.Contains("Fake") ? dxDashAccentBrush : dxDashTextBrush);
+                    rt.DrawText(line, dxDashFormat,
+                        new SharpDX.RectangleF(panelX + PadX, ty, PanelW - PadX * 2, LineH), textBrush);
+                }
+                ty += LineH;
+                first = false;
+            }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Helper methods — pivots, sessions, DST
+
+        private void ComputePivots()
+        {
+            if (prevDayHigh == 0 && prevDayLow == 0) return;
+
+            double h = prevDayHigh, l = prevDayLow, c = prevDayClose;
+            double pp = (h + l + c) / 3.0;
+            double r1 = 2 * pp - l;
+            double s1 = 2 * pp - h;
+            double r2 = pp - s1 + r1;
+            double s2 = pp - r1 + s1;
+            double r3 = 2 * pp + h - 2 * l;
+            double s3 = 2 * pp - (2 * h - l);
+
+            currentPivot = new PivotSnapshot
+            {
+                PP = pp, R1 = r1, R2 = r2, R3 = r3,
+                S1 = s1, S2 = s2, S3 = s3,
+                M0 = (s2 + s3) / 2.0,
+                M1 = (s1 + s2) / 2.0,
+                M2 = (pp + s1) / 2.0,
+                M3 = (pp + r1) / 2.0,
+                M4 = (r1 + r2) / 2.0,
+                M5 = (r2 + r3) / 2.0,
+                StartBarIndex = CurrentBar
+            };
+        }
+
+        private static bool IsUkDst(DateTime utc)
+        {
+            if (utc.Month < 3 || utc.Month > 10) return false;
+            if (utc.Month > 3 && utc.Month < 10) return true;
+            DateTime lastSunday = LastSundayOfMonth(utc.Year, utc.Month);
+            if (utc.Month == 3)  return utc >= lastSunday.AddHours(1);
+            if (utc.Month == 10) return utc <  lastSunday.AddHours(1);
+            return false;
+        }
+
+        private static bool IsUsDst(DateTime utc)
+        {
+            if (utc.Month < 3 || utc.Month > 11) return false;
+            if (utc.Month > 3 && utc.Month < 11) return true;
+            if (utc.Month == 3)
+            {
+                DateTime second = NthSundayOfMonth(utc.Year, 3, 2);
+                return utc >= second.AddHours(2);
+            }
+            DateTime first = NthSundayOfMonth(utc.Year, 11, 1);
+            return utc < first.AddHours(2);
+        }
+
+        private static bool IsAuDst(DateTime utc)
+        {
+            if (utc.Month >= 4 && utc.Month <= 9) return false;
+            if (utc.Month > 4  && utc.Month < 10) return false;
+            if (utc.Month == 4)
+            {
+                DateTime first = NthSundayOfMonth(utc.Year, 4, 1);
+                return utc < first.AddHours(2);
+            }
+            if (utc.Month == 10)
+            {
+                DateTime first = NthSundayOfMonth(utc.Year, 10, 1);
+                return utc >= first.AddHours(2);
+            }
+            return true;
+        }
+
+        private static DateTime LastSundayOfMonth(int year, int month)
+        {
+            DateTime last = new DateTime(year, month, DateTime.DaysInMonth(year, month));
+            int dow = (int)last.DayOfWeek;
+            return last.AddDays(-dow);
+        }
+
+        private static DateTime NthSundayOfMonth(int year, int month, int n)
+        {
+            DateTime first = new DateTime(year, month, 1);
+            int daysToSunday = ((7 - (int)first.DayOfWeek) % 7);
+            return first.AddDays(daysToSunday + (n - 1) * 7);
+        }
+
+        private void GetSessionUtcTimes(int sessionId, DateTime utcDate, out DateTime start, out DateTime end)
+        {
+            DateTime day = utcDate.Date;
+            switch (sessionId)
+            {
+                case 0: { int offset = IsUkDst(day) ? -1 : 0; start = day.AddHours(8 + offset); end = day.AddHours(16 + offset).AddMinutes(30); break; }
+                case 1: { int offset = IsUsDst(day) ? -1 : 0; start = day.AddHours(14 + offset).AddMinutes(30); end = day.AddHours(21 + offset); break; }
+                case 2: start = day.AddHours(0);  end = day.AddHours(6); break;
+                case 3: start = day.AddHours(1).AddMinutes(30); end = day.AddHours(8); break;
+                case 4: { int offset = IsAuDst(day) ? -1 : 0; start = day.AddDays(-1).AddHours(22 + offset); end = day.AddHours(6 + offset); break; }
+                case 5: { int offset = IsUkDst(day) ? -1 : 0; start = day.AddHours(8 + offset); end = day.AddHours(9 + offset); break; }
+                case 6: { int offset = IsUsDst(day) ? -1 : 0; start = day.AddHours(14 + offset); end = day.AddHours(15 + offset); break; }
+                default: { int offset = IsUkDst(day) ? -1 : 0; start = day.AddHours(7 + offset); end = day.AddHours(16 + offset).AddMinutes(30); break; }
+            }
+        }
+
+        private bool IsSessionEnabled(int id)
+        {
+            switch (id)
+            {
+                case 0: return ShowLondon;
+                case 1: return ShowNewYork;
+                case 2: return ShowTokyo;
+                case 3: return ShowHongKong;
+                case 4: return ShowSydney;
+                case 5: return ShowEuBrinks;
+                case 6: return ShowUsBrinks;
+                case 7: return ShowFrankfurt;
+                default: return false;
+            }
+        }
+
+        private bool SessionShowOpeningRange(int id)
+        {
+            switch (id)
+            {
+                case 0: return LondonShowOpeningRange;
+                case 1: return NewYorkShowOpeningRange;
+                case 2: return TokyoShowOpeningRange;
+                case 3: return HongKongShowOpeningRange;
+                case 4: return SydneyShowOpeningRange;
+                case 5: return EuBrinksShowOpeningRange;
+                case 6: return UsBrinksShowOpeningRange;
+                case 7: return FrankfurtShowOpeningRange;
+                default: return false;
+            }
+        }
+
+        private string GetSessionLabel(int id)
+        {
+            switch (id)
+            {
+                case 0: return LondonLabel;
+                case 1: return NewYorkLabel;
+                case 2: return TokyoLabel;
+                case 3: return HongKongLabel;
+                case 4: return SydneyLabel;
+                case 5: return EuBrinksLabel;
+                case 6: return UsBrinksLabel;
+                case 7: return FrankfurtLabel;
+                default: return "";
+            }
+        }
+
+        private bool SessionShowLabel(int id)
+        {
+            switch (id)
+            {
+                case 0: return LondonShowLabel;
+                case 1: return NewYorkShowLabel;
+                case 2: return TokyoShowLabel;
+                case 3: return HongKongShowLabel;
+                case 4: return SydneyShowLabel;
+                case 5: return EuBrinksShowLabel;
+                case 6: return UsBrinksShowLabel;
+                case 7: return FrankfurtShowLabel;
+                default: return false;
+            }
+        }
+
+        private void UpdateSessions(DateTime barTimeUtc)
+        {
+            for (int id = 0; id < 8; id++)
+            {
+                if (!IsSessionEnabled(id)) continue;
+
+                DateTime sStart, sEnd;
+                GetSessionUtcTimes(id, barTimeUtc, out sStart, out sEnd);
+                bool inSession = barTimeUtc >= sStart && barTimeUtc < sEnd;
+
+                if (inSession)
+                {
+                    if (activeSessions[id] == null || activeSessions[id].StartTime != sStart)
+                    {
+                        var box = new SessionBox
+                        {
+                            StartTime     = sStart,
+                            EndTime       = sEnd,
+                            StartBarIndex = CurrentBar,
+                            EndBarIndex   = CurrentBar,
+                            SessionHigh   = High[0],
+                            SessionLow    = Low[0],
+                            IsComplete    = false,
+                            SessionId     = id
+                        };
+                        activeSessions[id] = box;
+                        lock (_sessionLock)
+                        {
+                            if (sessionBoxes.Count >= 200) sessionBoxes.RemoveAt(0);
+                            sessionBoxes.Add(box);
+                        }
+                    }
+                    else
+                    {
+                        var box = activeSessions[id];
+                        if (High[0] > box.SessionHigh) box.SessionHigh = High[0];
+                        if (Low[0]  < box.SessionLow)  box.SessionLow  = Low[0];
+                        box.EndBarIndex = CurrentBar;
+                    }
+                }
+                else
+                {
+                    if (activeSessions[id] != null && !activeSessions[id].IsComplete)
+                    {
+                        activeSessions[id].IsComplete = true;
+                        activeSessions[id] = null;
+                    }
+                }
+            }
+        }
+
+        private void CheckPivotCrossAlert(double prev, double curr, double level, string name)
+        {
+            if (level == 0) return;
+            bool crossed = (prev < level && curr >= level) || (prev > level && curr <= level);
+            if (crossed)
+                Alert("IQM_Pivot_" + name, Priority.Medium,
+                    "IQMainGPU: Price crossed " + name + " @ " + level.ToString("F5"),
+                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10,
+                    Brushes.Yellow, Brushes.Black);
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Microstructure helpers — PVSRA, zones, fake-breakout, walls, dashboard
+
+        private double GetAverageVolume(int barIndex, int lookback)
+        {
+            double sum = 0;
+            int limit = Math.Min(barIndex + lookback, CurrentBar - 1);
+            for (int i = barIndex + 1; i <= limit; i++)
+                sum += Volume[i];
+            return lookback > 0 ? sum / lookback : 0;
+        }
+
+        private double GetMaxSpreadVolProduct(int barIndex, int lookback)
+        {
+            double maxProduct = 0;
+            int limit = Math.Min(barIndex + lookback, CurrentBar - 1);
+            for (int i = barIndex + 1; i <= limit; i++)
+            {
+                double svp = (High[i] - Low[i]) * Volume[i];
+                if (svp > maxProduct) maxProduct = svp;
+            }
+            return maxProduct;
+        }
+
+        private bool IsPVSRAGreen(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            double svp    = (High[barIndex] - Low[barIndex]) * Volume[barIndex];
+            double maxSvp = GetMaxSpreadVolProduct(barIndex, PVSRALookback);
+            return Close[barIndex] > Open[barIndex] &&
+                   (Volume[barIndex] >= avgVol * (HighVolumeThreshold / 100.0) ||
+                    (maxSvp > 0 && svp >= maxSvp));
+        }
+
+        private bool IsPVSRARed(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            double svp    = (High[barIndex] - Low[barIndex]) * Volume[barIndex];
+            double maxSvp = GetMaxSpreadVolProduct(barIndex, PVSRALookback);
+            return Close[barIndex] < Open[barIndex] &&
+                   (Volume[barIndex] >= avgVol * (HighVolumeThreshold / 100.0) ||
+                    (maxSvp > 0 && svp >= maxSvp));
+        }
+
+        private bool IsPVSRABlue(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            return Close[barIndex] > Open[barIndex] &&
+                   Volume[barIndex] >= avgVol * (MidVolumeThreshold  / 100.0) &&
+                   Volume[barIndex] <  avgVol * (HighVolumeThreshold / 100.0);
+        }
+
+        private bool IsPVSRAPink(int barIndex)
+        {
+            if (!EnablePVSRA || CurrentBar < barIndex + PVSRALookback + 1) return false;
+            double avgVol = GetAverageVolume(barIndex, PVSRALookback);
+            if (avgVol <= 0) return false;
+            return Close[barIndex] < Open[barIndex] &&
+                   Volume[barIndex] >= avgVol * (MidVolumeThreshold  / 100.0) &&
+                   Volume[barIndex] <  avgVol * (HighVolumeThreshold / 100.0);
+        }
+
+        private void CreatePVSRAZone(bool isBullish, bool isAbsorption, int barIndex)
+        {
+            double high  = High[barIndex];
+            double low   = Low[barIndex];
+            double open  = Open[barIndex];
+            double close = Close[barIndex];
+
+            double wickTop, wickBot;
+            if (isBullish)
+            {
+                wickBot = isAbsorption ? open : low;
+                wickTop = high;
+            }
+            else
+            {
+                wickTop = isAbsorption ? open : high;
+                wickBot = low;
+            }
+
+            double bodyHigh = Math.Max(open, close);
+            double bodyLow  = Math.Min(open, close);
+            double bodyTop, bodyBot;
+            if (isBullish)
+            {
+                bodyBot = isAbsorption ? open : bodyLow;
+                bodyTop = bodyHigh;
+            }
+            else
+            {
+                bodyTop = isAbsorption ? open : bodyHigh;
+                bodyBot = bodyLow;
+            }
+
+            double zoneHigh     = Math.Max(wickTop, wickBot);
+            double zoneLow      = Math.Min(wickTop, wickBot);
+            double zoneBodyHigh = Math.Max(bodyTop, bodyBot);
+            double zoneBodyLow  = Math.Min(bodyTop, bodyBot);
+
+            if (zoneBodyHigh == zoneBodyLow) return;
+
+            AddLiquidityZone(new LiquidityZone
+            {
+                HighPrice           = zoneHigh,
+                LowPrice            = zoneLow,
+                BodyHighPrice       = zoneBodyHigh,
+                BodyLowPrice        = zoneBodyLow,
+                CreatedBar          = CurrentBar,
+                OriginBarIndex      = CurrentBar - barIndex,
+                IsBullish           = isBullish,
+                IsAbsorption        = isAbsorption,
+                IsRecovered         = false,
+                PartialRecoveryHigh = zoneBodyHigh,
+                PartialRecoveryLow  = zoneBodyLow
+            });
+        }
+
+        private void UpdateImbalanceThresholds()
+        {
+            if (deltaHistory.Count < 5) return;
+            var sorted = new List<double>(deltaHistory);
+            sorted.Sort();
+            int lo5  = (int)Math.Floor(sorted.Count * 0.05);
+            int hi95 = Math.Min((int)Math.Floor(sorted.Count * 0.95), sorted.Count - 1);
+            imbalanceLow  = sorted[lo5];
+            imbalanceHigh = sorted[hi95];
+        }
+
+        private void TryDetectSRLevel()
+        {
+            if (CurrentBar < SRSwingStrength * 2 + 1) return;
+
+            bool isSwingHigh = true;
+            for (int i = 1; i <= SRSwingStrength; i++)
+            {
+                if (High[i] >= High[0]) { isSwingHigh = false; break; }
+            }
+            if (isSwingHigh)
+            {
+                for (int i = SRSwingStrength + 1; i <= SRSwingStrength * 2; i++)
+                {
+                    if (i < CurrentBar && High[i] >= High[SRSwingStrength]) { isSwingHigh = false; break; }
+                }
+            }
+
+            bool isSwingLow = true;
+            for (int i = 1; i <= SRSwingStrength; i++)
+            {
+                if (Low[i] <= Low[0]) { isSwingLow = false; break; }
+            }
+            if (isSwingLow)
+            {
+                for (int i = SRSwingStrength + 1; i <= SRSwingStrength * 2; i++)
+                {
+                    if (i < CurrentBar && Low[i] <= Low[SRSwingStrength]) { isSwingLow = false; break; }
+                }
+            }
+
+            double level = 0;
+            if      (isSwingHigh) level = High[0];
+            else if (isSwingLow)  level = Low[0];
+
+            if (level > 0)
+            {
+                bool duplicate = false;
+                double tolerance = TickSize * 5;
+                foreach (double existing in srLevels)
+                {
+                    if (Math.Abs(existing - level) < tolerance) { duplicate = true; break; }
+                }
+                if (!duplicate)
+                {
+                    if (srLevels.Count >= 50) srLevels.RemoveAt(0);
+                    srLevels.Add(level);
+                }
+            }
+        }
+
+        private void CheckFakeBreakoutFilters(double barBuy, double barSell, double totalVol,
+            ref bool isFake, ref int dir)
+        {
+            isFake = false;
+            dir    = 0;
+
+            if (CurrentBar < MomentumPeriod + SRSwingStrength * 2 + 2) return;
+
+            double nearestBreak   = 0;
+            int    breakDirection = 0;
+            double breakTolerance = TickSize * 3;
+
+            foreach (double sr in srLevels)
+            {
+                if (High[0] > sr && Low[1] < sr && Math.Abs(Close[0] - sr) < breakTolerance * 10)
+                {
+                    nearestBreak = sr; breakDirection = 1; break;
+                }
+                if (Low[0] < sr && High[1] > sr && Math.Abs(Close[0] - sr) < breakTolerance * 10)
+                {
+                    nearestBreak = sr; breakDirection = -1; break;
+                }
+            }
+
+            if (nearestBreak == 0) return;
+
+            bool confirmedBreakout;
+            if (breakDirection == 1)
+                confirmedBreakout = Close[0] > nearestBreak && Close[1] > nearestBreak;
+            else
+                confirmedBreakout = Close[0] < nearestBreak && Close[1] < nearestBreak;
+
+            if (confirmedBreakout)
+            {
+                confirmBarsCount++;
+                if (confirmBarsCount >= ConfirmationBars) return;
+            }
+            else
+            {
+                confirmBarsCount = 0;
+            }
+
+            double avgVol  = 0;
+            int    lookback = Math.Min(CurrentBar, DeltaLookback);
+            for (int i = 1; i <= lookback; i++) avgVol += Volume[i];
+            if (lookback > 0) avgVol /= lookback;
+
+            bool volumeOK = avgVol > 0 && (totalVol / avgVol * 100.0) >= VolumeFollowThrough;
+            if (volumeOK) return;
+
+            double momentumNow  = Close[0] - Close[MomentumPeriod];
+            double momentumPrev = Close[1] - Close[MomentumPeriod + 1];
+            bool   momentumDiverges;
+            if (breakDirection == 1) momentumDiverges = momentumNow < momentumPrev;
+            else                     momentumDiverges = momentumNow > momentumPrev;
+
+            bool srValid = nearestBreak > 0;
+
+            double stopDist = Math.Abs(Close[0] - nearestBreak) + TickSize;
+            double reward   = Math.Abs(High[0] - Low[0]);
+            bool   rrOK     = stopDist > 0 && (reward / stopDist) >= MinRiskReward;
+
+            if (!confirmedBreakout && !volumeOK && (momentumDiverges || srValid) && !rrOK)
+            {
+                isFake = true;
+                dir    = breakDirection;
+            }
+        }
+
+        private void DetectOrderBookWalls(Dictionary<double, BookLevel> book, bool isBid)
+        {
+            if (book.Count == 0) return;
+
+            double avg = 0;
+            foreach (var kv in book) avg += kv.Value.Size;
+            avg /= book.Count;
+
+            long   wallSize  = 0;
+            double wallPrice = 0;
+
+            foreach (var kv in book)
+            {
+                if (kv.Value.Size > avg * WallMultiplier && kv.Value.Size > wallSize)
+                {
+                    wallSize  = kv.Value.Size;
+                    wallPrice = kv.Key;
+                }
+            }
+
+            if (isBid) { wallBidPrice = wallPrice; wallBidSize  = wallSize; }
+            else       { wallAskPrice = wallPrice; wallAskSize  = wallSize; }
+        }
+
+        private void UpdateDashboardText(double barBuy, double barSell, double delta, double deltaPct,
+            bool isAbsorption, bool isImbalance, bool isFake)
+        {
+            dashLine2 = string.Format("Buy Vol: {0:N0}  Sell Vol: {1:N0}", barBuy, barSell);
+            dashLine3 = string.Format("Delta: {0:+0;-0;0}  Δ%: {1:+0.0;-0.0;0.0}%", (long)delta, deltaPct);
+            dashLine4 = string.Format("Cum Δ: {0}  Session B/S: {1:N0}/{2:N0}",
+                FormatDelta(cumDelta), sessionBuyVol, sessionSellVol);
+
+            var flags = new List<string>();
+            if (isAbsorption)     flags.Add("ABS");
+            if (isImbalance)      flags.Add("IMB");
+            if (isFake)           flags.Add("FAKE-BKT");
+            if (wallBidPrice > 0) flags.Add(string.Format("BID WALL@{0:F2}", wallBidPrice));
+            if (wallAskPrice > 0) flags.Add(string.Format("ASK WALL@{0:F2}", wallAskPrice));
+            dashLine5 = flags.Count > 0 ? "Signals: " + string.Join(" | ", flags) : "Signals: none";
+
+            dashLine6 = string.Format("S/R Levels: {0}  |  Imb Threshold: {1:N0}", srLevels.Count, imbalanceHigh);
+
+            if (ShowZoneCount && EnableLiquidityZones)
+            {
+                int greenZones = 0, redZones = 0, blueZones = 0, pinkZones = 0;
+                if (liquidityZones != null)
+                {
+                    foreach (LiquidityZone z in liquidityZones)
+                    {
+                        if (z.IsRecovered) continue;
+                        if      ( z.IsBullish && !z.IsAbsorption) greenZones++;
+                        else if (!z.IsBullish && !z.IsAbsorption) redZones++;
+                        else if ( z.IsBullish &&  z.IsAbsorption) blueZones++;
+                        else                                       pinkZones++;
+                    }
+                }
+                dashLine7 = string.Format("ULZ: G:{0} R:{1} B:{2} P:{3}  (Rec:{4})",
+                    greenZones, redZones, blueZones, pinkZones, recoveredZoneCount);
+            }
+            else
+            {
+                dashLine7 = "";
+            }
+        }
+
+        private BarSnapshot GetSnapshot(int barIdx)
+        {
+            int offset = CurrentBar - barIdx;
+            int sIdx   = snapshots.Count - 1 - offset;
+            if (sIdx < 0 || sIdx >= snapshots.Count) return null;
+            return snapshots[sIdx];
+        }
+
+        private void CheckLiquidityZoneRecovery()
+        {
+            if (liquidityZones.Count == 0) return;
+
+            int refBar = (Calculate == Calculate.OnBarClose) ? 0 : 1;
+            double curHigh  = High[refBar];
+            double curLow   = Low[refBar];
+
+            int active = 0, recovered = 0;
+
+            for (int i = 0; i < liquidityZones.Count; i++)
+            {
+                LiquidityZone z = liquidityZones[i];
+                if (z.IsRecovered) { recovered++; continue; }
+                if (z.CreatedBar >= CurrentBar) { active++; continue; }
+
+                bool zoneRecovered = false;
+
+                if (z.IsBullish)
+                {
+                    double topBoundary = z.PartialRecoveryHigh;
+                    double botBoundary = z.PartialRecoveryLow;
+
+                    if (curLow <= botBoundary)
+                        zoneRecovered = true;
+                    else if (curLow < topBoundary)
+                    {
+                        z.PartialRecoveryHigh = Math.Min(z.PartialRecoveryHigh, curLow);
+                        if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
+                            zoneRecovered = true;
+                    }
+                }
+                else
+                {
+                    double topBoundary = z.PartialRecoveryHigh;
+                    double botBoundary = z.PartialRecoveryLow;
+
+                    if (curHigh >= topBoundary)
+                        zoneRecovered = true;
+                    else if (curHigh > botBoundary)
+                    {
+                        z.PartialRecoveryLow = Math.Max(z.PartialRecoveryLow, curHigh);
+                        if (z.PartialRecoveryHigh <= z.PartialRecoveryLow)
+                            zoneRecovered = true;
+                    }
+                }
+
+                if (zoneRecovered) { z.IsRecovered = true; recovered++; }
+                else active++;
+            }
+
+            activeZoneCount    = active;
+            recoveredZoneCount = recovered;
+        }
+
+        private void AddLiquidityZone(LiquidityZone zone)
+        {
+            if (zone.HighPrice <= zone.LowPrice) return;
+
+            if (liquidityZones.Count >= MaxActiveZones)
+            {
+                LiquidityZone recoveredZone = null;
+                for (int i = 0; i < liquidityZones.Count; i++)
+                {
+                    if (liquidityZones[i].IsRecovered) { recoveredZone = liquidityZones[i]; break; }
+                }
+                if (recoveredZone != null) liquidityZones.Remove(recoveredZone);
+                else if (liquidityZones.Count > 0) liquidityZones.RemoveAt(0);
+            }
+
+            liquidityZones.Add(zone);
+        }
+
+        private static double NormaliseValue(double value, double min, double max)
+        {
+            if (max <= min) return 0.5;
+            return Math.Max(0, Math.Min(1, (value - min) / (max - min)));
+        }
+
+        private static string FormatDelta(double delta)
+        {
+            if (Math.Abs(delta) >= 1_000_000)
+                return string.Format("{0:+0.0;-0.0}M", delta / 1_000_000);
+            if (Math.Abs(delta) >= 1_000)
+                return string.Format("{0:+0;-0}K", (long)(delta / 1_000));
+            return string.Format("{0:+0;-0;0}", (long)delta);
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region SharpDX resource management
+
+        private void CreateDXResources()
+        {
+            var rt = RenderTarget;
+            if (rt == null) { dxReady = false; return; }
+
+            DisposeDXResources();
+
+            try
+            {
+                float opacityFrac = Math.Max(0f, Math.Min(1f, DashOpacity / 100f));
+
+                dxWriteFactory = new SharpDX.DirectWrite.Factory();
+                dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
+                dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas",  9f);
+                dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", DashFontSize);
+
+                // Pivot brushes
+                dxPPBrush     = MakeBrush(rt, PPColor,     0.85f);
+                dxRLevelBrush = MakeBrush(rt, RLevelColor, 0.85f);
+                dxSLevelBrush = MakeBrush(rt, SLevelColor, 0.85f);
+                dxMLevelBrush = MakeBrush(rt, MLevelColor, MLevelOpacity / 100f);
+
+                // Yesterday / last week
+                dxYesterdayBrush = MakeBrush(rt, YesterdayColor, 0.8f);
+                dxLastWeekBrush  = MakeBrush(rt, LastWeekColor,  0.8f);
+
+                // ADR / AWR / AMR / RD / RW
+                dxAdrBrush = MakeBrush(rt, AdrColor, AdrOpacity / 100f);
+                dxAwrBrush = MakeBrush(rt, AwrColor, AwrOpacity / 100f);
+                dxAmrBrush = MakeBrush(rt, AmrColor, AmrOpacity / 100f);
+                dxRdBrush  = MakeBrush(rt, RdColor,  RdOpacity  / 100f);
+                dxRwBrush  = MakeBrush(rt, RwColor,  RwOpacity  / 100f);
+
+                // Daily open
+                dxDailyOpenBrush = MakeBrush(rt, DailyOpenColor, 0.9f);
+
+                // Session brushes — per session
+                dxSessionBoxBrush    = new SharpDX.Direct2D1.SolidColorBrush[8];
+                dxSessionBorderBrush = new SharpDX.Direct2D1.SolidColorBrush[8];
+                System.Windows.Media.Brush[] sessionColors =
+                {
+                    LondonColor, NewYorkColor, TokyoColor, HongKongColor,
+                    SydneyColor, EuBrinksColor, UsBrinksColor, FrankfurtColor
+                };
+                int[] sessionOpacities =
+                {
+                    LondonOpacity, NewYorkOpacity, TokyoOpacity, HongKongOpacity,
+                    SydneyOpacity, EuBrinksOpacity, UsBrinksOpacity, FrankfurtOpacity
+                };
+                for (int i = 0; i < 8; i++)
+                {
+                    dxSessionBoxBrush[i]    = MakeBrush(rt, sessionColors[i], sessionOpacities[i] / 100f);
+                    dxSessionBorderBrush[i] = MakeBrush(rt, sessionColors[i], 0.85f);
+                }
+
+                // Psy levels
+                dxPsyBrush = MakeBrush(rt, PsyColor, PsyOpacity / 100f);
+
+                // Shared dashboard background and text
+                dxDashBgBrush    = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color((byte)10, (byte)10, (byte)20, (byte)(opacityFrac * 220)));
+                dxDashTextBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color((byte)220, (byte)220, (byte)230, (byte)240));
+                dxDashHeaderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(1f, 0.85f, 0.2f, 1f));
+                dxDashAccentBrush = MakeBrush(rt, FakeBreakoutColor, 1f);
+
+                // Candle brushes
+                dxBullBrush      = MakeBrush(rt, BullishColor,     0.85f);
+                dxBearBrush      = MakeBrush(rt, BearishColor,     0.85f);
+                dxAbsorbBrush    = MakeBrush(rt, AbsorptionColor,  0.90f);
+                dxImbalanceBrush = MakeBrush(rt, ImbalanceColor,   0.85f);
+                dxFakeBrush      = MakeBrush(rt, FakeBreakoutColor, 0.90f);
+                dxWickBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color((byte)180, (byte)180, (byte)180, (byte)200));
+
+                // Wall brushes
+                dxWallBidBrush = MakeBrush(rt, BullishColor, 0.9f);
+                dxWallAskBrush = MakeBrush(rt, BearishColor, 0.9f);
+
+                // PVSRA brushes
+                dxPvsraHighBullBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(0f / 255f, 210f / 255f, 80f / 255f, 220f / 255f));
+                dxPvsraHighBearBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(220f / 255f, 0f / 255f, 30f / 255f, 220f / 255f));
+                dxPvsraMidBullBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, 200f / 255f));
+                dxPvsraMidBearBrush  = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, 200f / 255f));
+
+                // Composite border brushes
+                dxBorderAbsorbBrush    = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 215f / 255f, 0f / 255f, 230f / 255f));
+                dxBorderImbalanceBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(30f / 255f, 144f / 255f, 255f / 255f, 230f / 255f));
+                dxBorderFakeBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 120f / 255f, 0f / 255f, 230f / 255f));
+
+                // Zone fill brushes
+                float zoneAlphaF = Math.Max(0.02f, Math.Min(0.80f, (float)ZoneOpacity / 100f));
+                dxULZBullishBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(0f / 255f, 210f / 255f, 80f / 255f, zoneAlphaF));
+                dxULZBearishBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(220f / 255f, 0f / 255f, 30f / 255f, zoneAlphaF));
+                dxULZBlueBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(30f / 255f, 100f / 255f, 255f / 255f, zoneAlphaF));
+                dxULZPinkBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF));
+
+                dxReady = true;
+            }
+            catch (Exception ex)
+            {
+                Print("IQMainGPU: CreateDXResources failed [" + ex.GetType().Name + "]: " + ex.Message);
+                dxReady = false;
+                DisposeDXResources();
+            }
+        }
+
+        private static SharpDX.Direct2D1.SolidColorBrush MakeBrush(
+            SharpDX.Direct2D1.RenderTarget rt,
+            System.Windows.Media.Brush wpfBrush,
+            float opacity)
+        {
+            var scb = wpfBrush as System.Windows.Media.SolidColorBrush;
+            if (scb != null)
+            {
+                System.Windows.Media.Color c;
+                try   { c = scb.Color; }
+                catch (InvalidOperationException) { c = System.Windows.Media.Colors.White; }
+                return new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, opacity));
+            }
+            return new SharpDX.Direct2D1.SolidColorBrush(rt,
+                new SharpDX.Color4(1f, 1f, 1f, opacity));
+        }
+
+        private void DisposeDXResources()
+        {
+            DisposeRef(ref dxWriteFactory);
+            DisposeRef(ref dxLabelFormat);
+            DisposeRef(ref dxSmallFormat);
+            DisposeRef(ref dxDashFormat);
+
+            DisposeRef(ref dxPPBrush);
+            DisposeRef(ref dxRLevelBrush);
+            DisposeRef(ref dxSLevelBrush);
+            DisposeRef(ref dxMLevelBrush);
+            DisposeRef(ref dxYesterdayBrush);
+            DisposeRef(ref dxLastWeekBrush);
+            DisposeRef(ref dxAdrBrush);
+            DisposeRef(ref dxAwrBrush);
+            DisposeRef(ref dxAmrBrush);
+            DisposeRef(ref dxRdBrush);
+            DisposeRef(ref dxRwBrush);
+            DisposeRef(ref dxDailyOpenBrush);
+            DisposeRef(ref dxPsyBrush);
+            DisposeRef(ref dxDashBgBrush);
+            DisposeRef(ref dxDashTextBrush);
+            DisposeRef(ref dxDashHeaderBrush);
+            DisposeRef(ref dxDashAccentBrush);
+            DisposeRef(ref dxBullBrush);
+            DisposeRef(ref dxBearBrush);
+            DisposeRef(ref dxAbsorbBrush);
+            DisposeRef(ref dxImbalanceBrush);
+            DisposeRef(ref dxFakeBrush);
+            DisposeRef(ref dxWickBrush);
+            DisposeRef(ref dxWallBidBrush);
+            DisposeRef(ref dxWallAskBrush);
+            DisposeRef(ref dxPvsraHighBullBrush);
+            DisposeRef(ref dxPvsraHighBearBrush);
+            DisposeRef(ref dxPvsraMidBullBrush);
+            DisposeRef(ref dxPvsraMidBearBrush);
+            DisposeRef(ref dxBorderAbsorbBrush);
+            DisposeRef(ref dxBorderImbalanceBrush);
+            DisposeRef(ref dxBorderFakeBrush);
+            DisposeRef(ref dxULZBullishBrush);
+            DisposeRef(ref dxULZBearishBrush);
+            DisposeRef(ref dxULZBlueBrush);
+            DisposeRef(ref dxULZPinkBrush);
+
+            if (dxSessionBoxBrush != null)
+            {
+                for (int i = 0; i < dxSessionBoxBrush.Length; i++)
+                    DisposeRef(ref dxSessionBoxBrush[i]);
+                dxSessionBoxBrush = null;
+            }
+            if (dxSessionBorderBrush != null)
+            {
+                for (int i = 0; i < dxSessionBorderBrush.Length; i++)
+                    DisposeRef(ref dxSessionBorderBrush[i]);
+                dxSessionBorderBrush = null;
+            }
+        }
+
+        private static void DisposeRef<T>(ref T resource) where T : class, IDisposable
+        {
+            if (resource != null)
+            {
+                resource.Dispose();
+                resource = null;
+            }
+        }
+
+        #endregion
+    }
+}
