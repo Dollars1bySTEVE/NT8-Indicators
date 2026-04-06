@@ -45,6 +45,9 @@ public enum IQMCandleColorMode
     Classic
 }
 
+/// <summary>Session anchor for VWAP calculation reset.</summary>
+public enum VwapSessionAnchor { ETH, RTH_US, Both }
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
@@ -155,6 +158,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double PartialRecoveryLow;
         }
 
+        /// <summary>Per-bar VWAP and standard deviation band data.</summary>
+        private class VwapBarData
+        {
+            public double Vwap;
+            public double StdDev;
+            public double Band1Upper;
+            public double Band1Lower;
+            public double Band2Upper;
+            public double Band2Lower;
+            public double Band3Upper;
+            public double Band3Lower;
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — Sessions / Pivots / Ranges
@@ -201,6 +217,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SessionOpenEntry       currentRthLondonEntry;
         private List<SessionOpenEntry> rthUsOpenEntries;
         private SessionOpenEntry       currentRthUsEntry;
+
+        // VWAP tracking (ETH-anchored and RTH-anchored, one entry per bar)
+        private List<VwapBarData> vwapEthData;
+        private double            vwapEthCumulativePV;
+        private double            vwapEthCumulativeVolume;
+        private double            vwapEthCumulativeTPVSq;
+        private DateTime          vwapEthSessionStart;
+
+        private List<VwapBarData> vwapRthData;
+        private double            vwapRthCumulativePV;
+        private double            vwapRthCumulativeVolume;
+        private double            vwapRthCumulativeTPVSq;
+        private DateTime          vwapRthSessionStart;
 
         private List<SessionBox> sessionBoxes;
         private SessionBox[]     activeSessions;
@@ -342,6 +371,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxULZBearishBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxULZBlueBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxULZPinkBrush;
+
+        // VWAP brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapAboveBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBelowBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapNeutralBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBand1Brush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBand2Brush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBand3Brush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapFillBrush;
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1373,6 +1411,138 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 14. VWAP
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show VWAP", Order = 1, GroupName = "14. VWAP")]
+        public bool ShowVwap { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "VWAP Session Anchor", Order = 2, GroupName = "14. VWAP",
+            Description = "ETH = reset at 6 PM ET; RTH_US = reset at US market open (13:30 UTC with DST); Both = show both.")]
+        public VwapSessionAnchor VwapAnchor { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "VWAP Line Thickness", Order = 3, GroupName = "14. VWAP")]
+        public int VwapLineThickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "VWAP Line Style", Order = 4, GroupName = "14. VWAP")]
+        public IQMLineStyle VwapLineStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "VWAP Opacity %", Order = 5, GroupName = "14. VWAP")]
+        public int VwapOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show VWAP Label", Order = 6, GroupName = "14. VWAP")]
+        public bool ShowVwapLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "VWAP Label Text", Order = 7, GroupName = "14. VWAP")]
+        public string VwapLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Dynamic Color (price vs VWAP)", Order = 8, GroupName = "14. VWAP")]
+        public bool VwapDynamicColor { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "VWAP Color (Price Above)", Order = 9, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush VwapAboveColor { get; set; }
+        [Browsable(false)]
+        public string VwapAboveColorSerializable { get => Serialize.BrushToString(VwapAboveColor); set => VwapAboveColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "VWAP Color (Price Below)", Order = 10, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush VwapBelowColor { get; set; }
+        [Browsable(false)]
+        public string VwapBelowColorSerializable { get => Serialize.BrushToString(VwapBelowColor); set => VwapBelowColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "VWAP Color (Neutral/Default)", Order = 11, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush VwapNeutralColor { get; set; }
+        [Browsable(false)]
+        public string VwapNeutralColorSerializable { get => Serialize.BrushToString(VwapNeutralColor); set => VwapNeutralColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ±1σ Bands", Order = 12, GroupName = "14. VWAP")]
+        public bool ShowVwapBand1 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band 1 Color", Order = 13, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush VwapBand1Color { get; set; }
+        [Browsable(false)]
+        public string VwapBand1ColorSerializable { get => Serialize.BrushToString(VwapBand1Color); set => VwapBand1Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Band 1 Opacity %", Order = 14, GroupName = "14. VWAP")]
+        public int VwapBand1Opacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 3)]
+        [Display(Name = "Band 1 Thickness", Order = 15, GroupName = "14. VWAP")]
+        public int VwapBand1Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ±2σ Bands", Order = 16, GroupName = "14. VWAP")]
+        public bool ShowVwapBand2 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band 2 Color", Order = 17, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush VwapBand2Color { get; set; }
+        [Browsable(false)]
+        public string VwapBand2ColorSerializable { get => Serialize.BrushToString(VwapBand2Color); set => VwapBand2Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Band 2 Opacity %", Order = 18, GroupName = "14. VWAP")]
+        public int VwapBand2Opacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 3)]
+        [Display(Name = "Band 2 Thickness", Order = 19, GroupName = "14. VWAP")]
+        public int VwapBand2Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show ±3σ Bands", Order = 20, GroupName = "14. VWAP")]
+        public bool ShowVwapBand3 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band 3 Color", Order = 21, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush VwapBand3Color { get; set; }
+        [Browsable(false)]
+        public string VwapBand3ColorSerializable { get => Serialize.BrushToString(VwapBand3Color); set => VwapBand3Color = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Band 3 Opacity %", Order = 22, GroupName = "14. VWAP")]
+        public int VwapBand3Opacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 3)]
+        [Display(Name = "Band 3 Thickness", Order = 23, GroupName = "14. VWAP")]
+        public int VwapBand3Thickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Fill Between Bands", Order = 24, GroupName = "14. VWAP")]
+        public bool VwapFillBands { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Band Fill Opacity %", Order = 25, GroupName = "14. VWAP")]
+        public int VwapFillOpacity { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
 
         protected override void OnStateChange()
@@ -1658,6 +1828,33 @@ namespace NinjaTrader.NinjaScript.Indicators
                 TableTextColor       = Brushes.White;
                 ShowDstTable         = false;
                 DstTablePosition     = IQMDashboardPosition.BottomLeft;
+
+                // 14. VWAP
+                ShowVwap          = true;
+                VwapAnchor        = VwapSessionAnchor.ETH;
+                VwapLineThickness = 2;
+                VwapLineStyle     = IQMLineStyle.Solid;
+                VwapOpacity       = 90;
+                ShowVwapLabel     = true;
+                VwapLabel         = "VWAP";
+                VwapDynamicColor  = true;
+                VwapAboveColor    = Brushes.LimeGreen;
+                VwapBelowColor    = Brushes.Crimson;
+                VwapNeutralColor  = Brushes.Yellow;
+                ShowVwapBand1     = true;
+                VwapBand1Color    = Brushes.DodgerBlue;
+                VwapBand1Opacity  = 60;
+                VwapBand1Thickness = 1;
+                ShowVwapBand2     = true;
+                VwapBand2Color    = Brushes.Orange;
+                VwapBand2Opacity  = 50;
+                VwapBand2Thickness = 1;
+                ShowVwapBand3     = false;
+                VwapBand3Color    = Brushes.Purple;
+                VwapBand3Opacity  = 40;
+                VwapBand3Thickness = 1;
+                VwapFillBands     = false;
+                VwapFillOpacity   = 15;
             }
             else if (State == State.DataLoaded)
             {
@@ -1693,6 +1890,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 currentRthLondonEntry = null;
                 rthUsOpenEntries      = new List<SessionOpenEntry>(200);
                 currentRthUsEntry     = null;
+
+                // VWAP data lists
+                vwapEthData              = new List<VwapBarData>(1000);
+                vwapEthCumulativePV      = 0;
+                vwapEthCumulativeVolume  = 0;
+                vwapEthCumulativeTPVSq   = 0;
+                vwapEthSessionStart      = DateTime.MinValue;
+
+                vwapRthData              = new List<VwapBarData>(1000);
+                vwapRthCumulativePV      = 0;
+                vwapRthCumulativeVolume  = 0;
+                vwapRthCumulativeTPVSq   = 0;
+                vwapRthSessionStart      = DateTime.MinValue;
 
                 // Candle / microstructure collections
                 snapshots      = new List<BarSnapshot>(1000);
@@ -2022,6 +2232,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Bars.TradingHours.TimeZoneInfo);
                 UpdateSessions(barUtc);
                 UpdateEthAndRthOpens(barUtc);
+                UpdateVwap(barUtc);
 
                 if (psyWeekStartBar > 0)
                 {
@@ -2418,6 +2629,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             try { RenderCandles(chartControl, chartScale, fromBar, toBar); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderCandles: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQMainGPU: RenderCandles [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 8b. VWAP ──────────────────────────────────────────────────────
+            try { if (ShowVwap) RenderVwap(chartControl, chartScale, fromBar, toBar); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderVwap: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderVwap [" + ex.GetType().Name + "]: " + ex.Message); }
 
             // ── 9. Wall lines ─────────────────────────────────────────────────
             try { if (ShowWallLines && EnableLevel2 && level2Available) RenderWallLines(chartControl, chartScale); }
@@ -3420,6 +3636,98 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Brushes.Yellow, Brushes.Black);
         }
 
+        private void UpdateVwap(DateTime barUtc)
+        {
+            if (vwapEthData == null || vwapRthData == null) return;
+
+            double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
+            double vol = Volume[0];
+
+            // ── ETH-anchored VWAP (always computed) ──────────────────────────
+            DateTime ethStart = GetEthSessionStart(barUtc);
+            if (vwapEthSessionStart != ethStart)
+            {
+                vwapEthSessionStart      = ethStart;
+                vwapEthCumulativePV      = 0;
+                vwapEthCumulativeVolume  = 0;
+                vwapEthCumulativeTPVSq   = 0;
+            }
+
+            if (vol > 0)
+            {
+                vwapEthCumulativePV     += tp * vol;
+                vwapEthCumulativeVolume += vol;
+                vwapEthCumulativeTPVSq  += tp * tp * vol;
+            }
+
+            double ethVwap     = vwapEthCumulativeVolume > 0 ? vwapEthCumulativePV / vwapEthCumulativeVolume : tp;
+            double ethVariance = vwapEthCumulativeVolume > 0
+                ? Math.Max(0, (vwapEthCumulativeTPVSq / vwapEthCumulativeVolume) - (ethVwap * ethVwap))
+                : 0;
+            double ethStdDev   = Math.Sqrt(ethVariance);
+
+            if (vwapEthData.Count >= 1000) vwapEthData.RemoveAt(0);
+            vwapEthData.Add(new VwapBarData
+            {
+                Vwap       = ethVwap,
+                StdDev     = ethStdDev,
+                Band1Upper = ethVwap + ethStdDev,
+                Band1Lower = ethVwap - ethStdDev,
+                Band2Upper = ethVwap + 2 * ethStdDev,
+                Band2Lower = ethVwap - 2 * ethStdDev,
+                Band3Upper = ethVwap + 3 * ethStdDev,
+                Band3Lower = ethVwap - 3 * ethStdDev
+            });
+
+            // ── RTH-anchored VWAP (resets at US RTH open 13:30 UTC with DST) ─
+            int      usOffset = IsUsDst(barUtc.Date) ? 0 : 1;
+            DateTime rthStart = barUtc.Date.AddHours(13 + usOffset).AddMinutes(30);
+            bool     inRth    = barUtc >= rthStart;
+
+            if (inRth)
+            {
+                if (vwapRthSessionStart != rthStart)
+                {
+                    vwapRthSessionStart      = rthStart;
+                    vwapRthCumulativePV      = 0;
+                    vwapRthCumulativeVolume  = 0;
+                    vwapRthCumulativeTPVSq   = 0;
+                }
+
+                if (vol > 0)
+                {
+                    vwapRthCumulativePV     += tp * vol;
+                    vwapRthCumulativeVolume += vol;
+                    vwapRthCumulativeTPVSq  += tp * tp * vol;
+                }
+
+                double rthVwap     = vwapRthCumulativeVolume > 0 ? vwapRthCumulativePV / vwapRthCumulativeVolume : tp;
+                double rthVariance = vwapRthCumulativeVolume > 0
+                    ? Math.Max(0, (vwapRthCumulativeTPVSq / vwapRthCumulativeVolume) - (rthVwap * rthVwap))
+                    : 0;
+                double rthStdDev   = Math.Sqrt(rthVariance);
+
+                if (vwapRthData.Count >= 1000) vwapRthData.RemoveAt(0);
+                vwapRthData.Add(new VwapBarData
+                {
+                    Vwap       = rthVwap,
+                    StdDev     = rthStdDev,
+                    Band1Upper = rthVwap + rthStdDev,
+                    Band1Lower = rthVwap - rthStdDev,
+                    Band2Upper = rthVwap + 2 * rthStdDev,
+                    Band2Lower = rthVwap - 2 * rthStdDev,
+                    Band3Upper = rthVwap + 3 * rthStdDev,
+                    Band3Lower = rthVwap - 3 * rthStdDev
+                });
+            }
+            else
+            {
+                // Outside RTH — store null placeholder to keep list aligned with CurrentBar
+                if (vwapRthData.Count >= 1000) vwapRthData.RemoveAt(0);
+                vwapRthData.Add(null);
+            }
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Microstructure helpers — PVSRA, zones, fake-breakout, walls, dashboard
@@ -3838,6 +4146,156 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Render helpers — VWAP
+
+        private void RenderVwap(ChartControl cc, ChartScale cs, int fromBar, int toBar)
+        {
+            if (vwapEthData == null || vwapRthData == null) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            bool showEth = (VwapAnchor == VwapSessionAnchor.ETH || VwapAnchor == VwapSessionAnchor.Both);
+            bool showRth = (VwapAnchor == VwapSessionAnchor.RTH_US || VwapAnchor == VwapSessionAnchor.Both);
+
+            if (showEth) RenderVwapLine(cc, cs, fromBar, toBar, vwapEthData);
+            if (showRth) RenderVwapLine(cc, cs, fromBar, toBar, vwapRthData);
+        }
+
+        private void RenderVwapLine(ChartControl cc, ChartScale cs, int fromBar, int toBar,
+            List<VwapBarData> data)
+        {
+            var rt = RenderTarget;
+            if (rt == null || data == null || data.Count == 0) return;
+
+            // Render bands behind the VWAP line
+            if (ShowVwapBand3 && dxVwapBand3Brush != null)
+                RenderVwapBandPair(cc, cs, fromBar, toBar, data, 3, dxVwapBand3Brush, VwapBand3Thickness);
+            if (ShowVwapBand2 && dxVwapBand2Brush != null)
+                RenderVwapBandPair(cc, cs, fromBar, toBar, data, 2, dxVwapBand2Brush, VwapBand2Thickness);
+            if (ShowVwapBand1 && dxVwapBand1Brush != null)
+                RenderVwapBandPair(cc, cs, fromBar, toBar, data, 1, dxVwapBand1Brush, VwapBand1Thickness);
+
+            // Render VWAP line with dynamic color
+            for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+            {
+                if (barIdx < 0 || barIdx + 1 >= Bars.Count) continue;
+                VwapBarData d0 = GetVwapDataAt(data, barIdx);
+                VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
+                if (d0 == null || d1 == null) continue;
+
+                float x0 = cc.GetXByBarIndex(ChartBars, barIdx);
+                float x1 = cc.GetXByBarIndex(ChartBars, barIdx + 1);
+                float y0 = cs.GetYByValue(d0.Vwap);
+                float y1 = cs.GetYByValue(d1.Vwap);
+
+                SharpDX.Direct2D1.SolidColorBrush brush;
+                if (VwapDynamicColor)
+                {
+                    double closeNext = Bars.GetClose(barIdx + 1);
+                    if (closeNext > d1.Vwap)
+                        brush = dxVwapAboveBrush;
+                    else if (closeNext < d1.Vwap)
+                        brush = dxVwapBelowBrush;
+                    else
+                        brush = dxVwapNeutralBrush;
+                }
+                else
+                {
+                    brush = dxVwapNeutralBrush;
+                }
+
+                if (brush == null) continue;
+                DrawStyledLine(x0, y0, x1, y1, brush, VwapLineThickness, VwapLineStyle);
+            }
+
+            // Label at rightmost visible bar
+            if (ShowVwapLabel && dxLabelFormat != null)
+            {
+                VwapBarData lastData = GetVwapDataAt(data, toBar);
+                if (lastData != null)
+                {
+                    float  y      = cs.GetYByValue(lastData.Vwap);
+                    float  labelX = cc.GetXByBarIndex(ChartBars, toBar) + 6f;
+                    string txt    = VwapLabel + " " + Instrument.MasterInstrument.FormatPrice(lastData.Vwap);
+
+                    SharpDX.Direct2D1.SolidColorBrush labelBrush;
+                    if (VwapDynamicColor)
+                    {
+                        double c = Close[0];
+                        labelBrush = c > lastData.Vwap ? dxVwapAboveBrush
+                                   : c < lastData.Vwap ? dxVwapBelowBrush
+                                   : dxVwapNeutralBrush;
+                    }
+                    else
+                    {
+                        labelBrush = dxVwapNeutralBrush;
+                    }
+
+                    if (labelBrush != null)
+                        RenderTarget.DrawText(txt, dxLabelFormat,
+                            new SharpDX.RectangleF(labelX, y - 8f, 140f, 16f), labelBrush);
+                }
+            }
+        }
+
+        private void RenderVwapBandPair(ChartControl cc, ChartScale cs, int fromBar, int toBar,
+            List<VwapBarData> data, int bandNum,
+            SharpDX.Direct2D1.SolidColorBrush brush, int thickness)
+        {
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+            {
+                if (barIdx < 0 || barIdx + 1 >= Bars.Count) continue;
+                VwapBarData d0 = GetVwapDataAt(data, barIdx);
+                VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
+                if (d0 == null || d1 == null) continue;
+
+                double upper0 = 0, lower0 = 0, upper1 = 0, lower1 = 0;
+                switch (bandNum)
+                {
+                    case 1: upper0 = d0.Band1Upper; lower0 = d0.Band1Lower; upper1 = d1.Band1Upper; lower1 = d1.Band1Lower; break;
+                    case 2: upper0 = d0.Band2Upper; lower0 = d0.Band2Lower; upper1 = d1.Band2Upper; lower1 = d1.Band2Lower; break;
+                    case 3: upper0 = d0.Band3Upper; lower0 = d0.Band3Lower; upper1 = d1.Band3Upper; lower1 = d1.Band3Lower; break;
+                    default: continue;
+                }
+
+                float yU0 = cs.GetYByValue(upper0);
+                float yU1 = cs.GetYByValue(upper1);
+                float yL0 = cs.GetYByValue(lower0);
+                float yL1 = cs.GetYByValue(lower1);
+
+                float x0 = cc.GetXByBarIndex(ChartBars, barIdx);
+                float x1 = cc.GetXByBarIndex(ChartBars, barIdx + 1);
+
+                DrawStyledLine(x0, yU0, x1, yU1, brush, thickness, IQMLineStyle.Dashed);
+                DrawStyledLine(x0, yL0, x1, yL1, brush, thickness, IQMLineStyle.Dashed);
+
+                // Optional fill between upper and lower band
+                if (VwapFillBands && dxVwapFillBrush != null)
+                {
+                    float fillTop    = Math.Min(yU0, yU1);   // highest point of upper band
+                    float fillBottom = Math.Max(yL0, yL1);   // lowest point of lower band
+                    float width      = x1 - x0;
+                    if (width > 0 && fillBottom > fillTop)
+                        rt.FillRectangle(
+                            new SharpDX.RectangleF(x0, fillTop, width, fillBottom - fillTop),
+                            dxVwapFillBrush);
+                }
+            }
+        }
+
+        private VwapBarData GetVwapDataAt(List<VwapBarData> data, int barIdx)
+        {
+            int offset = CurrentBar - barIdx;
+            int idx    = data.Count - 1 - offset;
+            if (idx < 0 || idx >= data.Count) return null;
+            return data[idx];
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region SharpDX resource management
 
         private void CreateDXResources()
@@ -3955,6 +4413,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxULZPinkBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF));
 
+                // VWAP brushes
+                dxVwapAboveBrush   = MakeBrush(rt, VwapAboveColor,   VwapOpacity  / 100f);
+                dxVwapBelowBrush   = MakeBrush(rt, VwapBelowColor,   VwapOpacity  / 100f);
+                dxVwapNeutralBrush = MakeBrush(rt, VwapNeutralColor, VwapOpacity  / 100f);
+                dxVwapBand1Brush   = MakeBrush(rt, VwapBand1Color,   VwapBand1Opacity / 100f);
+                dxVwapBand2Brush   = MakeBrush(rt, VwapBand2Color,   VwapBand2Opacity / 100f);
+                dxVwapBand3Brush   = MakeBrush(rt, VwapBand3Color,   VwapBand3Opacity / 100f);
+                dxVwapFillBrush    = MakeBrush(rt, VwapNeutralColor, VwapFillOpacity  / 100f);
+
                 dxReady = true;
             }
             catch (Exception ex)
@@ -4030,6 +4497,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxULZBearishBrush);
             DisposeRef(ref dxULZBlueBrush);
             DisposeRef(ref dxULZPinkBrush);
+            DisposeRef(ref dxVwapAboveBrush);
+            DisposeRef(ref dxVwapBelowBrush);
+            DisposeRef(ref dxVwapNeutralBrush);
+            DisposeRef(ref dxVwapBand1Brush);
+            DisposeRef(ref dxVwapBand2Brush);
+            DisposeRef(ref dxVwapBand3Brush);
+            DisposeRef(ref dxVwapFillBrush);
 
             if (dxSessionBoxBrush != null)
             {
