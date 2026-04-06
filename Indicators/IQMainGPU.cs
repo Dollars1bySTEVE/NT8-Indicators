@@ -1293,6 +1293,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Name                     = "IQMainGPU";
                 Calculate                = Calculate.OnEachTick;
                 IsOverlay                = true;
+                IsAutoScale              = false;
                 DisplayInDataBox         = true;
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
