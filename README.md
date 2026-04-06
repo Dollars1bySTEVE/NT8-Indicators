@@ -261,8 +261,8 @@ This indicator was inspired by and builds upon concepts from:
 - **NinjaTrader Community** — Countless forum discussions and shared knowledge https://ninjatrader.com/
 
 Special thanks to all the traders and educators who have shared their knowledge freely, making tools like this possible.
-- Fellow Trader/Mentor of Dollars1bySTEVE: Mike Swartz - https://www.youtube.com/@Mike_Swartz/featured  https://www.epitometrading.com/
-- Fellow Trader/Mentor of Dollars1bySTEVE: known as Osho
+- Fellow Trader/Mentor of Dollars1bySTEVE: Mike Swartz - https://www.youtube.com/@Mike_Swartz/featured and https://www.epitometrading.com/
+- Fellow Trader/Mentor of Dollars1bySTEVE: Humbly known as Osho
   
 ---
 
