@@ -4,7 +4,8 @@
 
 GPU-accelerated • Institutional-Grade • Fully Customizable
 
-> 📸 *[Screenshot placeholder — add a screenshot of your chart with IQMainGPU enabled here]*
+> 📸 *[<img width="2043" height="1316" alt="image" src="https://github.com/user-attachments/assets/ba19cbb7-9233-46e4-822e-2174283f4bef" />
+]*
 
 ---
 
