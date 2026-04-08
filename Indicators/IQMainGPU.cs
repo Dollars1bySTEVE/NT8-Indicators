@@ -1441,40 +1441,44 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowVwapLabel { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "VWAP Label Text", Order = 7, GroupName = "14. VWAP")]
-        public string VwapLabel { get; set; }
+        [Display(Name = "ETH VWAP Label", Order = 7, GroupName = "14. VWAP")]
+        public string VwapEthLabel { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Dynamic Color (price vs VWAP)", Order = 8, GroupName = "14. VWAP")]
+        [Display(Name = "RTH VWAP Label", Order = 8, GroupName = "14. VWAP")]
+        public string VwapRthLabel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Dynamic Color (price vs VWAP)", Order = 9, GroupName = "14. VWAP")]
         public bool VwapDynamicColor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "VWAP Color (Price Above)", Order = 9, GroupName = "14. VWAP")]
+        [Display(Name = "VWAP Color (Price Above)", Order = 10, GroupName = "14. VWAP")]
         [XmlIgnore]
         public System.Windows.Media.Brush VwapAboveColor { get; set; }
         [Browsable(false)]
         public string VwapAboveColorSerializable { get => Serialize.BrushToString(VwapAboveColor); set => VwapAboveColor = Serialize.StringToBrush(value); }
 
         [NinjaScriptProperty]
-        [Display(Name = "VWAP Color (Price Below)", Order = 10, GroupName = "14. VWAP")]
+        [Display(Name = "VWAP Color (Price Below)", Order = 11, GroupName = "14. VWAP")]
         [XmlIgnore]
         public System.Windows.Media.Brush VwapBelowColor { get; set; }
         [Browsable(false)]
         public string VwapBelowColorSerializable { get => Serialize.BrushToString(VwapBelowColor); set => VwapBelowColor = Serialize.StringToBrush(value); }
 
         [NinjaScriptProperty]
-        [Display(Name = "VWAP Color (Neutral/Default)", Order = 11, GroupName = "14. VWAP")]
+        [Display(Name = "VWAP Color (Neutral/Default)", Order = 12, GroupName = "14. VWAP")]
         [XmlIgnore]
         public System.Windows.Media.Brush VwapNeutralColor { get; set; }
         [Browsable(false)]
         public string VwapNeutralColorSerializable { get => Serialize.BrushToString(VwapNeutralColor); set => VwapNeutralColor = Serialize.StringToBrush(value); }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show ±1σ Bands", Order = 12, GroupName = "14. VWAP")]
+        [Display(Name = "Show ±1σ Bands", Order = 13, GroupName = "14. VWAP")]
         public bool ShowVwapBand1 { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Band 1 Color", Order = 13, GroupName = "14. VWAP")]
+        [Display(Name = "Band 1 Color", Order = 14, GroupName = "14. VWAP")]
         [XmlIgnore]
         public System.Windows.Media.Brush VwapBand1Color { get; set; }
         [Browsable(false)]
@@ -1482,20 +1486,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Band 1 Opacity %", Order = 14, GroupName = "14. VWAP")]
+        [Display(Name = "Band 1 Opacity %", Order = 15, GroupName = "14. VWAP")]
         public int VwapBand1Opacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 3)]
-        [Display(Name = "Band 1 Thickness", Order = 15, GroupName = "14. VWAP")]
+        [Display(Name = "Band 1 Thickness", Order = 16, GroupName = "14. VWAP")]
         public int VwapBand1Thickness { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show ±2σ Bands", Order = 16, GroupName = "14. VWAP")]
+        [Display(Name = "Show ±2σ Bands", Order = 17, GroupName = "14. VWAP")]
         public bool ShowVwapBand2 { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Band 2 Color", Order = 17, GroupName = "14. VWAP")]
+        [Display(Name = "Band 2 Color", Order = 18, GroupName = "14. VWAP")]
         [XmlIgnore]
         public System.Windows.Media.Brush VwapBand2Color { get; set; }
         [Browsable(false)]
@@ -1503,20 +1507,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Band 2 Opacity %", Order = 18, GroupName = "14. VWAP")]
+        [Display(Name = "Band 2 Opacity %", Order = 19, GroupName = "14. VWAP")]
         public int VwapBand2Opacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 3)]
-        [Display(Name = "Band 2 Thickness", Order = 19, GroupName = "14. VWAP")]
+        [Display(Name = "Band 2 Thickness", Order = 20, GroupName = "14. VWAP")]
         public int VwapBand2Thickness { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show ±3σ Bands", Order = 20, GroupName = "14. VWAP")]
+        [Display(Name = "Show ±3σ Bands", Order = 21, GroupName = "14. VWAP")]
         public bool ShowVwapBand3 { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Band 3 Color", Order = 21, GroupName = "14. VWAP")]
+        [Display(Name = "Band 3 Color", Order = 22, GroupName = "14. VWAP")]
         [XmlIgnore]
         public System.Windows.Media.Brush VwapBand3Color { get; set; }
         [Browsable(false)]
@@ -1524,21 +1528,21 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Band 3 Opacity %", Order = 22, GroupName = "14. VWAP")]
+        [Display(Name = "Band 3 Opacity %", Order = 23, GroupName = "14. VWAP")]
         public int VwapBand3Opacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 3)]
-        [Display(Name = "Band 3 Thickness", Order = 23, GroupName = "14. VWAP")]
+        [Display(Name = "Band 3 Thickness", Order = 24, GroupName = "14. VWAP")]
         public int VwapBand3Thickness { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Fill Between Bands", Order = 24, GroupName = "14. VWAP")]
+        [Display(Name = "Fill Between Bands", Order = 25, GroupName = "14. VWAP")]
         public bool VwapFillBands { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 50)]
-        [Display(Name = "Band Fill Opacity %", Order = 25, GroupName = "14. VWAP")]
+        [Display(Name = "Band Fill Opacity %", Order = 26, GroupName = "14. VWAP")]
         public int VwapFillOpacity { get; set; }
 
         #endregion
@@ -1836,7 +1840,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapLineStyle     = IQMLineStyle.Solid;
                 VwapOpacity       = 90;
                 ShowVwapLabel     = true;
-                VwapLabel         = "VWAP";
+                VwapEthLabel      = "ETH VWAP";
+                VwapRthLabel      = "RTH VWAP";
                 VwapDynamicColor  = true;
                 VwapAboveColor    = Brushes.LimeGreen;
                 VwapBelowColor    = Brushes.Crimson;
@@ -4157,12 +4162,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool showEth = (VwapAnchor == VwapSessionAnchor.ETH || VwapAnchor == VwapSessionAnchor.Both);
             bool showRth = (VwapAnchor == VwapSessionAnchor.RTH_US || VwapAnchor == VwapSessionAnchor.Both);
 
-            if (showEth) RenderVwapLine(cc, cs, fromBar, toBar, vwapEthData);
-            if (showRth) RenderVwapLine(cc, cs, fromBar, toBar, vwapRthData);
+            if (showEth) RenderVwapLine(cc, cs, fromBar, toBar, vwapEthData, VwapEthLabel);
+            if (showRth) RenderVwapLine(cc, cs, fromBar, toBar, vwapRthData, VwapRthLabel);
         }
 
         private void RenderVwapLine(ChartControl cc, ChartScale cs, int fromBar, int toBar,
-            List<VwapBarData> data)
+            List<VwapBarData> data, string label)
         {
             var rt = RenderTarget;
             if (rt == null || data == null || data.Count == 0) return;
@@ -4216,7 +4221,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     float  y      = cs.GetYByValue(lastData.Vwap);
                     float  labelX = cc.GetXByBarIndex(ChartBars, toBar) + 6f;
-                    string txt    = VwapLabel + " " + Instrument.MasterInstrument.FormatPrice(lastData.Vwap);
+                    string txt    = label + " " + Instrument.MasterInstrument.FormatPrice(lastData.Vwap);
 
                     SharpDX.Direct2D1.SolidColorBrush labelBrush;
                     if (VwapDynamicColor)
