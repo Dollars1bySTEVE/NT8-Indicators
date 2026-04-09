@@ -1861,6 +1861,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapFillBands     = false;
                 VwapFillOpacity   = 15;
             }
+            else if (State == State.Configure)
+            {
+                // Use Infinite lookback for higher timeframes (2hr+) so long-period EMAs (50, 200, 800)
+                // have enough historical bars to calculate. Lower timeframes keep TwoHundredFiftySix for
+                // better memory efficiency.
+                if (BarsPeriod != null &&
+                    BarsPeriod.BarsPeriodType == BarsPeriodType.Minute &&
+                    BarsPeriod.Value >= 120)
+                {
+                    MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
+                }
+                else if (BarsPeriod != null &&
+                         (BarsPeriod.BarsPeriodType == BarsPeriodType.Day   ||
+                          BarsPeriod.BarsPeriodType == BarsPeriodType.Week  ||
+                          BarsPeriod.BarsPeriodType == BarsPeriodType.Month))
+                {
+                    MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
+                }
+            }
             else if (State == State.DataLoaded)
             {
                 // Sessions / pivot / range collections
