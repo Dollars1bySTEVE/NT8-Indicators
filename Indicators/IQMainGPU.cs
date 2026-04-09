@@ -171,6 +171,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Band3Lower;
         }
 
+        /// <summary>OTE (Optimal Trade Entry) zone based on ICT Fibonacci retracement levels.</summary>
+        private class OTEZone
+        {
+            public double SwingHigh;
+            public double SwingLow;
+            public double Level62;
+            public double Level705;
+            public double Level79;
+            public int    SwingHighBar;
+            public int    SwingLowBar;
+            public int    CreatedBar;
+            public bool   IsBullish;
+            public bool   IsActive;
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — Sessions / Pivots / Ranges
@@ -285,6 +300,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int  activeZoneCount;
         private int  recoveredZoneCount;
 
+        // OTE zone tracking
+        private List<OTEZone> oteZones;
+        private int    oteLastSwingHighBar;
+        private int    oteLastSwingLowBar;
+        private double oteLastSwingHigh;
+        private double oteLastSwingLow;
+
         private string dashLine2 = "";
         private string dashLine3 = "";
         private string dashLine4 = "";
@@ -380,6 +402,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxVwapBand2Brush;
         private SharpDX.Direct2D1.SolidColorBrush dxVwapBand3Brush;
         private SharpDX.Direct2D1.SolidColorBrush dxVwapFillBrush;
+
+        // OTE zone brushes
+        private SharpDX.Direct2D1.SolidColorBrush dxOTEBullishBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxOTEBearishBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxOTELineBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxOTEOptimalBrush;
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1547,6 +1575,85 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 15. OTE Zones
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show OTE Zones", Order = 1, GroupName = "15. OTE Zones",
+            Description = "Enable GPU-rendered OTE (Optimal Trade Entry) zones based on ICT Fibonacci retracement levels.")]
+        public bool ShowOTE { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(3, 20)]
+        [Display(Name = "Swing Detection Strength", Order = 2, GroupName = "15. OTE Zones",
+            Description = "Number of bars on each side required to confirm a swing high or low.")]
+        public int OTESwingStrength { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 10)]
+        [Display(Name = "Max OTE Zones to Display", Order = 3, GroupName = "15. OTE Zones",
+            Description = "Maximum number of OTE zones shown on the chart. Oldest zones are removed first.")]
+        public int OTEMaxZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bullish OTE Zone Color", Order = 4, GroupName = "15. OTE Zones")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush OTEBullishColor { get; set; }
+        [Browsable(false)]
+        public string OTEBullishColorSerializable { get => Serialize.BrushToString(OTEBullishColor); set => OTEBullishColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Bearish OTE Zone Color", Order = 5, GroupName = "15. OTE Zones")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush OTEBearishColor { get; set; }
+        [Browsable(false)]
+        public string OTEBearishColorSerializable { get => Serialize.BrushToString(OTEBearishColor); set => OTEBearishColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(5, 50)]
+        [Display(Name = "Zone Fill Opacity %", Order = 6, GroupName = "15. OTE Zones",
+            Description = "Opacity of the shaded zone fill between the 62% and 79% levels.")]
+        public int OTEZoneOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "OTE Level Line Color", Order = 7, GroupName = "15. OTE Zones",
+            Description = "Color for the 62% and 79% boundary lines.")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush OTELineColor { get; set; }
+        [Browsable(false)]
+        public string OTELineColorSerializable { get => Serialize.BrushToString(OTELineColor); set => OTELineColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Display(Name = "70.5% Optimal Line Color", Order = 8, GroupName = "15. OTE Zones",
+            Description = "Color for the 70.5% optimal entry line.")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush OTEOptimalColor { get; set; }
+        [Browsable(false)]
+        public string OTEOptimalColorSerializable { get => Serialize.BrushToString(OTEOptimalColor); set => OTEOptimalColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 3)]
+        [Display(Name = "OTE Line Thickness", Order = 9, GroupName = "15. OTE Zones")]
+        public int OTELineThickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 3)]
+        [Display(Name = "70.5% Line Thickness", Order = 10, GroupName = "15. OTE Zones")]
+        public int OTEOptimalThickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "OTE Line Style", Order = 11, GroupName = "15. OTE Zones")]
+        public IQMLineStyle OTELineStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show OTE Labels", Order = 12, GroupName = "15. OTE Zones")]
+        public bool ShowOTELabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "OTE Label Prefix", Order = 13, GroupName = "15. OTE Zones")]
+        public string OTELabelPrefix { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
 
         protected override void OnStateChange()
@@ -1860,6 +1967,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapBand3Thickness = 1;
                 VwapFillBands     = false;
                 VwapFillOpacity   = 15;
+
+                // 15. OTE Zones
+                ShowOTE            = false;
+                OTESwingStrength   = 5;
+                OTEMaxZones        = 3;
+                OTEBullishColor    = System.Windows.Media.Brushes.DodgerBlue;
+                OTEBearishColor    = System.Windows.Media.Brushes.Crimson;
+                OTEZoneOpacity     = 15;
+                OTELineColor       = System.Windows.Media.Brushes.DodgerBlue;
+                OTEOptimalColor    = System.Windows.Media.Brushes.Gold;
+                OTELineThickness   = 1;
+                OTEOptimalThickness = 2;
+                OTELineStyle       = IQMLineStyle.Dashed;
+                ShowOTELabels      = true;
+                OTELabelPrefix     = "OTE";
             }
             else if (State == State.Configure)
             {
@@ -1935,6 +2057,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 bidBook        = new Dictionary<double, BookLevel>(200);
                 askBook        = new Dictionary<double, BookLevel>(200);
                 liquidityZones = new List<LiquidityZone>(100);
+
+                // OTE zone data
+                oteZones           = new List<OTEZone>(20);
+                oteLastSwingHigh   = double.NaN;
+                oteLastSwingLow    = double.NaN;
+                oteLastSwingHighBar = 0;
+                oteLastSwingLowBar  = 0;
 
                 cumDelta       = 0;
                 sessionBuyVol  = 0;
@@ -2421,6 +2550,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (EnableLiquidityZones && IsFirstTickOfBar)
                 CheckLiquidityZoneRecovery();
 
+            // ── 6b. OTE zone detection ────────────────────────────────────────
+            if (ShowOTE && IsFirstTickOfBar)
+                UpdateOTEZones();
+
             // ── 7. Fake-breakout filters ──────────────────────────────────────
             bool isFakeBreakout  = false;
             int  fakeBreakoutDir = 0;
@@ -2658,6 +2791,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             try { if (ShowVwap) RenderVwap(chartControl, chartScale, fromBar, toBar); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderVwap: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQMainGPU: RenderVwap [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── 8c. OTE Zones ─────────────────────────────────────────────────
+            try { if (ShowOTE) RenderOTEZones(chartControl, chartScale); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU: SharpDX error RenderOTEZones: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQMainGPU: RenderOTEZones [" + ex.GetType().Name + "]: " + ex.Message); }
 
             // ── 9. Wall lines ─────────────────────────────────────────────────
             try { if (ShowWallLines && EnableLevel2 && level2Available) RenderWallLines(chartControl, chartScale); }
@@ -3269,6 +3407,82 @@ namespace NinjaTrader.NinjaScript.Indicators
                     rt.FillRectangle(new SharpDX.RectangleF(xLeft, rectTop, zoneW, zoneH), zoneBrush);
                 }
                 catch { }
+            }
+        }
+
+        private void RenderOTEZones(ChartControl cc, ChartScale cs)
+        {
+            if (oteZones == null || oteZones.Count == 0) return;
+            var rt = RenderTarget;
+            if (rt == null) return;
+
+            float chartWidth = (float)rt.Size.Width;
+
+            foreach (var zone in oteZones)
+            {
+                if (!zone.IsActive) continue;
+
+                float y62  = cs.GetYByValue(zone.Level62);
+                float y705 = cs.GetYByValue(zone.Level705);
+                float y79  = cs.GetYByValue(zone.Level79);
+
+                if (float.IsNaN(y62) || float.IsNaN(y705) || float.IsNaN(y79)) continue;
+
+                // X start from the later of the two swing points
+                int startBar = Math.Max(zone.SwingHighBar, zone.SwingLowBar);
+                if (startBar < ChartBars.FromIndex) startBar = ChartBars.FromIndex;
+                if (startBar > ChartBars.ToIndex)   continue;
+
+                float xStart;
+                try   { xStart = cc.GetXByBarIndex(ChartBars, startBar); }
+                catch { xStart = 0f; }
+                if (float.IsNaN(xStart) || xStart < 0f) xStart = 0f;
+
+                float zoneWidth = Math.Max(0f, chartWidth - xStart);
+                if (zoneWidth <= 0f) continue;
+
+                // Zone fill between 62% and 79%
+                float zoneTop    = Math.Min(y62, y79);
+                float zoneBottom = Math.Max(y62, y79);
+                float zoneHeight = zoneBottom - zoneTop;
+
+                if (zoneHeight >= 1f)
+                {
+                    var zoneBrush = zone.IsBullish ? dxOTEBullishBrush : dxOTEBearishBrush;
+                    if (zoneBrush != null)
+                        rt.FillRectangle(new SharpDX.RectangleF(xStart, zoneTop, zoneWidth, zoneHeight), zoneBrush);
+                }
+
+                // 62% and 79% boundary lines
+                if (dxOTELineBrush != null)
+                {
+                    DrawStyledLine(xStart, y62, chartWidth, y62, dxOTELineBrush, OTELineThickness, OTELineStyle);
+                    DrawStyledLine(xStart, y79, chartWidth, y79, dxOTELineBrush, OTELineThickness, OTELineStyle);
+                }
+
+                // 70.5% optimal entry line (bolder, gold)
+                if (dxOTEOptimalBrush != null)
+                    DrawStyledLine(xStart, y705, chartWidth, y705, dxOTEOptimalBrush, OTEOptimalThickness, IQMLineStyle.Solid);
+
+                // Labels at right edge
+                if (ShowOTELabels && dxLabelFormat != null)
+                {
+                    string prefix = OTELabelPrefix;
+                    float labelX  = chartWidth - 145f;
+                    float labelW  = 145f;
+
+                    string lbl62  = prefix + " 62%  " + Instrument.MasterInstrument.FormatPrice(zone.Level62);
+                    string lbl705 = prefix + " 70.5% " + Instrument.MasterInstrument.FormatPrice(zone.Level705);
+                    string lbl79  = prefix + " 79%  " + Instrument.MasterInstrument.FormatPrice(zone.Level79);
+
+                    if (dxOTELineBrush != null)
+                    {
+                        rt.DrawText(lbl62,  dxLabelFormat, new SharpDX.RectangleF(labelX, y62  - 8f, labelW, 16f), dxOTELineBrush);
+                        rt.DrawText(lbl79,  dxLabelFormat, new SharpDX.RectangleF(labelX, y79  - 8f, labelW, 16f), dxOTELineBrush);
+                    }
+                    if (dxOTEOptimalBrush != null)
+                        rt.DrawText(lbl705, dxLabelFormat, new SharpDX.RectangleF(labelX, y705 - 8f, labelW, 16f), dxOTEOptimalBrush);
+                }
             }
         }
 
@@ -3938,6 +4152,104 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        private void UpdateOTEZones()
+        {
+            if (CurrentBar < OTESwingStrength * 2 + 1) return;
+
+            int swingBar = OTESwingStrength;
+
+            // Detect swing high at swingBar bars ago
+            bool isSwingHigh = true;
+            for (int i = 0; i < OTESwingStrength; i++)
+            {
+                if (High[i] >= High[swingBar]) { isSwingHigh = false; break; }
+            }
+            if (isSwingHigh)
+            {
+                for (int i = swingBar + 1; i <= swingBar + OTESwingStrength; i++)
+                {
+                    if (i < CurrentBar && High[i] >= High[swingBar]) { isSwingHigh = false; break; }
+                }
+            }
+
+            // Detect swing low at swingBar bars ago
+            bool isSwingLow = true;
+            for (int i = 0; i < OTESwingStrength; i++)
+            {
+                if (Low[i] <= Low[swingBar]) { isSwingLow = false; break; }
+            }
+            if (isSwingLow)
+            {
+                for (int i = swingBar + 1; i <= swingBar + OTESwingStrength; i++)
+                {
+                    if (i < CurrentBar && Low[i] <= Low[swingBar]) { isSwingLow = false; break; }
+                }
+            }
+
+            if (isSwingHigh)
+            {
+                oteLastSwingHigh    = High[swingBar];
+                oteLastSwingHighBar = CurrentBar - swingBar;
+                TryCreateOTEZone();
+            }
+
+            if (isSwingLow)
+            {
+                oteLastSwingLow    = Low[swingBar];
+                oteLastSwingLowBar = CurrentBar - swingBar;
+                TryCreateOTEZone();
+            }
+        }
+
+        private void TryCreateOTEZone()
+        {
+            if (double.IsNaN(oteLastSwingHigh) || double.IsNaN(oteLastSwingLow)) return;
+            if (oteLastSwingHigh <= oteLastSwingLow) return;
+
+            double range = oteLastSwingHigh - oteLastSwingLow;
+            // Bullish: swing high formed after swing low (price moved up then retraces back down)
+            bool isBullish = oteLastSwingHighBar > oteLastSwingLowBar;
+
+            double level62, level705, level79;
+            if (isBullish)
+            {
+                level62  = oteLastSwingHigh - (range * 0.62);
+                level705 = oteLastSwingHigh - (range * 0.705);
+                level79  = oteLastSwingHigh - (range * 0.79);
+            }
+            else
+            {
+                level62  = oteLastSwingLow + (range * 0.62);
+                level705 = oteLastSwingLow + (range * 0.705);
+                level79  = oteLastSwingLow + (range * 0.79);
+            }
+
+            // Avoid duplicate zones (same swing high and low already tracked)
+            foreach (OTEZone existing in oteZones)
+            {
+                if (Math.Abs(existing.SwingHigh - oteLastSwingHigh) < TickSize &&
+                    Math.Abs(existing.SwingLow  - oteLastSwingLow)  < TickSize)
+                    return;
+            }
+
+            if (oteZones.Count >= OTEMaxZones)
+                oteZones.RemoveAt(0);
+
+            oteZones.Add(new OTEZone
+            {
+                SwingHigh    = oteLastSwingHigh,
+                SwingLow     = oteLastSwingLow,
+                Level62      = level62,
+                Level705     = level705,
+                Level79      = level79,
+                SwingHighBar = oteLastSwingHighBar,
+                SwingLowBar  = oteLastSwingLowBar,
+                CreatedBar   = CurrentBar,
+                IsBullish    = isBullish,
+                IsActive     = true
+            });
+        }
+
         private void CheckFakeBreakoutFilters(double barBuy, double barSell, double totalVol,
             ref bool isFake, ref int dir)
         {
@@ -4446,6 +4758,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxVwapBand3Brush   = MakeBrush(rt, VwapBand3Color,   VwapBand3Opacity / 100f);
                 dxVwapFillBrush    = MakeBrush(rt, VwapNeutralColor, VwapFillOpacity  / 100f);
 
+                // OTE zone brushes
+                float oteAlphaF     = Math.Max(0.02f, Math.Min(0.80f, (float)OTEZoneOpacity / 100f));
+                dxOTEBullishBrush   = MakeBrush(rt, OTEBullishColor, oteAlphaF);
+                dxOTEBearishBrush   = MakeBrush(rt, OTEBearishColor, oteAlphaF);
+                dxOTELineBrush      = MakeBrush(rt, OTELineColor,    0.90f);
+                dxOTEOptimalBrush   = MakeBrush(rt, OTEOptimalColor, 0.95f);
+
                 dxReady = true;
             }
             catch (Exception ex)
@@ -4528,6 +4847,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxVwapBand2Brush);
             DisposeRef(ref dxVwapBand3Brush);
             DisposeRef(ref dxVwapFillBrush);
+            DisposeRef(ref dxOTEBullishBrush);
+            DisposeRef(ref dxOTEBearishBrush);
+            DisposeRef(ref dxOTELineBrush);
+            DisposeRef(ref dxOTEOptimalBrush);
 
             if (dxSessionBoxBrush != null)
             {
