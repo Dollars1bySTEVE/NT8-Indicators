@@ -1863,12 +1863,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.Configure)
             {
-                // Use Infinite lookback for higher timeframes (2hr+) so long-period EMAs (50, 200, 800)
+                // Use Infinite lookback for higher timeframes (1hr+) so long-period EMAs (50, 200, 800)
                 // have enough historical bars to calculate. Lower timeframes keep TwoHundredFiftySix for
                 // better memory efficiency.
                 if (BarsPeriod != null &&
                     BarsPeriod.BarsPeriodType == BarsPeriodType.Minute &&
-                    BarsPeriod.Value >= 120)
+                    BarsPeriod.Value >= 60)
                 {
                     MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 }
