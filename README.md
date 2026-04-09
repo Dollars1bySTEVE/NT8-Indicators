@@ -25,7 +25,8 @@ A comprehensive trading indicator that combines Smart Money Concepts, PVSRA anal
 3. **DO NOT tick "Auto render"** — This is **critical** for performance!
    - The indicator uses custom GPU rendering via SharpDX
    - Auto render will cause unnecessary redraws and performance issues
-
+     
+4. If you want EMA markers for EMA'S , Click on "Price Marker(s)" 
 ---
 
 ## Table of Contents
@@ -64,7 +65,7 @@ A comprehensive trading indicator that combines Smart Money Concepts, PVSRA anal
 - EMA 50 Cloud (standard deviation envelope)
 - Customizable colors, thickness, labels
 - GPU-rendered for smooth display
-- **Smart Timeframe Handling**: Automatically uses extended lookback on higher timeframes (2hr+) to ensure long-period EMAs (50, 200, 800) display correctly
+- **Smart Timeframe Handling**: Automatically uses extended lookback on higher timeframes (1hr+) to ensure long-period EMAs (50, 200, 800) display correctly
 
 ### 🎯 OTE Zones (Optimal Trade Entry)
 **NEW!** ICT-style Optimal Trade Entry zones for precision entries during pullbacks.
@@ -336,7 +337,7 @@ Contributions welcome! If you have improvements or bug fixes:
 1. Fork the repository
 2. Create a feature branch
 3. Submit a pull request
-
+4. LET ME KNOW!
 ---
 
 ## ⭐ If You Find This Useful
