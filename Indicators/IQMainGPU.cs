@@ -3105,6 +3105,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float tx, ty;
             GetTablePosition(TablePosition, rtW, rtH, tableW, tableH, margin, out tx, out ty);
+            ty = ClampTableY(ty, tableH, rtH);
 
             RenderTarget.FillRectangle(new SharpDX.RectangleF(tx, ty, tableW, tableH), dxDashBgBrush);
             RenderTarget.DrawText("Range Statistics", dxDashFormat,
@@ -3142,6 +3143,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float tx, ty;
             GetTablePosition(DstTablePosition, rtW, rtH, tableW, tableH, margin, out tx, out ty);
+            ty = ClampTableY(ty, tableH, rtH);
 
             RenderTarget.FillRectangle(new SharpDX.RectangleF(tx, ty, tableW, tableH), dxDashBgBrush);
             RenderTarget.DrawText("DST Reference", dxDashFormat,
@@ -3151,6 +3153,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderTarget.DrawText(rows[i], dxSmallFormat ?? dxDashFormat,
                     new SharpDX.RectangleF(tx + 4f, ty + 22f + i * cellH, tableW - 8f, cellH), dxDashTextBrush);
         }
+
+        private const float TableTimeAxisBuffer = 28f;   // safe buffer for the time axis at chart bottom
+        private const float TableEdgePadding    = 4f;    // padding from chart edge when clamping
 
         private static void GetTablePosition(IQMDashboardPosition pos,
             float rtW, float rtH, float tableW, float tableH, float margin,
@@ -3163,6 +3168,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case IQMDashboardPosition.BottomLeft: tx = margin;                  ty = rtH - tableH - margin;  break;
                 default:                              tx = rtW - tableW - margin;  ty = rtH - tableH - margin;  break;
             }
+        }
+
+        /// <summary>Clamps ty so the table stays above the time-axis bar and below the top edge.</summary>
+        private static float ClampTableY(float ty, float tableH, float rtH)
+        {
+            float chartBottom = rtH - TableTimeAxisBuffer;
+            if (ty + tableH > chartBottom)
+                ty = chartBottom - tableH - TableEdgePadding;
+            if (ty < TableEdgePadding)
+                ty = TableEdgePadding;
+            return ty;
         }
 
         #endregion
