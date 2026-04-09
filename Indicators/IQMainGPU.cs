@@ -3099,7 +3099,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             };
 
             float cellH  = 18f;
-            float tableW = 170f;
+            float tableW = 220f;
             float tableH = rows.Length * cellH + 24f;
             float margin = 8f;
 
@@ -3135,8 +3135,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 "Frankft 07:00-16:30 UTC (UK DST -1)",
             };
 
-            float cellH  = 16f;
-            float tableW = 280f;
+            float cellH  = 18f;
+            float tableW = 340f;
             float tableH = rows.Length * cellH + 24f;
             float margin = 8f;
 
@@ -4647,7 +4647,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
-                dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas",  9f);
+                dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
                 dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", DashFontSize);
 
                 // Pivot brushes
