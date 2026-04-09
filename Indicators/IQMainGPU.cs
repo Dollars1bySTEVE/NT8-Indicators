@@ -2060,8 +2060,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // OTE zone data
                 oteZones           = new List<OTEZone>(20);
-                oteLastSwingHigh   = 0;
-                oteLastSwingLow    = 0;
+                oteLastSwingHigh   = double.NaN;
+                oteLastSwingLow    = double.NaN;
                 oteLastSwingHighBar = 0;
                 oteLastSwingLowBar  = 0;
 
@@ -4203,7 +4203,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void TryCreateOTEZone()
         {
-            if (oteLastSwingHigh == 0 || oteLastSwingLow == 0) return;
+            if (double.IsNaN(oteLastSwingHigh) || double.IsNaN(oteLastSwingLow)) return;
             if (oteLastSwingHigh <= oteLastSwingLow) return;
 
             double range = oteLastSwingHigh - oteLastSwingLow;
