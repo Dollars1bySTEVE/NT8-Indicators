@@ -3464,24 +3464,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (dxOTEOptimalBrush != null)
                     DrawStyledLine(xStart, y705, chartWidth, y705, dxOTEOptimalBrush, OTEOptimalThickness, IQMLineStyle.Solid);
 
-                // Labels at right edge
+                // Position labels at the START of the zone (left side), like session labels
                 if (ShowOTELabels && dxLabelFormat != null)
                 {
                     string prefix = OTELabelPrefix;
-                    float labelX  = chartWidth - 145f;
-                    float labelW  = 145f;
+                    float labelX  = xStart + 4f;  // Small padding from zone start
+                    float labelW  = 160f;
 
-                    string lbl62  = prefix + " 62%  " + Instrument.MasterInstrument.FormatPrice(zone.Level62);
+                    string lbl62  = prefix + " 62% "   + Instrument.MasterInstrument.FormatPrice(zone.Level62);
                     string lbl705 = prefix + " 70.5% " + Instrument.MasterInstrument.FormatPrice(zone.Level705);
-                    string lbl79  = prefix + " 79%  " + Instrument.MasterInstrument.FormatPrice(zone.Level79);
+                    string lbl79  = prefix + " 79% "   + Instrument.MasterInstrument.FormatPrice(zone.Level79);
 
                     if (dxOTELineBrush != null)
                     {
-                        rt.DrawText(lbl62,  dxLabelFormat, new SharpDX.RectangleF(labelX, y62  - 8f, labelW, 16f), dxOTELineBrush);
-                        rt.DrawText(lbl79,  dxLabelFormat, new SharpDX.RectangleF(labelX, y79  - 8f, labelW, 16f), dxOTELineBrush);
+                        rt.DrawText(lbl62,  dxLabelFormat, new SharpDX.RectangleF(labelX, y62  - 14f, labelW, 16f), dxOTELineBrush);
+                        rt.DrawText(lbl79,  dxLabelFormat, new SharpDX.RectangleF(labelX, y79  +  2f, labelW, 16f), dxOTELineBrush);
                     }
                     if (dxOTEOptimalBrush != null)
-                        rt.DrawText(lbl705, dxLabelFormat, new SharpDX.RectangleF(labelX, y705 - 8f, labelW, 16f), dxOTEOptimalBrush);
+                        rt.DrawText(lbl705, dxLabelFormat, new SharpDX.RectangleF(labelX, y705 - 14f, labelW, 16f), dxOTEOptimalBrush);
                 }
             }
         }
