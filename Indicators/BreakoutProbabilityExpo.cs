@@ -29,10 +29,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int[,] totals;
         private double[,] vals;
         private const int MaxLevels = 5;
-        private int lastCountedBar = -1;
         private DateTime lastAlertTime = DateTime.MinValue;
         private ATR atrIndicator;
         private double calculatedStep;
+
+        // Snapshot variables — locked at bar close, used exclusively by renderer
+        private double snapshotPriorHigh;
+        private double snapshotPriorLow;
+        private bool snapshotPriorGreen;
+        private double snapshotStep;
+        private double[] snapshotPctUp = new double[MaxLevels];
+        private double[] snapshotPctDn = new double[MaxLevels];
+        private int snapshotBar = -1;
 
         #region SharpDX Resources
         private bool dxResourcesCreated;
@@ -231,7 +239,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.Configure)
             {
-                if (CalcOnEachTick) Calculate = Calculate.OnEachTick;
+                // Always calculate on bar close for locked, TradingView-style behavior.
+                // CalcOnEachTick is preserved for serialization compatibility but no longer
+                // overrides Calculate — doing so caused mid-bar flickering.
+                Calculate = Calculate.OnBarClose;
             }
             else if (State == State.DataLoaded)
             {
@@ -271,8 +282,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnBarUpdate()
         {
             if (CurrentBar < ATRPeriod + 2) return;
-            if (CurrentBar == lastCountedBar) return;
-            lastCountedBar = CurrentBar;
+            if (CurrentBar == snapshotBar) return;
+            snapshotBar = CurrentBar;
 
             bool priorGreen = Close[1] > Open[1];
             bool priorRed = Close[1] < Open[1];
@@ -305,6 +316,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             UpdateBacktest(priorGreen, currHigh, currLow);
             if (EnableAlerts) DoAlerts(priorGreen);
+
+            // Snapshot all values used by the renderer so they stay LOCKED until
+            // the next bar closes — this prevents mid-bar flickering.
+            snapshotPriorHigh  = High[1];
+            snapshotPriorLow   = Low[1];
+            snapshotPriorGreen = priorGreen;
+            snapshotStep       = step;
+            for (int i = 0; i < MaxLevels; i++)
+            {
+                snapshotPctUp[i] = priorGreen ? vals[i, 0] : vals[i, 2];
+                snapshotPctDn[i] = priorGreen ? vals[i, 1] : vals[i, 3];
+            }
         }
 
         #region SharpDX GPU Rendering
@@ -322,15 +345,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderLevels(ChartControl cc, ChartScale cs)
         {
-            if (CurrentBar < 2 || ChartBars == null) return;
-            
-            bool priorGreen = Close[1] > Open[1];
-            double stepPercent = StepModeSelection == BPEXStepMode.Manual ? ManualPercentageStep : calculatedStep;
-            if (stepPercent <= 0) stepPercent = 0.1;
-            
-            double step = Close[1] * (stepPercent / 100.0);
-            double priorHi = High[1];
-            double priorLo = Low[1];
+            // Require a valid snapshot — never read live Close[1]/High[1]/Low[1] here.
+            if (snapshotBar < 0 || ChartBars == null) return;
 
             int fromIdx = ChartBars.FromIndex;
             int toIdx = ChartBars.ToIndex;
@@ -342,10 +358,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             for (int i = 0; i < NumLines; i++)
             {
-                double pctUp = priorGreen ? vals[i, 0] : vals[i, 2];
-                double pctDn = priorGreen ? vals[i, 1] : vals[i, 3];
-                double priceUp = priorHi + (step * i);
-                double priceDn = priorLo - (step * i);
+                // Use ONLY snapshot values — these are locked at bar close.
+                double pctUp  = snapshotPctUp[i];
+                double pctDn  = snapshotPctDn[i];
+                double priceUp = snapshotPriorHigh + (snapshotStep * i);
+                double priceDn = snapshotPriorLow  - (snapshotStep * i);
                 bool hideUp = DisableZero && pctUp <= 0;
                 bool hideDn = DisableZero && pctDn <= 0;
 
@@ -369,7 +386,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (FillRegions && i < NumLines - 1)
                     {
-                        double nextPriceUp = priorHi + (step * (i + 1));
+                        double nextPriceUp = snapshotPriorHigh + (snapshotStep * (i + 1));
                         float yNextUp = cs.GetYByValue(nextPriceUp);
                         var rect = new SharpDX.RectangleF(
                             xStart, Math.Min(yUp, yNextUp),
@@ -398,7 +415,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (FillRegions && i < NumLines - 1)
                     {
-                        double nextPriceDn = priorLo - (step * (i + 1));
+                        double nextPriceDn = snapshotPriorLow - (snapshotStep * (i + 1));
                         float yNextDn = cs.GetYByValue(nextPriceDn);
                         var rect = new SharpDX.RectangleF(
                             xStart, Math.Min(yDn, yNextDn),
