@@ -158,7 +158,32 @@ FEATURES:
                 return;
 
             if (BarsInProgress == 0)
+            {
                 CalculateTrendDirection();
+                
+                // Update real-time metrics for all timeframes on primary series
+                for (int i = 0; i < timeframesList.Count && i < MaxTimeframesToShow; i++)
+                {
+                    int minutes = timeframesList[i];
+                    if (timeframeMetrics.ContainsKey(minutes))
+                    {
+                        TimeframeData tfData = timeframeMetrics[minutes];
+                        int dataSeriesIndex = i + 1;
+                        
+                        // Update real-time percent change using current price from secondary series
+                        if (dataSeriesIndex < BarsArray.Length && CurrentBars[dataSeriesIndex] >= 0)
+                        {
+                            double currentPrice = Closes[dataSeriesIndex][0];
+                            if (tfData.PreviousClose != 0)
+                                tfData.PercentChange = ((currentPrice - tfData.PreviousClose) / tfData.PreviousClose) * 100.0;
+                        }
+                        
+                        // Update bars remaining in real-time
+                        tfData.BarsRemaining = CalculateBarsRemaining(minutes);
+                        tfData.TrendDirection = currentTrendDirection;
+                    }
+                }
+            }
 
             if (BarsInProgress > 0 && BarsInProgress <= maxDataSeries && BarsInProgress - 1 < timeframesList.Count)
             {
@@ -169,10 +194,6 @@ FEATURES:
                     tfData.PreviousClose = tfData.CurrentClose;
                     tfData.CurrentClose = Close[0];
                     tfData.LastBarTime = Time[0];
-                    if (tfData.PreviousClose != 0)
-                        tfData.PercentChange = ((tfData.CurrentClose - tfData.PreviousClose) / tfData.PreviousClose) * 100.0;
-                    tfData.BarsRemaining = CalculateBarsRemaining(minutes);
-                    tfData.TrendDirection = currentTrendDirection;
                 }
             }
         }
