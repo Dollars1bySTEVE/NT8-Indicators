@@ -14,13 +14,14 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Drawing.Design;
+using System.Windows.Forms.Design;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
-using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 #endregion
 
@@ -420,37 +421,37 @@ namespace NinjaTrader.NinjaScript.Indicators
         public double FixedDownThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(PropertyEditorType.SoundFile)]
+        [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
         [Display(Name = "Up Sound File", GroupName = "5. Sounds", Order = 0,
                  Description = "WAV for Engine A up-tick (block buy). Fallback for Burst Up and Fixed Up.")]
         public string UpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(PropertyEditorType.SoundFile)]
+        [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
         [Display(Name = "Down Sound File", GroupName = "5. Sounds", Order = 1,
                  Description = "WAV for Engine A down-tick (block sell). Fallback for Burst Down and Fixed Down.")]
         public string DownSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(PropertyEditorType.SoundFile)]
+        [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
         [Display(Name = "Burst Up Sound File", GroupName = "5. Sounds", Order = 2,
                  Description = "WAV for Engine B up-burst. Falls back to Up Sound File when blank.")]
         public string BurstUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(PropertyEditorType.SoundFile)]
+        [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
         [Display(Name = "Burst Down Sound File", GroupName = "5. Sounds", Order = 3,
                  Description = "WAV for Engine B down-burst. Falls back to Down Sound File when blank.")]
         public string BurstDownSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(PropertyEditorType.SoundFile)]
+        [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
         [Display(Name = "Fixed Up Sound File", GroupName = "5. Sounds", Order = 4,
                  Description = "WAV for Engine C up fixed-size print. Falls back to Up Sound File when blank.")]
         public string FixedUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(PropertyEditorType.SoundFile)]
+        [Editor(typeof(FileNameEditor), typeof(UITypeEditor))]
         [Display(Name = "Fixed Down Sound File", GroupName = "5. Sounds", Order = 5,
                  Description = "WAV for Engine C down fixed-size print. Falls back to Down Sound File when blank.")]
         public string FixedDownSoundFile { get; set; }
