@@ -1,5 +1,4 @@
 // SmartTickAudio — Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8.
-
 //
 // Combines three detection engines:
 //   Engine A, adaptive single-print size outlier
@@ -24,46 +23,17 @@ using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 #endregion
 
-// NinjaTrader 8 requires custom enums declared OUTSIDE all namespaces
-// so the auto-generated partial-class code can resolve them without ambiguity.
-// Reference: forum.ninjatrader.com threads #1182932, #95909, #1046853
-
-/// <summary>
-/// Operating mode for SmartTickAudio — selects which detection engine(s) are active.
-/// </summary>
 public enum SmartTickAudioMode
 {
-    /// <summary>Engine A only — adaptive single-print size outlier (AlgoBox AudioBox-style).</summary>
     BlockOnly,
-    /// <summary>Engine B only — adaptive burst-sweep detector (TickStrike-style).</summary>
     BurstOnly,
-    /// <summary>Engine C only — fixed contract-count floor (BigTrade / GomMP-style).</summary>
     FixedOnly,
-    /// <summary>Engines A + B (default — broadest coverage with no config).</summary>
     Both,
-    /// <summary>Engines A + B + C simultaneously.</summary>
     All
 }
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    /// <summary>
-    /// SmartTickAudio — Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8.
-    ///
-    /// Three detection engines run independently and can be combined:
-    ///   Engine A (Block)  — fires when a single tick's size is a statistical outlier vs the
-    ///                        rolling window of recent tick sizes (AlgoBox AudioBox-style).
-    ///   Engine B (Burst)  — fires when an unusual number of same-side aggressive ticks occur
-    ///                        within BurstWindowMs (TickStrike-style, but adaptive).
-    ///   Engine C (Fixed)  — fires when a single tick >= a user-defined contract count
-    ///                        (BigTrade / GomMP Big Trades-style).
-    ///
-    /// Tick classification uses Level-1 Last vs Bid/Ask so the indicator works on any chart
-    /// type and any instrument without further configuration.
-    ///
-    /// Performance: circular buffers (O(1) push/expire) + SortedDictionary value-count map
-    /// (O(log n) rolling percentile). Hot path is allocation-free.
-    /// </summary>
     public class SmartTickAudio : Indicator
     {
         private const int MaxBurstQueueCap = 4096;
@@ -165,7 +135,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _burstDownBaseHead = _burstDownBaseTail = _burstDownBaseFilled = 0;
                 _burstBaseScratch  = new int[BurstBaselineCap];
 
-                _cooldownTicks      = (long)CooldownMs * TimeSpan.TicksPerMillisecond;
+                _cooldownTicks       = (long)CooldownMs * TimeSpan.TicksPerMillisecond;
                 _lastBurstSampleTick = DateTime.UtcNow.Ticks;
 
                 _pendingUpVol = _pendingDownVol = 0;
@@ -200,46 +170,32 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnMarketData(MarketDataEventArgs e)
         {
-            if (e.MarketDataType == MarketDataType.Ask)
-            {
-                _cachedAsk = e.Price;
-                return;
-            }
-            if (e.MarketDataType == MarketDataType.Bid)
-            {
-                _cachedBid = e.Price;
-                return;
-            }
-            if (e.MarketDataType != MarketDataType.Last)
-                return;
+            if (e.MarketDataType == MarketDataType.Ask)  { _cachedAsk = e.Price; return; }
+            if (e.MarketDataType == MarketDataType.Bid)  { _cachedBid = e.Price; return; }
+            if (e.MarketDataType != MarketDataType.Last) return;
 
             double price  = e.Price;
             double volume = e.Volume;
-            if (volume <= 0)
-                return;
+            if (volume <= 0) return;
 
             double ask = double.IsNaN(_cachedAsk) ? GetCurrentAsk() : _cachedAsk;
             double bid = double.IsNaN(_cachedBid) ? GetCurrentBid() : _cachedBid;
-            if (ask <= 0 || bid <= 0)
-                return;
+            if (ask <= 0 || bid <= 0) return;
 
-            if (price >= ask)
-                ProcessClassifiedTick(true,  volume);
-            else if (price <= bid)
-                ProcessClassifiedTick(false, volume);
+            if      (price >= ask) ProcessClassifiedTick(true,  volume);
+            else if (price <= bid) ProcessClassifiedTick(false, volume);
         }
 
         private void ProcessClassifiedTick(bool isUp, double volume)
         {
-            if (OnlyRTH && !IsCurrentTimeRTH())
-                return;
+            if (OnlyRTH && !IsCurrentTimeRTH()) return;
 
             long nowTicks         = DateTime.UtcNow.Ticks;
             long burstWindowTicks = (long)BurstWindowMs * TimeSpan.TicksPerMillisecond;
 
             if (nowTicks - _lastBurstSampleTick >= TimeSpan.TicksPerSecond)
             {
-                long cutoff = nowTicks - burstWindowTicks;
+                long cutoff  = nowTicks - burstWindowTicks;
                 int upSnap   = BurstExpireCount(_upTimeBuf,   ref _upTimeHead,   ref _upTimeCount,   cutoff);
                 int downSnap = BurstExpireCount(_downTimeBuf, ref _downTimeHead, ref _downTimeCount, cutoff);
                 BurstBaselinePush(_burstUpBase,   ref _burstUpBaseHead,   ref _burstUpBaseTail,   ref _burstUpBaseFilled,   upSnap);
@@ -249,40 +205,28 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             BlockPush(volume);
 
-            // ── Engine A — Block ──
-            bool blockActive = Mode == SmartTickAudioMode.BlockOnly
-                             || Mode == SmartTickAudioMode.Both
-                             || Mode == SmartTickAudioMode.All;
+            // Engine A
+            bool blockActive = Mode == SmartTickAudioMode.BlockOnly || Mode == SmartTickAudioMode.Both || Mode == SmartTickAudioMode.All;
             if (blockActive && _blockFilled >= BlockWarmupMin)
             {
-                double threshold = BlockGetPercentile(BlockPercentile);
-                if (threshold > 0 && volume >= threshold)
+                double thr = BlockGetPercentile(BlockPercentile);
+                if (thr > 0 && volume >= thr)
                 {
                     if (isUp)
                     {
                         if (nowTicks - _lastBlockUpFire >= _cooldownTicks)
-                        {
-                            _lastBlockUpFire = nowTicks;
-                            _pendingUpVol    = volume;
-                            TryPlaySound(UpSoundFile);
-                        }
+                        { _lastBlockUpFire = nowTicks; _pendingUpVol = volume; TryPlaySound(UpSoundFile); }
                     }
                     else
                     {
                         if (nowTicks - _lastBlockDownFire >= _cooldownTicks)
-                        {
-                            _lastBlockDownFire = nowTicks;
-                            _pendingDownVol    = volume;
-                            TryPlaySound(DownSoundFile);
-                        }
+                        { _lastBlockDownFire = nowTicks; _pendingDownVol = volume; TryPlaySound(DownSoundFile); }
                     }
                 }
             }
 
-            // ── Engine B — Burst ──
-            bool burstActive = Mode == SmartTickAudioMode.BurstOnly
-                             || Mode == SmartTickAudioMode.Both
-                             || Mode == SmartTickAudioMode.All;
+            // Engine B
+            bool burstActive = Mode == SmartTickAudioMode.BurstOnly || Mode == SmartTickAudioMode.Both || Mode == SmartTickAudioMode.All;
             if (burstActive)
             {
                 long cutoff = nowTicks - burstWindowTicks;
@@ -292,18 +236,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     int cnt = BurstExpireCount(_upTimeBuf, ref _upTimeHead, ref _upTimeCount, cutoff);
                     if (cnt >= BurstMinTicks)
                     {
-                        int threshold = BurstFixedCount > 0
-                                      ? BurstFixedCount
-                                      : BurstBaselinePercentile(_burstUpBase, _burstUpBaseFilled, _burstUpBaseHead, BurstPercentile);
-                        if (threshold > 0 && cnt >= threshold)
-                        {
-                            if (nowTicks - _lastBurstUpFire >= _cooldownTicks)
-                            {
-                                _lastBurstUpFire = nowTicks;
-                                _pendingUpVol    = volume;
-                                TryPlaySound(string.IsNullOrEmpty(BurstUpSoundFile) ? UpSoundFile : BurstUpSoundFile);
-                            }
-                        }
+                        int thr = BurstFixedCount > 0 ? BurstFixedCount : BurstBaselinePercentile(_burstUpBase, _burstUpBaseFilled, _burstUpBaseHead, BurstPercentile);
+                        if (thr > 0 && cnt >= thr && nowTicks - _lastBurstUpFire >= _cooldownTicks)
+                        { _lastBurstUpFire = nowTicks; _pendingUpVol = volume; TryPlaySound(string.IsNullOrEmpty(BurstUpSoundFile) ? UpSoundFile : BurstUpSoundFile); }
                     }
                 }
                 else
@@ -312,45 +247,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                     int cnt = BurstExpireCount(_downTimeBuf, ref _downTimeHead, ref _downTimeCount, cutoff);
                     if (cnt >= BurstMinTicks)
                     {
-                        int threshold = BurstFixedCount > 0
-                                      ? BurstFixedCount
-                                      : BurstBaselinePercentile(_burstDownBase, _burstDownBaseFilled, _burstDownBaseHead, BurstPercentile);
-                        if (threshold > 0 && cnt >= threshold)
-                        {
-                            if (nowTicks - _lastBurstDownFire >= _cooldownTicks)
-                            {
-                                _lastBurstDownFire = nowTicks;
-                                _pendingDownVol    = volume;
-                                TryPlaySound(string.IsNullOrEmpty(BurstDownSoundFile) ? DownSoundFile : BurstDownSoundFile);
-                            }
-                        }
+                        int thr = BurstFixedCount > 0 ? BurstFixedCount : BurstBaselinePercentile(_burstDownBase, _burstDownBaseFilled, _burstDownBaseHead, BurstPercentile);
+                        if (thr > 0 && cnt >= thr && nowTicks - _lastBurstDownFire >= _cooldownTicks)
+                        { _lastBurstDownFire = nowTicks; _pendingDownVol = volume; TryPlaySound(string.IsNullOrEmpty(BurstDownSoundFile) ? DownSoundFile : BurstDownSoundFile); }
                     }
                 }
             }
 
-            // ── Engine C — Fixed ──
-            bool fixedActive = Mode == SmartTickAudioMode.FixedOnly
-                             || Mode == SmartTickAudioMode.All;
+            // Engine C
+            bool fixedActive = Mode == SmartTickAudioMode.FixedOnly || Mode == SmartTickAudioMode.All;
             if (fixedActive)
             {
-                if (isUp && FixedUpThreshold > 0 && volume >= FixedUpThreshold)
-                {
-                    if (nowTicks - _lastFixedUpFire >= _cooldownTicks)
-                    {
-                        _lastFixedUpFire = nowTicks;
-                        _pendingUpVol    = volume;
-                        TryPlaySound(string.IsNullOrEmpty(FixedUpSoundFile) ? UpSoundFile : FixedUpSoundFile);
-                    }
-                }
-                else if (!isUp && FixedDownThreshold > 0 && volume >= FixedDownThreshold)
-                {
-                    if (nowTicks - _lastFixedDownFire >= _cooldownTicks)
-                    {
-                        _lastFixedDownFire = nowTicks;
-                        _pendingDownVol    = volume;
-                        TryPlaySound(string.IsNullOrEmpty(FixedDownSoundFile) ? DownSoundFile : FixedDownSoundFile);
-                    }
-                }
+                if (isUp && FixedUpThreshold > 0 && volume >= FixedUpThreshold && nowTicks - _lastFixedUpFire >= _cooldownTicks)
+                { _lastFixedUpFire = nowTicks; _pendingUpVol = volume; TryPlaySound(string.IsNullOrEmpty(FixedUpSoundFile) ? UpSoundFile : FixedUpSoundFile); }
+                else if (!isUp && FixedDownThreshold > 0 && volume >= FixedDownThreshold && nowTicks - _lastFixedDownFire >= _cooldownTicks)
+                { _lastFixedDownFire = nowTicks; _pendingDownVol = volume; TryPlaySound(string.IsNullOrEmpty(FixedDownSoundFile) ? DownSoundFile : FixedDownSoundFile); }
             }
         }
 
@@ -365,77 +276,53 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _blockFreqTotal--;
                 int c;
                 if (_blockFreq.TryGetValue(old, out c))
-                {
-                    if (c <= 1) _blockFreq.Remove(old);
-                    else        _blockFreq[old] = c - 1;
-                }
+                { if (c <= 1) _blockFreq.Remove(old); else _blockFreq[old] = c - 1; }
             }
             _blockBuf[_blockTail] = vol;
             _blockTail = (_blockTail + 1) % cap;
             _blockFilled++;
             _blockFreqTotal++;
             int cv;
-            if (_blockFreq.TryGetValue(vol, out cv))
-                _blockFreq[vol] = cv + 1;
-            else
-                _blockFreq[vol] = 1;
+            if (_blockFreq.TryGetValue(vol, out cv)) _blockFreq[vol] = cv + 1;
+            else                                      _blockFreq[vol] = 1;
         }
 
         private double BlockGetPercentile(int pct)
         {
             if (_blockFreqTotal == 0) return 0;
-            int target     = (int)Math.Ceiling(_blockFreqTotal * pct / 100.0);
-            int cumulative = 0;
-            double last    = 0;
+            int target = (int)Math.Ceiling(_blockFreqTotal * pct / 100.0);
+            int cum = 0; double last = 0;
             foreach (KeyValuePair<double, int> kv in _blockFreq)
-            {
-                last        = kv.Key;
-                cumulative += kv.Value;
-                if (cumulative >= target) return kv.Key;
-            }
+            { last = kv.Key; cum += kv.Value; if (cum >= target) return kv.Key; }
             return last;
         }
 
         private static void BurstTimePush(long[] buf, ref int head, ref int tail, ref int count, long ts)
         {
-            buf[tail] = ts;
-            tail = (tail + 1) % MaxBurstQueueCap;
-            if (count == MaxBurstQueueCap)
-                head = (head + 1) % MaxBurstQueueCap;
-            else
-                count++;
+            buf[tail] = ts; tail = (tail + 1) % MaxBurstQueueCap;
+            if (count == MaxBurstQueueCap) head = (head + 1) % MaxBurstQueueCap; else count++;
         }
 
         private static int BurstExpireCount(long[] buf, ref int head, ref int count, long cutoff)
         {
-            while (count > 0 && buf[head] < cutoff)
-            {
-                head = (head + 1) % MaxBurstQueueCap;
-                count--;
-            }
+            while (count > 0 && buf[head] < cutoff) { head = (head + 1) % MaxBurstQueueCap; count--; }
             return count;
         }
 
         private static void BurstBaselinePush(int[] buf, ref int head, ref int tail, ref int filled, int val)
         {
-            buf[tail] = val;
-            tail = (tail + 1) % BurstBaselineCap;
-            if (filled == BurstBaselineCap)
-                head = (head + 1) % BurstBaselineCap;
-            else
-                filled++;
+            buf[tail] = val; tail = (tail + 1) % BurstBaselineCap;
+            if (filled == BurstBaselineCap) head = (head + 1) % BurstBaselineCap; else filled++;
         }
 
         private int BurstBaselinePercentile(int[] buf, int filled, int head, int pct)
         {
             if (filled == 0) return 0;
             int n = Math.Min(filled, BurstBaselineCap);
-            for (int i = 0; i < n; i++)
-                _burstBaseScratch[i] = buf[(head + i) % BurstBaselineCap];
+            for (int i = 0; i < n; i++) _burstBaseScratch[i] = buf[(head + i) % BurstBaselineCap];
             Array.Sort(_burstBaseScratch, 0, n);
             int idx = (int)Math.Ceiling(n * pct / 100.0) - 1;
-            if (idx < 0)    idx = 0;
-            if (idx >= n)   idx = n - 1;
+            if (idx < 0) idx = 0; if (idx >= n) idx = n - 1;
             return _burstBaseScratch[idx];
         }
 
@@ -446,8 +333,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 DateTime utcNow = DateTime.UtcNow;
                 _sessionIterator.GetNextSession(utcNow, true);
-                return utcNow >= _sessionIterator.ActualSessionBegin
-                    && utcNow <  _sessionIterator.ActualSessionEnd;
+                return utcNow >= _sessionIterator.ActualSessionBegin && utcNow < _sessionIterator.ActualSessionEnd;
             }
             catch { return true; }
         }
@@ -455,131 +341,117 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void TryPlaySound(string filePath)
         {
             if (Mute || string.IsNullOrEmpty(filePath)) return;
-            try { PlaySound(filePath); }
-            catch { }
+            try { PlaySound(filePath); } catch { }
         }
 
-        [Browsable(false)]
-        [XmlIgnore]
-        public Series<double> UpVolumeBar  => Values[0];
-
-        [Browsable(false)]
-        [XmlIgnore]
+        [Browsable(false)][XmlIgnore]
+        public Series<double> UpVolumeBar   => Values[0];
+        [Browsable(false)][XmlIgnore]
         public Series<double> DownVolumeBar => Values[1];
-
-        // ── Group 1: Mode ──────────────────────────────────────────────
 
         [NinjaScriptProperty]
         [Display(Name = "Mode", GroupName = "1. Mode", Order = 0,
-                 Description = "Which detection engine(s) are active. Both = Block + Burst (default).")]  
+                 Description = "Which detection engine(s) are active. Both = Block + Burst (default).")]
         public SmartTickAudioMode Mode { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Mute", GroupName = "1. Mode", Order = 1,
-                 Description = "Suppress all audio output without removing the indicator from the chart.")]  
+                 Description = "Suppress all audio output without removing the indicator from the chart.")]
         public bool Mute { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Only RTH", GroupName = "1. Mode", Order = 2,
-                 Description = "When true, events outside the chart's primary trading session are silenced.")]  
+                 Description = "When true, events outside the chart's primary trading session are silenced.")]
         public bool OnlyRTH { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 5000)]
         [Display(Name = "Cooldown (ms)", GroupName = "1. Mode", Order = 3,
-                 Description = "Per-side, per-engine minimum interval between audio triggers. Default 150 ms.")]  
+                 Description = "Per-side, per-engine minimum interval between audio triggers. Default 150 ms.")]
         public int CooldownMs { get; set; }
-
-        // ── Group 2: Block Engine ──────────────────────────────────────
 
         [NinjaScriptProperty]
         [Range(50, 10000)]
         [Display(Name = "Window Ticks", GroupName = "2. Block Engine", Order = 0,
-                 Description = "Rolling window size for Engine A adaptive baseline.")]  
+                 Description = "Rolling window size for Engine A adaptive baseline.")]
         public int WindowTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(50, 99)]
         [Display(Name = "Block Percentile", GroupName = "2. Block Engine", Order = 1,
-                 Description = "Tick size must exceed this percentile of recent history to fire Engine A. Default 97.")]  
+                 Description = "Tick size must exceed this percentile of recent history to fire Engine A. Default 97.")]
         public int BlockPercentile { get; set; }
-
-        // ── Group 3: Burst Engine ──────────────────────────────────────
 
         [NinjaScriptProperty]
         [Range(100, 10000)]
         [Display(Name = "Burst Window (ms)", GroupName = "3. Burst Engine", Order = 0,
-                 Description = "Time window for counting same-side aggressive ticks. Default 1000 ms.")]  
+                 Description = "Time window for counting same-side aggressive ticks. Default 1000 ms.")]
         public int BurstWindowMs { get; set; }
 
         [NinjaScriptProperty]
         [Range(50, 99)]
         [Display(Name = "Burst Percentile", GroupName = "3. Burst Engine", Order = 1,
-                 Description = "Burst-window count must exceed this percentile of the rolling baseline to fire Engine B. Default 95.")]  
+                 Description = "Burst-window count must exceed this percentile of the rolling baseline to fire Engine B. Default 95.")]
         public int BurstPercentile { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
         [Display(Name = "Burst Min Ticks", GroupName = "3. Burst Engine", Order = 2,
-                 Description = "Minimum same-side ticks required in the burst window before Engine B can fire. Default 3.")]  
+                 Description = "Minimum same-side ticks required in the burst window before Engine B can fire. Default 3.")]
         public int BurstMinTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 1000)]
         [Display(Name = "Burst Fixed Count (0 = adaptive)", GroupName = "3. Burst Engine", Order = 3,
-                 Description = "Override the adaptive percentile cutoff with a fixed tick count. 0 = adaptive.")]  
+                 Description = "Override the adaptive percentile cutoff with a fixed tick count. 0 = adaptive.")]
         public int BurstFixedCount { get; set; }
-
-        // ── Group 4: Fixed Engine ──────────────────────────────────────
 
         [NinjaScriptProperty]
         [Range(0, 100000)]
         [Display(Name = "Fixed Up Threshold (0 = off)", GroupName = "4. Fixed Engine", Order = 0,
-                 Description = "Engine C: fire on up-ticks whose volume is >= this value. 0 = disabled.")]  
+                 Description = "Engine C: fire on up-ticks whose volume is >= this value. 0 = disabled.")]
         public double FixedUpThreshold { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 100000)]
         [Display(Name = "Fixed Down Threshold (0 = off)", GroupName = "4. Fixed Engine", Order = 1,
-                 Description = "Engine C: fire on down-ticks whose volume is >= this value. 0 = disabled.")]  
+                 Description = "Engine C: fire on down-ticks whose volume is >= this value. 0 = disabled.")]
         public double FixedDownThreshold { get; set; }
 
-        // ── Group 5: Sounds ────────────────────────────────────────────
-
         [NinjaScriptProperty]
-        [Editor("NinjaTrader.Gui.Design.SoundFileEditor, NinjaTrader.GUI", typeof(System.Drawing.Design.UITypeEditor))]
+        [PropertyEditor(PropertyEditorType.SoundFile)]
         [Display(Name = "Up Sound File", GroupName = "5. Sounds", Order = 0,
-                 Description = "WAV file for Engine A up-tick (block buy). Also fallback for Burst Up and Fixed Up.")]  
+                 Description = "WAV for Engine A up-tick (block buy). Fallback for Burst Up and Fixed Up.")]
         public string UpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [Editor("NinjaTrader.Gui.Design.SoundFileEditor, NinjaTrader.GUI", typeof(System.Drawing.Design.UITypeEditor))]
+        [PropertyEditor(PropertyEditorType.SoundFile)]
         [Display(Name = "Down Sound File", GroupName = "5. Sounds", Order = 1,
-                 Description = "WAV file for Engine A down-tick (block sell). Also fallback for Burst Down and Fixed Down.")]  
+                 Description = "WAV for Engine A down-tick (block sell). Fallback for Burst Down and Fixed Down.")]
         public string DownSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [Editor("NinjaTrader.Gui.Design.SoundFileEditor, NinjaTrader.GUI", typeof(System.Drawing.Design.UITypeEditor))]
+        [PropertyEditor(PropertyEditorType.SoundFile)]
         [Display(Name = "Burst Up Sound File", GroupName = "5. Sounds", Order = 2,
-                 Description = "WAV for Engine B up-burst. Falls back to Up Sound File when blank.")]  
+                 Description = "WAV for Engine B up-burst. Falls back to Up Sound File when blank.")]
         public string BurstUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [Editor("NinjaTrader.Gui.Design.SoundFileEditor, NinjaTrader.GUI", typeof(System.Drawing.Design.UITypeEditor))]
+        [PropertyEditor(PropertyEditorType.SoundFile)]
         [Display(Name = "Burst Down Sound File", GroupName = "5. Sounds", Order = 3,
-                 Description = "WAV for Engine B down-burst. Falls back to Down Sound File when blank.")]  
+                 Description = "WAV for Engine B down-burst. Falls back to Down Sound File when blank.")]
         public string BurstDownSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [Editor("NinjaTrader.Gui.Design.SoundFileEditor, NinjaTrader.GUI", typeof(System.Drawing.Design.UITypeEditor))]
+        [PropertyEditor(PropertyEditorType.SoundFile)]
         [Display(Name = "Fixed Up Sound File", GroupName = "5. Sounds", Order = 4,
-                 Description = "WAV for Engine C up fixed-size print. Falls back to Up Sound File when blank.")]  
+                 Description = "WAV for Engine C up fixed-size print. Falls back to Up Sound File when blank.")]
         public string FixedUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [Editor("NinjaTrader.Gui.Design.SoundFileEditor, NinjaTrader.GUI", typeof(System.Drawing.Design.UITypeEditor))]
+        [PropertyEditor(PropertyEditorType.SoundFile)]
         [Display(Name = "Fixed Down Sound File", GroupName = "5. Sounds", Order = 5,
-                 Description = "WAV for Engine C down fixed-size print. Falls back to Down Sound File when blank.")]  
+                 Description = "WAV for Engine C down fixed-size print. Falls back to Down Sound File when blank.")]
         public string FixedDownSoundFile { get; set; }
     }
 }
