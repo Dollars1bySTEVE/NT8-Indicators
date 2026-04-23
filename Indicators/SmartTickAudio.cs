@@ -14,12 +14,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.Windows.Media;
-using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
-using NinjaTrader.Gui;
-using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 #endregion
 
@@ -62,9 +58,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private double _cachedAsk = double.NaN;
         private double _cachedBid = double.NaN;
-
-        private double _pendingUpVol;
-        private double _pendingDownVol;
 
         private SessionIterator _sessionIterator;
 
@@ -109,9 +102,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BurstDownSoundFile = @"C:\Program Files\NinjaTrader 8\sounds\Alert4.wav";
                 FixedUpSoundFile   = @"C:\Program Files\NinjaTrader 8\sounds\Alert5.wav";
                 FixedDownSoundFile = @"C:\Program Files\NinjaTrader 8\sounds\Alert6.wav";
-
-                AddPlot(new Stroke(Brushes.Green, 2), PlotStyle.Bar, "upVolume");
-                AddPlot(new Stroke(Brushes.Red,   2), PlotStyle.Bar, "downVolume");
             }
             else if (State == State.Configure)
             {
@@ -138,7 +128,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _cooldownTicks       = (long)CooldownMs * TimeSpan.TicksPerMillisecond;
                 _lastBurstSampleTick = DateTime.UtcNow.Ticks;
 
-                _pendingUpVol = _pendingDownVol = 0;
                 _cachedAsk    = _cachedBid      = double.NaN;
 
                 _lastBlockUpFire   = _lastBlockDownFire   = 0;
@@ -151,21 +140,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 _sessionIterator = null;
             }
-        }
-
-        protected override void OnBarUpdate()
-        {
-            if (BarsInProgress != 0 || CurrentBar < 0)
-                return;
-
-            if (IsFirstTickOfBar)
-            {
-                _pendingUpVol   = 0;
-                _pendingDownVol = 0;
-            }
-
-            Values[0][0] = _pendingUpVol;
-            Values[1][0] = _pendingDownVol;
         }
 
         protected override void OnMarketData(MarketDataEventArgs e)
@@ -215,12 +189,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (isUp)
                     {
                         if (nowTicks - _lastBlockUpFire >= _cooldownTicks)
-                        { _lastBlockUpFire = nowTicks; _pendingUpVol = volume; TryPlaySound(UpSoundFile); }
+                        { _lastBlockUpFire = nowTicks; TryPlaySound(UpSoundFile); }
                     }
                     else
                     {
                         if (nowTicks - _lastBlockDownFire >= _cooldownTicks)
-                        { _lastBlockDownFire = nowTicks; _pendingDownVol = volume; TryPlaySound(DownSoundFile); }
+                        { _lastBlockDownFire = nowTicks; TryPlaySound(DownSoundFile); }
                     }
                 }
             }
@@ -238,7 +212,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         int thr = BurstFixedCount > 0 ? BurstFixedCount : BurstBaselinePercentile(_burstUpBase, _burstUpBaseFilled, _burstUpBaseHead, BurstPercentile);
                         if (thr > 0 && cnt >= thr && nowTicks - _lastBurstUpFire >= _cooldownTicks)
-                        { _lastBurstUpFire = nowTicks; _pendingUpVol = volume; TryPlaySound(string.IsNullOrEmpty(BurstUpSoundFile) ? UpSoundFile : BurstUpSoundFile); }
+                        { _lastBurstUpFire = nowTicks; TryPlaySound(string.IsNullOrEmpty(BurstUpSoundFile) ? UpSoundFile : BurstUpSoundFile); }
                     }
                 }
                 else
@@ -249,7 +223,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         int thr = BurstFixedCount > 0 ? BurstFixedCount : BurstBaselinePercentile(_burstDownBase, _burstDownBaseFilled, _burstDownBaseHead, BurstPercentile);
                         if (thr > 0 && cnt >= thr && nowTicks - _lastBurstDownFire >= _cooldownTicks)
-                        { _lastBurstDownFire = nowTicks; _pendingDownVol = volume; TryPlaySound(string.IsNullOrEmpty(BurstDownSoundFile) ? DownSoundFile : BurstDownSoundFile); }
+                        { _lastBurstDownFire = nowTicks; TryPlaySound(string.IsNullOrEmpty(BurstDownSoundFile) ? DownSoundFile : BurstDownSoundFile); }
                     }
                 }
             }
@@ -259,9 +233,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (fixedActive)
             {
                 if (isUp && FixedUpThreshold > 0 && volume >= FixedUpThreshold && nowTicks - _lastFixedUpFire >= _cooldownTicks)
-                { _lastFixedUpFire = nowTicks; _pendingUpVol = volume; TryPlaySound(string.IsNullOrEmpty(FixedUpSoundFile) ? UpSoundFile : FixedUpSoundFile); }
+                { _lastFixedUpFire = nowTicks; TryPlaySound(string.IsNullOrEmpty(FixedUpSoundFile) ? UpSoundFile : FixedUpSoundFile); }
                 else if (!isUp && FixedDownThreshold > 0 && volume >= FixedDownThreshold && nowTicks - _lastFixedDownFire >= _cooldownTicks)
-                { _lastFixedDownFire = nowTicks; _pendingDownVol = volume; TryPlaySound(string.IsNullOrEmpty(FixedDownSoundFile) ? DownSoundFile : FixedDownSoundFile); }
+                { _lastFixedDownFire = nowTicks; TryPlaySound(string.IsNullOrEmpty(FixedDownSoundFile) ? DownSoundFile : FixedDownSoundFile); }
             }
         }
 
@@ -343,11 +317,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (Mute || string.IsNullOrEmpty(filePath)) return;
             try { PlaySound(filePath); } catch { }
         }
-
-        [Browsable(false)][XmlIgnore]
-        public Series<double> UpVolumeBar   => Values[0];
-        [Browsable(false)][XmlIgnore]
-        public Series<double> DownVolumeBar => Values[1];
 
         [NinjaScriptProperty]
         [Display(Name = "Mode", GroupName = "1. Mode", Order = 0,
