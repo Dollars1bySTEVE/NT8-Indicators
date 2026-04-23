@@ -1,23 +1,13 @@
 // SmartTickAudio — Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8.
 //
-// Combines three detection engines inspired by:
-//   AlgoBox FlowMaster AudioBox  — Engine A, adaptive single-print size outlier
-//   TickStrike                   — Engine B, adaptive same-side burst sweep
-//   BigTrade / GomMP Big Trades  — Engine C, fixed contract-count floor
-//
-// This is a clean-room, original implementation using only public NinjaScript 8 APIs.
-// It is NOT a port or decompile of any commercial product.
+// Combines three detection engines:
+//   Engine A, adaptive single-print size outlier
+//   Engine B, adaptive same-side burst sweep
+//   Engine C, fixed contract-count floor
 //
 // Works on NQ, ES, MNQ, MES, CL, GC, RTY, YM, BTC futures, equities, FX — no per-market
 // tuning required because all thresholds derive from rolling percentiles of each
 // instrument's own recent activity.
-//
-// GPU-compute note: NinjaTrader 8 does not expose a public GPU compute API for indicators.
-// "GPU-enhanced" performance is delivered here via maximally efficient CPU data structures:
-//   • Pre-allocated circular buffers  — O(1) push / pop / expire
-//   • SortedDictionary value-count map — O(log n) rolling-window percentile maintenance
-//     without per-tick Array.Sort calls (Engine A, Block engine)
-//   • Allocation-free hot path: no LINQ, no string.Format, no per-tick new collections
 
 #region Using declarations
 using System;
