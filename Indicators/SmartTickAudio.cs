@@ -22,6 +22,7 @@ using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
+using System.Drawing.Design;
 #endregion
 
 // NinjaTrader 8 requires custom enums declared OUTSIDE all namespaces
@@ -692,33 +693,39 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ── Group 5: Sounds ────────────────────────────────────────────
 
         [NinjaScriptProperty]
+        [Editor(typeof(FilePathEditor), typeof(UITypeEditor))]
         [Display(Name = "Up Sound File", GroupName = "5. Sounds", Order = 0,
                  Description = "Full path to a WAV file played on Engine A up-tick (block buy). "
                              + "Also used as fallback for Burst Up and Fixed Up if those are blank.")]
         public string UpSoundFile { get; set; }
 
         [NinjaScriptProperty]
+        [Editor(typeof(FilePathEditor), typeof(UITypeEditor))]
         [Display(Name = "Down Sound File", GroupName = "5. Sounds", Order = 1,
                  Description = "Full path to a WAV file played on Engine A down-tick (block sell). "
                              + "Also used as fallback for Burst Down and Fixed Down if those are blank.")]
         public string DownSoundFile { get; set; }
 
         [NinjaScriptProperty]
+        [Editor(typeof(FilePathEditor), typeof(UITypeEditor))]
         [Display(Name = "Burst Up Sound File", GroupName = "5. Sounds", Order = 2,
                  Description = "WAV for Engine B up-burst. Falls back to Up Sound File when blank.")]
         public string BurstUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
+        [Editor(typeof(FilePathEditor), typeof(UITypeEditor))]
         [Display(Name = "Burst Down Sound File", GroupName = "5. Sounds", Order = 3,
                  Description = "WAV for Engine B down-burst. Falls back to Down Sound File when blank.")]
         public string BurstDownSoundFile { get; set; }
 
         [NinjaScriptProperty]
+        [Editor(typeof(FilePathEditor), typeof(UITypeEditor))]
         [Display(Name = "Fixed Up Sound File", GroupName = "5. Sounds", Order = 4,
                  Description = "WAV for Engine C up fixed-size print. Falls back to Up Sound File when blank.")]
         public string FixedUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
+        [Editor(typeof(FilePathEditor), typeof(UITypeEditor))]
         [Display(Name = "Fixed Down Sound File", GroupName = "5. Sounds", Order = 5,
                  Description = "WAV for Engine C down fixed-size print. Falls back to Down Sound File when blank.")]
         public string FixedDownSoundFile { get; set; }
