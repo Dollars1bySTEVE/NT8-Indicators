@@ -349,3 +349,181 @@ Consider starring the repository! It helps others discover these free tools.
 **Happy Trading!** 📈💰
 
 *Built with ❤️ for the NinjaTrader community*
+
+---
+
+---
+
+# SmartTickAudio
+
+**Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8**
+
+> Free · Open-source · No third-party dependencies · Works on any instrument
+
+---
+
+## What It Does
+
+SmartTickAudio plays configurable WAV sounds whenever unusual aggressive order flow is
+detected on the current chart. It classifies every tick as an **aggressive buy** (printed
+at or above the ask) or an **aggressive sell** (printed at or below the bid), then runs
+three independent detection engines to decide whether the tick or its context is
+significant enough to warrant an audio alert.
+
+**It is audio-only.** The two chart plots (`upVolume`, `downVolume`) are hidden diagnostic
+series that expose the last triggering tick volume for downstream strategy/script queries —
+no visual decoration is drawn on the price panel.
+
+---
+
+## The Three Engines
+
+### Engine A — Block  *(AlgoBox AudioBox-style)*
+
+Fires when a **single tick's size is a statistical outlier** relative to the instrument's
+own recent history.
+
+- Maintains a rolling window of the last `WindowTicks` (default **500**) classified tick volumes.
+- Computes the `BlockPercentile` (default **97th**) of that window.
+- Fires when the current tick's volume ≥ that percentile.
+
+On NQ, 500 ticks ≈ 30 seconds — the same warm-up time users report for AlgoBox AudioBox.
+The percentile adapts automatically: there is no fixed contract count to tune.
+
+### Engine B — Burst  *(TickStrike-style, adaptive)*
+
+Fires when an **unusual number of same-side aggressive ticks** cluster within a short
+time window — capturing machine-gun sweeps that Engine A misses because each individual
+print is small.
+
+- Counts aggressive same-side ticks within the last `BurstWindowMs` (default **1000 ms**).
+- Maintains a rolling 60-second baseline of per-second burst counts.
+- Fires when the current window count ≥ the `BurstPercentile` (default **95th**) of that
+  baseline **and** ≥ `BurstMinTicks` (default **3**).
+- Optional: set `BurstFixedCount > 0` to override the adaptive cutoff with a hard number.
+
+### Engine C — Fixed  *(BigTrade / GomMP-style)*
+
+Fires when a **single tick's volume ≥ a hard user-supplied threshold**.
+
+- `FixedUpThreshold` / `FixedDownThreshold` (default **0 = disabled**).
+- Classic "big trade" alert — no adaptation, no baseline.
+
+---
+
+## Why It Works on Any Instrument Without Tuning
+
+Engines A and B use **rolling percentile baselines** derived from the instrument's own
+recent activity. The 97th percentile of NQ tick sizes is a completely different contract
+count from the 97th percentile of MES or CL tick sizes — but the *same percentile setting*
+identifies similarly "unusual" prints on all of them. The indicator self-calibrates within
+30 seconds of being applied to any market.
+
+Engine C is disabled by default; it is only useful when you have a specific known block
+size for a particular instrument.
+
+---
+
+## Default Property Values
+
+| Group | Property | Default | Description |
+|-------|----------|---------|-------------|
+| **1. Mode** | `Mode` | `Both` | Active engines (BlockOnly / BurstOnly / FixedOnly / Both / All) |
+| | `Mute` | `false` | Suppress all audio without removing the indicator |
+| | `OnlyRTH` | `false` | Silence alerts outside the primary trading session |
+| | `CooldownMs` | `150` | Per-side, per-engine minimum ms between audio triggers |
+| **2. Block Engine** | `WindowTicks` | `500` | Rolling window size (~30 s on NQ) |
+| | `BlockPercentile` | `97` | Percentile threshold for Engine A |
+| **3. Burst Engine** | `BurstWindowMs` | `1000` | Burst measurement window in ms |
+| | `BurstPercentile` | `95` | Adaptive cutoff percentile for Engine B |
+| | `BurstMinTicks` | `3` | Minimum ticks in window before Engine B can fire |
+| | `BurstFixedCount` | `0` | Override adaptive cutoff (0 = adaptive) |
+| **4. Fixed Engine** | `FixedUpThreshold` | `0` | Engine C up-tick size floor (0 = off) |
+| | `FixedDownThreshold` | `0` | Engine C down-tick size floor (0 = off) |
+| **5. Sounds** | `UpSoundFile` | *(empty)* | WAV for Engine A up-tick; fallback for Burst/Fixed Up |
+| | `DownSoundFile` | *(empty)* | WAV for Engine A down-tick; fallback for Burst/Fixed Down |
+| | `BurstUpSoundFile` | *(empty)* | WAV for Engine B up-burst (falls back to `UpSoundFile`) |
+| | `BurstDownSoundFile` | *(empty)* | WAV for Engine B down-burst (falls back to `DownSoundFile`) |
+| | `FixedUpSoundFile` | *(empty)* | WAV for Engine C up-print (falls back to `UpSoundFile`) |
+| | `FixedDownSoundFile` | *(empty)* | WAV for Engine C down-print (falls back to `DownSoundFile`) |
+
+**Critical defaults (never change these):**
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `Calculate` | `OnPriceChange` | Runs on every tick — essential for real-time audio |
+| `IsAutoScale` | `false` | **Must be false** — auto-scale on an overlay can skew the price axis |
+| `IsOverlay` | `true` | Plots sit on the price panel (hidden, diagnostic-only) |
+| `DisplayInDataBox` | `false` | Keeps the data box clean |
+| `DrawOnPricePanel` | `false` | No visual decoration on the chart |
+
+---
+
+## How to Import the Chart Templates
+
+Two chart templates are included in the `Templates/` folder:
+
+| File | Description |
+|------|-------------|
+| `Templates/1_6_AUDIOBOX_LOCAL.xml` | Original template referencing the third-party AlgoBox FlowMaster AudioBox indicator. Requires AlgoBox installed. |
+| `Templates/1_6_SMARTTICKAUDIO.xml` | Drop-in replacement using SmartTickAudio. No third-party required. `IsAutoScale=false` already set. |
+
+**Steps to import:**
+1. In NinjaTrader 8, open a chart.
+2. **File → Open → Chart Template** (or right-click the chart → *Templates → Load*).
+3. Browse to the `Templates/` folder in this repository.
+4. Select `1_6_SMARTTICKAUDIO.xml` and click **Open**.
+5. Open the SmartTickAudio indicator properties (right-click chart → *Indicators* → select SmartTickAudio).
+6. Fill in the **Up Sound File** and **Down Sound File** paths to your preferred WAV files.
+
+---
+
+## Performance Architecture
+
+> NinjaTrader 8 does **not** expose a public GPU compute API for indicators. All rendering
+> and computation in NT8 NinjaScript runs on the .NET CPU thread.
+
+SmartTickAudio achieves high tick-rate performance (NQ, BTC futures) through **CPU-efficient
+data structures** in the hot path:
+
+- **Pre-allocated circular buffers** — O(1) push, O(1) expire per expired entry.  
+  No `List<T>.RemoveAt(0)`, no shifting, no heap allocation after `DataLoaded`.
+
+- **`SortedDictionary<double, int>` value-count map** (Engine A) — O(log n) insert/remove
+  where *n* = number of distinct volume values (far smaller than `WindowTicks`).  
+  The percentile is found by a single O(k) forward walk — no `Array.Sort` on every tick.
+
+- **Small fixed scratch array** (Engine B baseline percentile) — allocated once at
+  `DataLoaded`, reused every time the adaptive burst cutoff is computed (at most once per
+  second per side, on 60 integers).
+
+- **No LINQ, no `string.Format`, no `new` of collections** in `OnMarketData` or
+  `ProcessClassifiedTick`.
+
+- **Level-1 bid/ask cache** — ask and bid prices are captured directly from
+  `MarketDataType.Ask` / `MarketDataType.Bid` events in `OnMarketData` and reused for
+  tick classification, eliminating repeated `GetCurrentAsk()` / `GetCurrentBid()` calls.
+
+---
+
+## Installation
+
+1. Download `Indicators/SmartTickAudio.cs` from this repository.
+2. In NinjaTrader 8: **Tools → Import → NinjaScript Add-On…** → select the file.  
+   The indicator will compile automatically.
+
+**Or manual installation:**
+1. Copy `SmartTickAudio.cs` to `Documents\NinjaTrader 8\bin\Custom\Indicators\`
+2. Open the **NinjaScript Editor** → right-click → **Compile**.
+
+---
+
+## Modes Quick-Reference
+
+| Mode | Engines Active | Best For |
+|------|----------------|----------|
+| `BlockOnly` | A | Replicates AlgoBox AudioBox 1:1 — large single prints |
+| `BurstOnly` | B | Replicates TickStrike-style — sweep detection |
+| `FixedOnly` | C | Replicates BigTrade — hard contract-size floor |
+| `Both` *(default)* | A + B | Broadest coverage, zero configuration |
+| `All` | A + B + C | Full suite — enable C by setting `FixedUpThreshold` / `FixedDownThreshold` |
