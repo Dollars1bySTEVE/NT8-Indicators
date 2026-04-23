@@ -14,6 +14,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Threading;
+using System.Threading.Tasks;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
@@ -60,6 +62,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double _cachedBid = double.NaN;
 
         private SessionIterator _sessionIterator;
+        private CancellationTokenSource _testSoundsCts;
 
         protected override void OnStateChange()
         {
@@ -102,6 +105,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BurstDownSoundFile = @"C:\Program Files\NinjaTrader 8\sounds\Alert4.wav";
                 FixedUpSoundFile   = @"C:\Program Files\NinjaTrader 8\sounds\Alert5.wav";
                 FixedDownSoundFile = @"C:\Program Files\NinjaTrader 8\sounds\Alert6.wav";
+                TestSounds         = false;
             }
             else if (State == State.Configure)
             {
@@ -135,10 +139,62 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _lastFixedUpFire   = _lastFixedDownFire   = 0;
 
                 _sessionIterator = new SessionIterator(Bars);
+
+                if (TestSounds)
+                {
+                    _testSoundsCts = new CancellationTokenSource();
+                    CancellationToken ct = _testSoundsCts.Token;
+                    var sounds = new[]
+                    {
+                        new { Label = "Up",          File = UpSoundFile        },
+                        new { Label = "Down",         File = DownSoundFile      },
+                        new { Label = "Burst Up",     File = BurstUpSoundFile   },
+                        new { Label = "Burst Down",   File = BurstDownSoundFile },
+                        new { Label = "Fixed Up",     File = FixedUpSoundFile   },
+                        new { Label = "Fixed Down",   File = FixedDownSoundFile },
+                    };
+                    Task.Run(async () =>
+                    {
+                        try
+                        {
+                            Print("SmartTickAudio — Sound Test Starting");
+                            foreach (var s in sounds)
+                            {
+                                if (ct.IsCancellationRequested) break;
+                                if (string.IsNullOrEmpty(s.File))
+                                {
+                                    Print(string.Format("  [{0}]  (skipped — no file set)", s.Label));
+                                }
+                                else
+                                {
+                                    Print(string.Format("  [{0}]  {1}", s.Label, s.File));
+                                    try
+                                    {
+                                        PlaySound(s.File);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Print(string.Format("  [{0}]  ERROR: {1}", s.Label, ex.Message));
+                                    }
+                                }
+                                await Task.Delay(750, ct).ConfigureAwait(false);
+                            }
+                            if (!ct.IsCancellationRequested)
+                                Print("SmartTickAudio — Sound Test Complete");
+                        }
+                        catch (OperationCanceledException) { }
+                    }, ct);
+                }
             }
             else if (State == State.Terminated)
             {
                 _sessionIterator = null;
+                if (_testSoundsCts != null)
+                {
+                    _testSoundsCts.Cancel();
+                    _testSoundsCts.Dispose();
+                    _testSoundsCts = null;
+                }
             }
         }
 
@@ -416,5 +472,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Fixed Down Sound File", GroupName = "5. Sounds", Order = 5,
                  Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert6.wav")]
         public string FixedDownSoundFile { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Test Sounds on Load", GroupName = "5. Sounds", Order = 6,
+                 Description = "When true, plays each sound file once in sequence when the indicator loads (no live data needed). Check the NT8 Output window for results. Reset to false after testing.")]
+        public bool TestSounds { get; set; }
     }
 }
