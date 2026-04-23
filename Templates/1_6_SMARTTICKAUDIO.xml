@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NinjaTrader 8 Chart Template — 1_6_SMARTTICKAUDIO
+  ====================================================
+  Drop-in replacement for 1_6_AUDIOBOX_LOCAL.xml using the free, open-source
+  SmartTickAudio indicator (no third-party installation required).
+
+  Changes from the original 1_6_AUDIOBOX_LOCAL template:
+    • Removed  AlgoBoXLOGO_small       (logo overlay — not needed)
+    • Removed  AlgoBoX_ChartLabeler    (chart-label overlay — not needed)
+    • Replaced ALGOBOX__AudioBox  →  SmartTickAudio
+        - IsAutoScale changed from true → false  (prevents price-axis skew)
+        - Same upVolume/downVolume plot names and colours preserved
+        - All SmartTickAudio properties listed with their default values
+        - Sound file paths left empty — fill in your own WAV paths
+
+  HOW TO IMPORT:
+    NinjaTrader 8 → File → Open → Chart Template → browse to this file.
+    Then update the sound-file properties through the indicator dialog.
+-->
+<ChartTemplate>
+  <ChartStyle>
+    <BackColor>Black</BackColor>
+    <BarWidth>2</BarWidth>
+    <Instrument>NQ 12-23 Globex</Instrument>
+  </ChartStyle>
+  <BarsPeriods>
+    <BarsPeriod>
+      <!-- Type=4 = Volumetric bar; Value=5 = 5 ticks per bar; Value2=1 = 1-minute grouping -->
+      <BarsPeriodType>4</BarsPeriodType>
+      <Value>5</Value>
+      <Value2>1</Value2>
+      <MarketDataType>Last</MarketDataType>
+    </BarsPeriod>
+  </BarsPeriods>
+  <ChartPanels>
+    <ChartPanel Index="0" Height="500">
+      <Indicators>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             SmartTickAudio — free drop-in replacement for ALGOBOX__AudioBox
+             No third-party installation required.
+             ═══════════════════════════════════════════════════════════════ -->
+        <Indicator BarsIndex="0"
+                   Instrument="NQ 12-23 Globex"
+                   Name="NinjaTrader.NinjaScript.Indicators.SmartTickAudio"
+                   Panel="-1"
+                   DisplayName="SmartTickAudio">
+          <SmartTickAudio>
+            <!-- Core settings matching the original AudioBox template -->
+            <Calculate>OnPriceChange</Calculate>
+            <IsOverlay>true</IsOverlay>
+            <IsAutoScale>false</IsAutoScale>   <!-- false = no chart-axis skew -->
+            <DisplayInDataBox>false</DisplayInDataBox>
+            <PaintPriceMarkers>false</PaintPriceMarkers>
+            <DrawOnPricePanel>false</DrawOnPricePanel>
+            <MaximumBarsLookBack>TwoHundredFiftySix</MaximumBarsLookBack>
+
+            <!-- Plots — same names/colours as ALGOBOX__AudioBox for downstream compatibility -->
+            <Plots>
+              <Plot>
+                <Name>upVolume</Name>
+                <PlotStyle>Bar</PlotStyle>
+                <Stroke>
+                  <Color>#FF008000</Color>
+                  <Width>2</Width>
+                  <DashStyle>Solid</DashStyle>
+                </Stroke>
+                <AutoWidth>true</AutoWidth>
+              </Plot>
+              <Plot>
+                <Name>downVolume</Name>
+                <PlotStyle>Bar</PlotStyle>
+                <Stroke>
+                  <Color>#FFFF0000</Color>
+                  <Width>2</Width>
+                  <DashStyle>Solid</DashStyle>
+                </Stroke>
+                <AutoWidth>true</AutoWidth>
+              </Plot>
+            </Plots>
+
+            <!-- ── Group 1: Mode ── -->
+            <Mode>Both</Mode>           <!-- BlockOnly | BurstOnly | FixedOnly | Both | All -->
+            <Mute>false</Mute>
+            <OnlyRTH>false</OnlyRTH>
+            <CooldownMs>150</CooldownMs>
+
+            <!-- ── Group 2: Block Engine (Engine A — AlgoBox AudioBox-style) ── -->
+            <WindowTicks>500</WindowTicks>       <!-- ~30 s warm-up on NQ -->
+            <BlockPercentile>97</BlockPercentile>
+
+            <!-- ── Group 3: Burst Engine (Engine B — TickStrike-style, adaptive) ── -->
+            <BurstWindowMs>1000</BurstWindowMs>
+            <BurstPercentile>95</BurstPercentile>
+            <BurstMinTicks>3</BurstMinTicks>
+            <BurstFixedCount>0</BurstFixedCount> <!-- 0 = use adaptive baseline -->
+
+            <!-- ── Group 4: Fixed Engine (Engine C — BigTrade-style) ── -->
+            <FixedUpThreshold>0</FixedUpThreshold>     <!-- 0 = disabled -->
+            <FixedDownThreshold>0</FixedDownThreshold> <!-- 0 = disabled -->
+
+            <!-- ── Group 5: Sounds — fill in your local WAV paths ── -->
+            <!-- Engine A (Block) sounds — play on every block-size outlier tick -->
+            <UpSoundFile></UpSoundFile>
+            <DownSoundFile></DownSoundFile>
+            <!-- Engine B (Burst) sounds — falls back to Up/Down if blank -->
+            <BurstUpSoundFile></BurstUpSoundFile>
+            <BurstDownSoundFile></BurstDownSoundFile>
+            <!-- Engine C (Fixed) sounds — falls back to Up/Down if blank -->
+            <FixedUpSoundFile></FixedUpSoundFile>
+            <FixedDownSoundFile></FixedDownSoundFile>
+          </SmartTickAudio>
+        </Indicator>
+
+      </Indicators>
+    </ChartPanel>
+  </ChartPanels>
+  <ChartTrader>
+    <ShowChartTrader>false</ShowChartTrader>
+  </ChartTrader>
+</ChartTemplate>

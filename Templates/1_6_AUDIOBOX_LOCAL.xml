@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NinjaTrader 8 Chart Template — 1_6_AUDIOBOX_LOCAL
+  ====================================================
+  This template uses the third-party AlgoBox FlowMaster AudioBox indicator.
+  You must have the AlgoBox / FlowMaster package already installed in your
+  NinjaTrader 8 instance for this template to load without errors.
+
+  Reference: the ALGOBOX__AudioBox indicator block below represents the
+  original configuration provided by the user (Volumetric 1-min / 5-tick
+  bar series, OnPriceChange, upVolume/downVolume plots, WAV sound files).
+
+  For a drop-in replacement that requires NO third-party installation,
+  import 1_6_SMARTTICKAUDIO.xml instead.
+-->
+<ChartTemplate>
+  <ChartStyle>
+    <BackColor>Black</BackColor>
+    <BarWidth>2</BarWidth>
+    <Instrument>NQ 12-23 Globex</Instrument>
+  </ChartStyle>
+  <BarsPeriods>
+    <BarsPeriod>
+      <!-- Type=4 = Volumetric bar; Value=5 = 5 ticks per bar; Value2=1 = 1-minute grouping -->
+      <BarsPeriodType>4</BarsPeriodType>
+      <Value>5</Value>
+      <Value2>1</Value2>
+      <MarketDataType>Last</MarketDataType>
+    </BarsPeriod>
+  </BarsPeriods>
+  <ChartPanels>
+    <ChartPanel Index="0" Height="500">
+      <Indicators>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             AlgoBox logo overlay (third-party — requires AlgoBox installed)
+             ═══════════════════════════════════════════════════════════════ -->
+        <Indicator BarsIndex="0"
+                   Instrument="NQ 12-23 Globex"
+                   Name="NinjaTrader.NinjaScript.Indicators.AlgoBoXLOGO_small"
+                   Panel="0"
+                   DisplayName="AlgoBoXLOGO_small">
+          <AlgoBoXLOGO_small>
+            <Calculate>OnBarClose</Calculate>
+            <IsOverlay>true</IsOverlay>
+            <IsAutoScale>false</IsAutoScale>
+          </AlgoBoXLOGO_small>
+        </Indicator>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             AlgoBox chart-labeler overlay (third-party — requires AlgoBox installed)
+             ═══════════════════════════════════════════════════════════════ -->
+        <Indicator BarsIndex="0"
+                   Instrument="NQ 12-23 Globex"
+                   Name="NinjaTrader.NinjaScript.Indicators.AlgoBoX_ChartLabeler"
+                   Panel="0"
+                   DisplayName="AlgoBoX_ChartLabeler">
+          <AlgoBoX_ChartLabeler>
+            <Calculate>OnBarClose</Calculate>
+            <IsOverlay>true</IsOverlay>
+            <IsAutoScale>false</IsAutoScale>
+            <LabelPosition>TopRight</LabelPosition>
+            <LabelFont>Agency FB</LabelFont>
+            <LabelColor>Yellow</LabelColor>
+          </AlgoBoX_ChartLabeler>
+        </Indicator>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             FlowMaster AudioBox — the core audio indicator
+             (third-party — requires AlgoBox / FlowMaster installed)
+             ═══════════════════════════════════════════════════════════════ -->
+        <Indicator BarsIndex="0"
+                   Instrument="NQ 12-23 Globex"
+                   Name="NinjaTrader.NinjaScript.Indicators.ALGOBOX__AudioBox"
+                   Panel="-1"
+                   DisplayName=" &quot;FLOWMASTER_AUDIOBOX CHART&quot;(NQ Futures)">
+          <ALGOBOX__AudioBox>
+            <Calculate>OnPriceChange</Calculate>
+            <IsOverlay>true</IsOverlay>
+            <!-- NOTE: IsAutoScale=true is intentional in the original template.
+                 In 1_6_SMARTTICKAUDIO.xml this is set to false to prevent chart-axis skew. -->
+            <IsAutoScale>true</IsAutoScale>
+            <DisplayInDataBox>false</DisplayInDataBox>
+            <PaintPriceMarkers>false</PaintPriceMarkers>
+            <DrawOnPricePanel>false</DrawOnPricePanel>
+            <MaximumBarsLookBack>TwoHundredFiftySix</MaximumBarsLookBack>
+            <Plots>
+              <Plot>
+                <Name>upVolume</Name>
+                <PlotStyle>Bar</PlotStyle>
+                <Stroke>
+                  <Color>#FF008000</Color>
+                  <Width>2</Width>
+                  <DashStyle>Solid</DashStyle>
+                </Stroke>
+                <AutoWidth>true</AutoWidth>
+              </Plot>
+              <Plot>
+                <Name>downVolume</Name>
+                <PlotStyle>Bar</PlotStyle>
+                <Stroke>
+                  <Color>#FFFF0000</Color>
+                  <Width>2</Width>
+                  <DashStyle>Solid</DashStyle>
+                </Stroke>
+                <AutoWidth>true</AutoWidth>
+              </Plot>
+            </Plots>
+            <!-- Sound file paths — update these to match your local installation -->
+            <upsound>C:\Users\YourUser\Documents\NinjaTrader 8\sounds\Up-DinkER-modified.wav</upsound>
+            <downsound>C:\Users\YourUser\Documents\NinjaTrader 8\sounds\Down-ThumpER-modified.wav</downsound>
+          </ALGOBOX__AudioBox>
+        </Indicator>
+
+      </Indicators>
+    </ChartPanel>
+  </ChartPanels>
+  <ChartTrader>
+    <ShowChartTrader>false</ShowChartTrader>
+  </ChartTrader>
+</ChartTemplate>
