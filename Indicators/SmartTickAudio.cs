@@ -103,12 +103,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 FixedUpThreshold   = 0;
                 FixedDownThreshold = 0;
 
-                UpSoundFile        = string.Empty;
-                DownSoundFile      = string.Empty;
-                BurstUpSoundFile   = string.Empty;
-                BurstDownSoundFile = string.Empty;
-                FixedUpSoundFile   = string.Empty;
-                FixedDownSoundFile = string.Empty;
+                UpSoundFile        = @"C:\Program Files\NinjaTrader 8\sounds\Alert1.wav";
+                DownSoundFile      = @"C:\Program Files\NinjaTrader 8\sounds\Alert2.wav";
+                BurstUpSoundFile   = @"C:\Program Files\NinjaTrader 8\sounds\Alert3.wav";
+                BurstDownSoundFile = @"C:\Program Files\NinjaTrader 8\sounds\Alert4.wav";
+                FixedUpSoundFile   = @"C:\Program Files\NinjaTrader 8\sounds\Alert5.wav";
+                FixedDownSoundFile = @"C:\Program Files\NinjaTrader 8\sounds\Alert6.wav";
 
                 AddPlot(new Stroke(Brushes.Green, 2), PlotStyle.Bar, "upVolume");
                 AddPlot(new Stroke(Brushes.Red,   2), PlotStyle.Bar, "downVolume");
@@ -419,39 +419,33 @@ namespace NinjaTrader.NinjaScript.Indicators
         public double FixedDownThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(typeof(NinjaTrader.Gui.Tools.SoundFileEditor))]
         [Display(Name = "Up Sound File", GroupName = "5. Sounds", Order = 0,
-                 Description = "WAV for Engine A up-tick (block buy). Fallback for Burst Up and Fixed Up.")]
+                 Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert1.wav")]
         public string UpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(typeof(NinjaTrader.Gui.Tools.SoundFileEditor))]
         [Display(Name = "Down Sound File", GroupName = "5. Sounds", Order = 1,
-                 Description = "WAV for Engine A down-tick (block sell). Fallback for Burst Down and Fixed Down.")]
+                 Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert2.wav")]
         public string DownSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(typeof(NinjaTrader.Gui.Tools.SoundFileEditor))]
         [Display(Name = "Burst Up Sound File", GroupName = "5. Sounds", Order = 2,
-                 Description = "WAV for Engine B up-burst. Falls back to Up Sound File when blank.")]
+                 Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert3.wav")]
         public string BurstUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(typeof(NinjaTrader.Gui.Tools.SoundFileEditor))]
         [Display(Name = "Burst Down Sound File", GroupName = "5. Sounds", Order = 3,
-                 Description = "WAV for Engine B down-burst. Falls back to Down Sound File when blank.")]
+                 Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert4.wav")]
         public string BurstDownSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(typeof(NinjaTrader.Gui.Tools.SoundFileEditor))]
         [Display(Name = "Fixed Up Sound File", GroupName = "5. Sounds", Order = 4,
-                 Description = "WAV for Engine C up fixed-size print. Falls back to Up Sound File when blank.")]
+                 Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert5.wav")]
         public string FixedUpSoundFile { get; set; }
 
         [NinjaScriptProperty]
-        [PropertyEditor(typeof(NinjaTrader.Gui.Tools.SoundFileEditor))]
         [Display(Name = "Fixed Down Sound File", GroupName = "5. Sounds", Order = 5,
-                 Description = "WAV for Engine C down fixed-size print. Falls back to Down Sound File when blank.")]
+                 Description = "WAV file path. Example: C:\\Program Files\\NinjaTrader 8\\sounds\\Alert6.wav")]
         public string FixedDownSoundFile { get; set; }
     }
 }
