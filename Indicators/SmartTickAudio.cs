@@ -1,5 +1,4 @@
 // SmartTickAudio — Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8.
-//
 // Combines three detection engines:
 //   Engine A, adaptive single-print size outlier
 //   Engine B, adaptive same-side burst sweep
@@ -69,8 +68,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (State == State.SetDefaults)
             {
                 Description              = "Audio-only, self-calibrating order-flow alert. "
-                                         + "Combines AlgoBox AudioBox-style block detection (Engine A), "
-                                         + "TickStrike-style adaptive burst detection (Engine B), "
+                                         + "Block detection (Engine A), "
+                                         + "Adaptive burst detection (Engine B), "
                                          + "and BigTrade-style fixed threshold (Engine C). "
                                          + "Works on any instrument with no per-market tuning.";
                 Name                     = "SmartTickAudio";
