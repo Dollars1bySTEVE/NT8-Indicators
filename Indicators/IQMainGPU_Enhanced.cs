@@ -329,6 +329,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxEnhDashWarningBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxEnhDashGreenBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxEnhDashRedBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxEnhDashNeutralBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxEntryLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxStopLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxTargetLineBrush;
@@ -3836,19 +3837,61 @@ namespace NinjaTrader.NinjaScript.Indicators
             return "Off-Hours";
         }
 
-        /// <summary>Return a volume bar visualization string showing buy vs sell ratio.</summary>
-        private string GetVolumeStatus()
+        /// <summary>Draw a graphical volume bar representing the buy/sell ratio.</summary>
+        private void DrawVolumeBar(SharpDX.Direct2D1.RenderTarget rt,
+            float x, float y, float width, float height,
+            double buyVolume, double sellVolume)
         {
-            if (snapshots == null || snapshots.Count == 0) return "[          ] N/A";
-            var snap = snapshots[snapshots.Count - 1];
-            double total = snap.BuyVolume + snap.SellVolume;
-            if (total <= 0) return "[          ] N/A";
+            if (rt == null) return;
 
-            double pct  = snap.BuyVolume / total;
-            int    bars = (int)Math.Round(pct * 10);
-            string fill = new string('\u2588', bars) + new string('\u2591', 10 - bars);
-            string dir  = pct > 0.55 ? "BUY" : pct < 0.45 ? "SELL" : "NEUTRAL";
-            return string.Format("[{0}] {1} {2:F0}%", fill, dir, pct * 100.0);
+            double totalVolume = buyVolume + sellVolume;
+            if (totalVolume <= 0) return;
+
+            float bullishRatio = (float)(buyVolume / totalVolume);
+            float filledWidth  = width * bullishRatio;
+
+            SharpDX.Direct2D1.SolidColorBrush fillBrush;
+            string statusLabel;
+
+            if (bullishRatio > 0.55f)
+            {
+                fillBrush   = dxEnhDashGreenBrush;
+                statusLabel = "BULLISH";
+            }
+            else if (bullishRatio < 0.45f)
+            {
+                fillBrush   = dxEnhDashRedBrush;
+                statusLabel = "BEARISH";
+            }
+            else
+            {
+                fillBrush   = dxEnhDashNeutralBrush;
+                statusLabel = "NEUTRAL";
+            }
+
+            // Draw background (full bar in gray)
+            if (dxEnhDashNeutralBrush != null)
+                rt.FillRectangle(new SharpDX.RectangleF(x, y, width, height), dxEnhDashNeutralBrush);
+
+            // Draw filled portion (buy volume ratio)
+            if (filledWidth > 0 && fillBrush != null)
+                rt.FillRectangle(new SharpDX.RectangleF(x, y, filledWidth, height), fillBrush);
+
+            // Draw border
+            if (dxEnhDashTextBrush != null)
+                rt.DrawRectangle(new SharpDX.RectangleF(x, y, width, height), dxEnhDashTextBrush, 1f);
+
+            // Draw percentage and status label to the right of the bar
+            if (dxEnhMonFormat != null && dxEnhDashTextBrush != null)
+            {
+                const float LabelSpacing     = 8f;   // px gap between bar right edge and label
+                const float LabelVertOffset  = -2f;  // slight upward nudge to align label with bar centre
+                const float LabelMaxWidth    = 120f; // max width of "100% BEARISH" text
+                string barLabel = string.Format("{0:F0}% {1}", bullishRatio * 100f, statusLabel);
+                rt.DrawText(barLabel, dxEnhMonFormat,
+                    new SharpDX.RectangleF(x + width + LabelSpacing, y + LabelVertOffset, LabelMaxWidth, height + 4f),
+                    dxEnhDashTextBrush);
+            }
         }
 
         /// <summary>Returns true when London, NY, EU Brinks, or US Brinks session is active.</summary>
@@ -4090,7 +4133,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             float       panelW = 420f;
 
             string session    = GetActiveSessionName();
-            string volStatus  = GetVolumeStatus();
 
             string vwapStatus = "VWAP: N/A";
             if (vwapEthData != null && vwapEthData.Count > 0 && CurrentBar >= 50)
@@ -4123,7 +4165,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 string.Format("Session: {0}  ({1})", session,
                     IsHighParticipationSession() ? "High Participation" : "Low Participation"),
                 rangeInfo,
-                "Volume:  " + volStatus,
+                "Volume:",
                 vwapStatus,
                 zoneInfo
             };
@@ -4155,8 +4197,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float ty    = panelY + PadY;
             bool  first = true;
+            float volumeBarY = -1f;
             foreach (string line in lines)
             {
+                if (line == "Volume:")
+                    volumeBarY = ty;
+
                 SharpDX.Direct2D1.SolidColorBrush brush;
                 if      (first)                                            brush = dxEnhDashHeaderBrush  ?? dxEnhDashTextBrush;
                 else if (line.Contains("\u26a0") || line.Contains("["))   brush = dxEnhDashWarningBrush ?? dxEnhDashTextBrush;
@@ -4168,6 +4214,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 ty += lineH;
                 first = false;
+            }
+
+            // Draw graphical volume bar on the "Volume:" line
+            if (volumeBarY >= 0)
+            {
+                const float BarWidth  = 120f;
+                const float BarHeight = 12f;
+                const int   VolumeLabelChars = 8; // character count of "Volume: "
+                float labelW = MonitoringDashboardFontSize * 0.60f * VolumeLabelChars;
+                float barX   = panelX + PadX + labelW;
+                float barY   = volumeBarY + (lineH - BarHeight) / 2f;
+                DrawVolumeBar(rt, barX, barY, BarWidth, BarHeight, sessionBuyVol, sessionSellVol);
             }
         }
 
@@ -5532,6 +5590,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     new SharpDX.Color4(0.20f, 0.90f, 0.30f, 1f));
                 dxEnhDashRedBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(0.95f, 0.20f, 0.20f, 1f));
+                dxEnhDashNeutralBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(0.50f, 0.50f, 0.50f, 0.80f));
                 dxEntryLineBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(1f, 1f, 1f, 0.85f));
                 dxStopLineBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
@@ -5647,6 +5707,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxEnhDashWarningBrush);
             DisposeRef(ref dxEnhDashGreenBrush);
             DisposeRef(ref dxEnhDashRedBrush);
+            DisposeRef(ref dxEnhDashNeutralBrush);
             DisposeRef(ref dxEntryLineBrush);
             DisposeRef(ref dxStopLineBrush);
             DisposeRef(ref dxTargetLineBrush);
