@@ -3884,9 +3884,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Draw percentage and status label to the right of the bar
             if (dxEnhMonFormat != null && dxEnhDashTextBrush != null)
             {
+                const float LabelSpacing     = 8f;   // px gap between bar right edge and label
+                const float LabelVertOffset  = -2f;  // slight upward nudge to align label with bar centre
+                const float LabelMaxWidth    = 120f; // max width of "100% BEARISH" text
                 string barLabel = string.Format("{0:F0}% {1}", bullishRatio * 100f, statusLabel);
                 rt.DrawText(barLabel, dxEnhMonFormat,
-                    new SharpDX.RectangleF(x + width + 8f, y - 2f, 120f, height + 4f),
+                    new SharpDX.RectangleF(x + width + LabelSpacing, y + LabelVertOffset, LabelMaxWidth, height + 4f),
                     dxEnhDashTextBrush);
             }
         }
@@ -4218,7 +4221,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 const float BarWidth  = 120f;
                 const float BarHeight = 12f;
-                float labelW = MonitoringDashboardFontSize * 0.60f * 8f; // approx width of "Volume: "
+                const int   VolumeLabelChars = 8; // character count of "Volume: "
+                float labelW = MonitoringDashboardFontSize * 0.60f * VolumeLabelChars;
                 float barX   = panelX + PadX + labelW;
                 float barY   = volumeBarY + (lineH - BarHeight) / 2f;
                 DrawVolumeBar(rt, barX, barY, BarWidth, BarHeight, sessionBuyVol, sessionSellVol);
