@@ -4007,7 +4007,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX   = 10f;
             const float PadY   = 8f;
-            float       lineH  = EntryModeDashboardFontSize + 5f;
+            float       lineH  = EntryModeDashboardFontSize + 8f;
             float       panelW = 380f;
 
             double rr = 0;
@@ -4035,10 +4035,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
             {
+                lines.Add(""); // section separator — adds visual gap before alerts
+                float usableW = panelW - PadX * 2;
                 foreach (string part in dashboardConflictText.Split('\n'))
                 {
                     string trimmed = part.TrimEnd('\r');
-                    if (!string.IsNullOrEmpty(trimmed)) lines.Add(trimmed);
+                    if (string.IsNullOrEmpty(trimmed)) continue;
+                    foreach (string wrapped in WrapTextToLines(trimmed, usableW, EntryModeDashboardFontSize))
+                        lines.Add(wrapped);
                 }
             }
 
@@ -4065,7 +4069,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (line.StartsWith("Stop"))                          brush = dxEnhDashRedBrush     ?? dxEnhDashTextBrush;
                 else                                                       brush = dxEnhDashTextBrush;
 
-                if (brush != null)
+                if (brush != null && !string.IsNullOrEmpty(line))
                     rt.DrawText(line, dxEnhDashFormat,
                         new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
 
@@ -4082,7 +4086,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX   = 10f;
             const float PadY   = 8f;
-            float       lineH  = MonitoringDashboardFontSize + 5f;
+            float       lineH  = MonitoringDashboardFontSize + 8f;
             float       panelW = 420f;
 
             string session    = GetActiveSessionName();
@@ -4126,10 +4130,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
             {
+                lines.Add(""); // section separator — adds visual gap before alerts
+                float usableW = panelW - PadX * 2;
                 foreach (string part in dashboardConflictText.Split('\n'))
                 {
                     string trimmed = part.TrimEnd('\r');
-                    if (!string.IsNullOrEmpty(trimmed)) lines.Add(trimmed);
+                    if (string.IsNullOrEmpty(trimmed)) continue;
+                    foreach (string wrapped in WrapTextToLines(trimmed, usableW, MonitoringDashboardFontSize))
+                        lines.Add(wrapped);
                 }
             }
 
@@ -4154,7 +4162,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (line.Contains("\u26a0") || line.Contains("["))   brush = dxEnhDashWarningBrush ?? dxEnhDashTextBrush;
                 else                                                       brush = dxEnhDashTextBrush;
 
-                if (brush != null)
+                if (brush != null && !string.IsNullOrEmpty(line))
                     rt.DrawText(line, dxEnhMonFormat,
                         new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
 
@@ -4196,7 +4204,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX   = 8f;
             const float PadY   = 6f;
-            float       lineH  = MainDashboardFontSize + 5f;
+            float       lineH  = MainDashboardFontSize + 8f;
             float       panelW = 420f;
 
             string activeSessName = "—";
@@ -4257,6 +4265,43 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ty += lineH;
                 first = false;
             }
+        }
+
+        /// <summary>Split a single text line into multiple display lines that each fit within
+        /// <paramref name="usableWidth"/> pixels, using Consolas character-width approximation
+        /// (charWidth ≈ fontSize * 0.60). Minimum 20 chars per line to prevent degenerate output.</summary>
+        private static List<string> WrapTextToLines(string text, float usableWidth, float fontSize)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(text)) return result;
+
+            int charsPerLine = Math.Max(20, (int)(usableWidth / (fontSize * 0.60f))); // 0.60f: Consolas char width ≈ 60% of font size; 20: minimum to prevent degenerate single-word-per-line output
+            string[] words   = text.Split(' ');
+            var currentLine  = new System.Text.StringBuilder();
+
+            foreach (string word in words)
+            {
+                if (currentLine.Length == 0)
+                {
+                    currentLine.Append(word);
+                }
+                else if (currentLine.Length + 1 + word.Length <= charsPerLine)
+                {
+                    currentLine.Append(' ');
+                    currentLine.Append(word);
+                }
+                else
+                {
+                    result.Add(currentLine.ToString());
+                    currentLine.Clear();
+                    currentLine.Append(word);
+                }
+            }
+
+            if (currentLine.Length > 0)
+                result.Add(currentLine.ToString());
+
+            return result;
         }
 
         #endregion
