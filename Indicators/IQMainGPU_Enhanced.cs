@@ -3286,18 +3286,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Clamps ty so the panel stays within render area with proper buffer for time axis.
-        /// Also clamps tableW to fit within the render area, returned via clampedW.</summary>
+        /// Also clamps tableW to fit within the render area (minimum TableMinWidth), returned via clampedW.</summary>
         private static float ClampTableY(float ty, float tableH, float rtH, float tableW, float rtW, out float clampedW)
         {
             float chartBottom = rtH - TableTimeAxisBuffer;
 
-            // Clamp width to available horizontal space
-            clampedW = Math.Min(tableW, rtW - TableEdgePadding * 2);
-
-            // Clamp height if it would exceed available space
-            float maxH = chartBottom - ty - TableEdgePadding;
-            if (tableH > maxH && maxH > TableMinHeight)
-                tableH = maxH;
+            // Clamp width to available horizontal space, never below the minimum
+            clampedW = Math.Max(TableMinWidth, Math.Min(tableW, rtW - TableEdgePadding * 2));
 
             // Ensure panel doesn't go below time axis
             if (ty + tableH > chartBottom)
