@@ -314,6 +314,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool   dashboardConflictDetected;
         private string dashboardConflictText   = "";
 
+        // Severity tag constants used in VeryDetailed conflict descriptions
+        private const string SeverityCritical = "[CRITICAL]";
+        private const string SeverityHigh     = "[HIGH]";
+        private const string SeverityModerate = "[MODERATE]";
+
+        // Session IDs considered high-participation (London=0, NewYork=1, EuBrinks=5, UsBrinks=6)
+        private static readonly int[] HighParticipationSessionIds = { 0, 1, 5, 6 };
+
         // SharpDX resources for the new Enhanced dashboard panels
         private SharpDX.Direct2D1.SolidColorBrush dxEnhDashBgBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxEnhDashTextBrush;
@@ -3793,8 +3801,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool IsHighParticipationSession()
         {
             if (activeSessions == null) return false;
-            int[] ids = { 0, 1, 5, 6 };
-            foreach (int id in ids)
+            foreach (int id in HighParticipationSessionIds)
             {
                 if (activeSessions[id] != null && !activeSessions[id].IsComplete)
                     return true;
@@ -3833,7 +3840,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         parts.AppendLine("\u26a0 VOLUME BULLISH BUT PRICE BELOW VWAP (Exhaustion Risk)");
                         break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine("[HIGH] VOLUME BULLISH BUT PRICE BELOW VWAP");
+                        parts.AppendLine(SeverityHigh + " VOLUME BULLISH BUT PRICE BELOW VWAP");
                         parts.AppendLine("  \u2192 Possible exhaustion or accumulation phase");
                         break;
                 }
@@ -3850,7 +3857,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         parts.AppendLine("\u26a0 VOLUME BEARISH BUT PRICE ABOVE VWAP (Distribution Risk)");
                         break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine("[HIGH] VOLUME BEARISH BUT PRICE ABOVE VWAP");
+                        parts.AppendLine(SeverityHigh + " VOLUME BEARISH BUT PRICE ABOVE VWAP");
                         parts.AppendLine("  \u2192 Possible distribution or reversal setup");
                         break;
                 }
@@ -3869,7 +3876,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         parts.AppendLine("\u26a0 FAKE BREAKOUT DETECTED (High-Risk Entry)");
                         break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine("[CRITICAL] FAKE BREAKOUT DETECTED");
+                        parts.AppendLine(SeverityCritical + " FAKE BREAKOUT DETECTED");
                         parts.AppendLine("  \u2192 Avoid entries — wait for confirmation close");
                         break;
                 }
@@ -3888,7 +3895,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         parts.AppendLine("\u26a0 LOW PARTICIPATION SESSION (Thin Market)");
                         break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine("[MODERATE] LOW PARTICIPATION SESSION");
+                        parts.AppendLine(SeverityModerate + " LOW PARTICIPATION SESSION");
                         parts.AppendLine("  \u2192 Off-hours: fills may be poor, spread elevated");
                         break;
                 }
@@ -3939,7 +3946,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             var lines = new List<string>
             {
-                string.Format("IQMainGPU Enhanced  [{0}]", AssetClass.ToString().ToUpper()),
+                string.Format("IQMainGPU Enhanced [{0}]", AssetClass.ToString().ToUpper()),
                 string.Format("Signal:     {0}", dashboardPrimarySignal),
                 string.Format("Confidence: {0}%", dashboardConfidence),
                 string.Format("Entry:      {0}", Instrument.MasterInstrument.FormatPrice(dashboardEntryPrice)),
@@ -4031,7 +4038,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             var lines = new List<string>
             {
-                string.Format("IQMainGPU Enhanced  [{0}]  Monitoring", AssetClass.ToString().ToUpper()),
+                string.Format("IQMainGPU Enhanced [{0}]  Monitoring", AssetClass.ToString().ToUpper()),
                 string.Format("Session: {0}  ({1})", session,
                     IsHighParticipationSession() ? "High Participation" : "Low Participation"),
                 rangeInfo,
@@ -4124,7 +4131,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             string assetTag = AssetClass.ToString().ToUpper();
             string[] lines = {
-                string.Format("IQMainGPU Enhanced  [{0}]  Session: {1} [FullDetail]", assetTag, activeSessName),
+                string.Format("IQMainGPU Enhanced [{0}]  Session: {1} [FullDetail]", assetTag, activeSessName),
                 dashLine2,
                 dashLine3,
                 dashLine4,
