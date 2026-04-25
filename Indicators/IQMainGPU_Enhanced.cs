@@ -1,7 +1,8 @@
 // IQMainGPU_Enhanced — Standalone enhanced version of IQMainGPU for NinjaTrader 8.
-// Includes ALL features from IQMainGPU plus a new intelligent multi-mode dashboard system.
+// Includes ALL features from IQMainGPU plus 3 fully independent dashboard panels.
 // Original: IQMainGPU (unchanged). This file is a standalone alternative.
-// New features: Entry Mode dashboard, Monitoring Mode dashboard, conflict detection,
+// New features: Main Dashboard, Monitoring Dashboard, Entry Mode Dashboard — each independently
+//               toggleable, positionable (7 options), and font-sized. Conflict detection,
 //               dynamic stop/target calculation, stop/target chart lines.
 
 #region Using declarations
@@ -31,11 +32,10 @@ using NinjaTrader.NinjaScript.DrawingTools;
 // both are compiled together into a single assembly.
 
 // ── New enums exclusive to IQMainGPU_Enhanced ───────────────────────────────
-/// <summary>Multi-mode dashboard selection for IQMainGPU_Enhanced.</summary>
-public enum DashboardModeType { Hidden, EntryMode, MonitoringMode, FullDetail }
 
-/// <summary>Chart-corner anchor for Enhanced dashboard panels (independent of IQMDashboardPosition).</summary>
-public enum DashboardPositionType { TopLeft, TopRight, BottomLeft, BottomRight }
+/// <summary>Position/visibility anchor for independent dashboard panels in IQMainGPU_Enhanced.
+/// Hidden = panel disabled. CenterTop/CenterBottom = horizontally centred at top/bottom.</summary>
+public enum DashboardPositionType { Hidden, TopLeft, TopRight, BottomLeft, BottomRight, CenterTop, CenterBottom }
 
 /// <summary>Algorithm used to calculate the stop-loss price in Entry Mode.</summary>
 public enum StopPlacementMode { AutoDetected, PivotBased, HVNBased, ManualInput }
@@ -50,16 +50,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
     /// IQMainGPU_Enhanced — Standalone enhanced version of IQMainGPU.
-    /// Contains ALL features from IQMainGPU plus a new intelligent multi-mode dashboard system.
+    /// Contains ALL features from IQMainGPU plus 3 fully independent dashboard panels.
     ///
-    /// New Features (group 16. Enhanced Dashboard):
-    ///  • 4 display modes: Hidden | EntryMode | MonitoringMode | FullDetail
-    ///  • Entry Mode: trade setup dashboard (signal, confidence, entry/stop/target, R/R)
-    ///  • Monitoring Mode: compact market health view (range, session, volume, VWAP vs EMA50)
-    ///  • FullDetail Mode: original IQMainGPU dashboard (unchanged)
+    /// New Features (group 16. Dashboards):
+    ///  • Main Dashboard: original stats (buy/sell vol, delta, signals, ADR, session) — TopLeft by default
+    ///  • Monitoring Dashboard: compact market health (range, session, volume, VWAP vs EMA50) — BottomLeft
+    ///  • Entry Mode Dashboard: trade setup (signal, confidence, entry/stop/target, R/R) — BottomRight
+    ///  • Each dashboard: independently toggleable, positionable (7 options incl. Hidden/CenterTop/CenterBottom), font-sized
     ///  • Auto-calculated stop (AutoDetected/PivotBased/HVNBased/ManualInput)
     ///  • Auto-calculated target (AutoDetected/PivotR1/PivotR2/ManualInput)
-    ///  • Optional stop/entry/target lines drawn on chart
+    ///  • Optional stop/entry/target lines drawn on chart (Entry Mode)
     ///  • Conflict detection (volume vs price, fake breakouts, low participation)
     ///  • Auto-fitting conflict descriptions (Brief/Detailed/VeryDetailed)
     /// </summary>
@@ -332,6 +332,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxEntryLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxStopLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxTargetLineBrush;
+        private SharpDX.DirectWrite.TextFormat     dxMainDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhMonFormat;
 
@@ -1675,76 +1676,102 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
-        #region Parameters — 16. Enhanced Dashboard
+        #region Parameters — 16. Dashboards
+
+        // ── Main Dashboard (original stats) ──────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show Main Dashboard", Order = 1, GroupName = "16. Dashboards",
+            Description = "Show the Main Dashboard (original IQMainGPU stats: buy/sell volume, delta, signals, ADR, session).")]
+        public bool ShowMainDashboard { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Dashboard (Master)", Order = 0, GroupName = "16. Enhanced Dashboard",
-            Description = "Master switch for all Enhanced Dashboard modes. Set to false to hide all dashboards.")]
-        public bool EnableDashboardMaster { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Dashboard Mode", Order = 1, GroupName = "16. Enhanced Dashboard",
-            Description = "Hidden = disabled. EntryMode = focused trade setup view. MonitoringMode = compact market health view. FullDetail = original IQMainGPU dashboard.")]
-        public DashboardModeType EnhancedDashboardMode { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Entry Mode Position", Order = 2, GroupName = "16. Enhanced Dashboard",
-            Description = "Chart corner for the Entry Mode dashboard panel.")]
-        public DashboardPositionType EntryModePosition { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(12, 20)]
-        [Display(Name = "Entry Mode Font Size", Order = 3, GroupName = "16. Enhanced Dashboard",
-            Description = "Font size for Entry Mode dashboard text (12-20pt).")]
-        public int EntryModeFontSize { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Monitoring Mode Position", Order = 4, GroupName = "16. Enhanced Dashboard",
-            Description = "Chart corner for the Monitoring Mode dashboard panel (independent of Entry Mode position).")]
-        public DashboardPositionType MonitoringModePosition { get; set; }
+        [Display(Name = "Main Dashboard Position", Order = 2, GroupName = "16. Dashboards",
+            Description = "Position of the Main Dashboard. Hidden = disabled. CenterTop/CenterBottom = horizontally centred.")]
+        public DashboardPositionType MainDashboardPosition { get; set; }
 
         [NinjaScriptProperty]
         [Range(10, 16)]
-        [Display(Name = "Monitoring Mode Font Size", Order = 5, GroupName = "16. Enhanced Dashboard",
-            Description = "Font size for Monitoring Mode dashboard text (10-16pt).")]
-        public int MonitoringModeFontSize { get; set; }
+        [Display(Name = "Main Dashboard Font Size", Order = 3, GroupName = "16. Dashboards",
+            Description = "Font size for Main Dashboard text (10-16pt).")]
+        public int MainDashboardFontSize { get; set; }
+
+        // ── Monitoring Dashboard (market health) ─────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show Monitoring Dashboard", Order = 4, GroupName = "16. Dashboards",
+            Description = "Show the Monitoring Dashboard (range, session, volume, VWAP vs EMA50, liquidity zones, conflict warnings).")]
+        public bool ShowMonitoringDashboard { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Stop Placement Mode", Order = 6, GroupName = "16. Enhanced Dashboard",
+        [Display(Name = "Monitoring Dashboard Position", Order = 5, GroupName = "16. Dashboards",
+            Description = "Position of the Monitoring Dashboard (independent of other dashboards). Hidden = disabled.")]
+        public DashboardPositionType MonitoringDashboardPosition { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 16)]
+        [Display(Name = "Monitoring Dashboard Font Size", Order = 6, GroupName = "16. Dashboards",
+            Description = "Font size for Monitoring Dashboard text (10-16pt).")]
+        public int MonitoringDashboardFontSize { get; set; }
+
+        // ── Entry Mode Dashboard (trade setup) ───────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show Entry Mode Dashboard", Order = 7, GroupName = "16. Dashboards",
+            Description = "Show the Entry Mode Dashboard (signal, confidence, entry/stop/target, R/R ratio).")]
+        public bool ShowEntryModeDashboard { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Entry Mode Dashboard Position", Order = 8, GroupName = "16. Dashboards",
+            Description = "Position of the Entry Mode Dashboard (independent of other dashboards). Hidden = disabled.")]
+        public DashboardPositionType EntryModeDashboardPosition { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(12, 20)]
+        [Display(Name = "Entry Mode Dashboard Font Size", Order = 9, GroupName = "16. Dashboards",
+            Description = "Font size for Entry Mode Dashboard text (12-20pt).")]
+        public int EntryModeDashboardFontSize { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Stop/Target Lines", Order = 10, GroupName = "16. Dashboards",
+            Description = "Draw horizontal lines on chart: white solid = entry, red dashed = stop, green dashed = target (Entry Mode only).")]
+        public bool ShowStopTargetLines { get; set; }
+
+        // ── Shared Dashboard Settings ─────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Show Conflict Warnings", Order = 11, GroupName = "16. Dashboards",
+            Description = "Show warnings when volume direction conflicts with price, fake breakouts are detected, or session participation is low.")]
+        public bool ShowConflictWarnings { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Conflict Description Level", Order = 12, GroupName = "16. Dashboards",
+            Description = "Brief = '⚠ Conflict detected'. Detailed = describes the conflict. VeryDetailed = includes severity level [CRITICAL/HIGH/MODERATE].")]
+        public ConflictDescriptionLevel ConflictLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Dashboard Opacity %", Order = 13, GroupName = "16. Dashboards",
+            Description = "Background opacity for all three dashboards (1-100%).")]
+        public int DashboardOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Stop Placement Mode", Order = 14, GroupName = "16. Dashboards",
             Description = "AutoDetected = liquidity zones → pivot S1 → swings. PivotBased = always pivot S1. HVNBased = highest SR level below price. ManualInput = Stop Distance ticks.")]
         public StopPlacementMode StopMode { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Stop Distance (ticks)", Order = 7, GroupName = "16. Enhanced Dashboard",
+        [Display(Name = "Stop Distance (ticks)", Order = 15, GroupName = "16. Dashboards",
             Description = "Stop distance in ticks used when StopMode = ManualInput (or as fallback).")]
         public int StopDistanceTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Target Placement Mode", Order = 8, GroupName = "16. Enhanced Dashboard",
+        [Display(Name = "Target Placement Mode", Order = 16, GroupName = "16. Dashboards",
             Description = "AutoDetected = pivot R1/R2. PivotR1 = always R1. PivotR2 = always R2. ManualInput = Target Distance ticks.")]
         public TargetPlacementMode TargetMode { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Target Distance (ticks)", Order = 9, GroupName = "16. Enhanced Dashboard",
+        [Display(Name = "Target Distance (ticks)", Order = 17, GroupName = "16. Dashboards",
             Description = "Target distance in ticks used when TargetMode = ManualInput (or as fallback).")]
         public int TargetDistanceTicks { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Draw Stop/Target Lines", Order = 10, GroupName = "16. Enhanced Dashboard",
-            Description = "Draw horizontal lines on chart: white solid = entry, red dashed = stop, green dashed = target (Entry Mode only).")]
-        public bool DrawStopTargetLines { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Conflict Warnings", Order = 11, GroupName = "16. Enhanced Dashboard",
-            Description = "Show warnings when volume direction conflicts with price, fake breakouts are detected, or session participation is low.")]
-        public bool ShowConflictWarnings { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Conflict Description Level", Order = 12, GroupName = "16. Enhanced Dashboard",
-            Description = "Brief = '⚠ Conflict detected'. Detailed = describes the conflict. VeryDetailed = includes severity level [CRITICAL/HIGH/MODERATE].")]
-        public ConflictDescriptionLevel ConflictLevel { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -2077,20 +2104,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowOTELabels      = true;
                 OTELabelPrefix     = "OTE";
 
-                // 16. Enhanced Dashboard
-                EnableDashboardMaster      = true;
-                EnhancedDashboardMode  = DashboardModeType.MonitoringMode;
-                EntryModePosition      = DashboardPositionType.TopLeft;
-                EntryModeFontSize      = 14;
-                MonitoringModePosition = DashboardPositionType.BottomLeft;
-                MonitoringModeFontSize = 11;
+                // 16. Dashboards — Main Dashboard (original stats)
+                ShowMainDashboard          = true;
+                MainDashboardPosition      = DashboardPositionType.TopLeft;
+                MainDashboardFontSize      = 11;
+
+                // 16. Dashboards — Monitoring Dashboard (market health)
+                ShowMonitoringDashboard    = true;
+                MonitoringDashboardPosition = DashboardPositionType.BottomLeft;
+                MonitoringDashboardFontSize = 11;
+
+                // 16. Dashboards — Entry Mode Dashboard (trade setup)
+                ShowEntryModeDashboard     = true;
+                EntryModeDashboardPosition = DashboardPositionType.BottomRight;
+                EntryModeDashboardFontSize = 14;
+                ShowStopTargetLines        = true;
+
+                // 16. Dashboards — Shared settings
+                ShowConflictWarnings   = true;
+                ConflictLevel          = ConflictDescriptionLevel.Detailed;
+                DashboardOpacity       = 80;
                 StopMode               = StopPlacementMode.AutoDetected;
                 StopDistanceTicks      = 10;
                 TargetMode             = TargetPlacementMode.AutoDetected;
                 TargetDistanceTicks    = 20;
-                DrawStopTargetLines    = true;
-                ShowConflictWarnings   = true;
-                ConflictLevel          = ConflictDescriptionLevel.Detailed;
             }
             else if (State == State.Configure)
             {
@@ -3628,29 +3665,23 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
-            if (!EnableDashboardMaster) return;
+            // Calculate metrics once if any metric-dependent dashboard is visible
+            bool needMetrics =
+                (ShowMonitoringDashboard && MonitoringDashboardPosition != DashboardPositionType.Hidden) ||
+                (ShowEntryModeDashboard  && EntryModeDashboardPosition  != DashboardPositionType.Hidden);
+            if (needMetrics) CalculateDashboardMetrics();
 
-            // Dispatcher: routes to the correct dashboard based on EnhancedDashboardMode
-            switch (EnhancedDashboardMode)
+            // Each dashboard renders independently based on its own Show flag and Position
+            if (ShowMainDashboard && MainDashboardPosition != DashboardPositionType.Hidden)
+                RenderMainDashboard(cc, cs, rtW, rtH);
+
+            if (ShowMonitoringDashboard && MonitoringDashboardPosition != DashboardPositionType.Hidden)
+                RenderMonitoringDashboard(cc, cs, rtW, rtH);
+
+            if (ShowEntryModeDashboard && EntryModeDashboardPosition != DashboardPositionType.Hidden)
             {
-                case DashboardModeType.Hidden:
-                    return;
-
-                case DashboardModeType.EntryMode:
-                    CalculateDashboardMetrics();
-                    RenderEntryModeDashboard(cc, cs, rtW, rtH);
-                    if (DrawStopTargetLines) DrawStopTargetLinesOnChart(cc, cs);
-                    return;
-
-                case DashboardModeType.MonitoringMode:
-                    CalculateDashboardMetrics();
-                    RenderMonitoringModeDashboard(cc, cs, rtW, rtH);
-                    return;
-
-                case DashboardModeType.FullDetail:
-                default:
-                    if (ShowDashboard) RenderFullDetailDashboard(cc, cs);
-                    return;
+                RenderEntryModeDashboard(cc, cs, rtW, rtH);
+                if (ShowStopTargetLines) DrawStopTargetLinesOnChart(cc, cs);
             }
         }
 
@@ -3928,22 +3959,44 @@ namespace NinjaTrader.NinjaScript.Indicators
             return anyConflict;
         }
 
-        /// <summary>Resolve a DashboardPositionType to pixel X/Y coordinates.</summary>
-        private static void GetEnhancedDashPosition(DashboardPositionType pos,
-            float chartW, float chartH, float panelW, float panelH,
-            out float panelX, out float panelY)
+        /// <summary>Resolve a DashboardPositionType to pixel X/Y coordinates with boundary clamping.
+        /// Handles all 7 positions (Hidden returns off-screen coords). Clamps result to stay within
+        /// the render area with a 60px time-axis buffer at the bottom and 8px edge padding.</summary>
+        private static void GetDashboardPosition(DashboardPositionType pos,
+            float rtW, float rtH, float panelW, float panelH,
+            out float tx, out float ty)
         {
+            const float margin              = 8f;
+            const float timeAxisBuffer      = 60f;
+            const float centerTopExtraMargin = 40f; // extra clearance below toolbar/title area when centred at top
+
+            float centerX = (rtW - panelW) / 2f;
+
             switch (pos)
             {
                 case DashboardPositionType.TopLeft:
-                    panelX = TableEdgePadding;                              panelY = TableEdgePadding;                              break;
+                    tx = margin;                           ty = margin;                                        break;
                 case DashboardPositionType.TopRight:
-                    panelX = chartW - panelW - TableEdgePadding;            panelY = TableEdgePadding;                              break;
+                    tx = rtW - panelW - margin;            ty = margin;                                        break;
                 case DashboardPositionType.BottomLeft:
-                    panelX = TableEdgePadding;                              panelY = chartH - panelH - TableTimeAxisBuffer;         break;
-                default: // BottomRight
-                    panelX = chartW - panelW - TableEdgePadding;            panelY = chartH - panelH - TableTimeAxisBuffer;         break;
+                    tx = margin;                           ty = rtH - panelH - timeAxisBuffer - margin;        break;
+                case DashboardPositionType.BottomRight:
+                    tx = rtW - panelW - margin;            ty = rtH - panelH - timeAxisBuffer - margin;        break;
+                case DashboardPositionType.CenterTop:
+                    tx = centerX;                          ty = margin + centerTopExtraMargin;                 break;
+                case DashboardPositionType.CenterBottom:
+                    tx = centerX;                          ty = rtH - panelH - timeAxisBuffer - margin;        break;
+                case DashboardPositionType.Hidden:
+                default:
+                    tx = -9999f; ty = -9999f; return; // off-screen; caller guards on Hidden before calling
             }
+
+            // Safety clamp — never let the panel be cut off at any edge
+            if (tx < margin)                         tx = margin;
+            if (tx + panelW > rtW - margin)          tx = rtW - panelW - margin;
+            if (ty < margin)                          ty = margin;
+            // Ensure the panel's bottom edge stays above the time axis + a small padding buffer
+            if (ty + panelH > rtH - timeAxisBuffer)  ty = rtH - panelH - timeAxisBuffer - margin;
         }
 
         /// <summary>Render the Entry Mode dashboard — a focused trade setup view.</summary>
@@ -3954,7 +4007,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX   = 10f;
             const float PadY   = 8f;
-            float       lineH  = EntryModeFontSize + 5f;
+            float       lineH  = EntryModeDashboardFontSize + 5f;
             float       panelW = 380f;
 
             double rr = 0;
@@ -3992,7 +4045,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             float panelH = PadY * 2 + lines.Count * lineH;
 
             float panelX, panelY;
-            GetEnhancedDashPosition(EntryModePosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
             // Clamp to keep panel within render area
             float clampedW;
@@ -4021,15 +4074,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        /// <summary>Render the Monitoring Mode dashboard — compact market health view.</summary>
-        private void RenderMonitoringModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <summary>Render the Monitoring Dashboard — compact market health view.</summary>
+        private void RenderMonitoringDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return;
 
             const float PadX   = 10f;
             const float PadY   = 8f;
-            float       lineH  = MonitoringModeFontSize + 5f;
+            float       lineH  = MonitoringDashboardFontSize + 5f;
             float       panelW = 420f;
 
             string session    = GetActiveSessionName();
@@ -4083,7 +4136,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             float panelH = PadY * 2 + lines.Count * lineH;
 
             float panelX, panelY;
-            GetEnhancedDashPosition(MonitoringModePosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
             // Clamp to keep panel within render area
             float clampedW;
@@ -4135,13 +4188,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderFullDetailDashboard(ChartControl cc, ChartScale cs)
+        /// <summary>Render the Main Dashboard — original IQMainGPU stats (buy/sell vol, delta, signals, ADR, session).</summary>
+        private void RenderMainDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
             var rt = RenderTarget;
+            if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return;
+
             const float PadX   = 8f;
             const float PadY   = 6f;
-            const float LineH  = 18f;
-            const float PanelW = 420f;
+            float       lineH  = MainDashboardFontSize + 5f;
+            float       panelW = 420f;
 
             string activeSessName = "—";
             if (activeSessions != null)
@@ -4158,7 +4214,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             string assetTag = AssetClass.ToString().ToUpper();
             string[] lines = {
-                string.Format("IQMainGPU Enhanced [{0}]  Session: {1} [FullDetail]", assetTag, activeSessName),
+                string.Format("IQMainGPU Enhanced [{0}]  Session: {1}", assetTag, activeSessName),
                 dashLine2,
                 dashLine3,
                 dashLine4,
@@ -4170,39 +4226,35 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EnableLevel2 ? l2StatusText : ""
             };
 
-            int   nonEmpty    = lines.Count(s => !string.IsNullOrEmpty(s));
-            float panelH      = PadY * 2 + nonEmpty * LineH;
-            float chartWidth  = RenderTarget != null ? (float)RenderTarget.Size.Width  : (float)cc.ActualWidth;
-            float chartHeight = RenderTarget != null ? (float)RenderTarget.Size.Height : (float)cc.ActualHeight;
+            int   nonEmpty = lines.Count(s => !string.IsNullOrEmpty(s));
+            float panelH   = PadY * 2 + nonEmpty * lineH;
 
             float panelX, panelY;
-            switch (DashPosition)
-            {
-                case IQMDashboardPosition.TopLeft:
-                    panelX = PadX;  panelY = PadY;  break;
-                case IQMDashboardPosition.TopRight:
-                    panelX = chartWidth - PanelW - PadX;  panelY = PadY;  break;
-                case IQMDashboardPosition.BottomLeft:
-                    panelX = PadX;  panelY = chartHeight - panelH - TableTimeAxisBuffer;  break;
-                default:
-                    panelX = chartWidth - PanelW - PadX;  panelY = chartHeight - panelH - TableTimeAxisBuffer;  break;
-            }
+            GetDashboardPosition(MainDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
-            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, PanelW, panelH), dxDashBgBrush);
+            // Clamp to keep panel within render area
+            float clampedW;
+            panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
+            if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
 
-            float ty = panelY + PadY;
+            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, panelW, panelH), dxEnhDashBgBrush);
+
+            float ty    = panelY + PadY;
             bool  first = true;
             foreach (string line in lines)
             {
                 if (string.IsNullOrEmpty(line)) continue;
-                if (dxDashFormat != null)
-                {
-                    var textBrush = first ? (dxDashHeaderBrush ?? dxDashTextBrush)
-                                  : (line.Contains("FAKE") || line.Contains("Fake") ? dxDashAccentBrush : dxDashTextBrush);
-                    rt.DrawText(line, dxDashFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, PanelW - PadX * 2, LineH), textBrush);
-                }
-                ty += LineH;
+                SharpDX.Direct2D1.SolidColorBrush textBrush;
+                if (first)
+                    textBrush = dxEnhDashHeaderBrush ?? dxEnhDashTextBrush;
+                else if (line.Contains("FAKE") || line.Contains("Fake"))
+                    textBrush = dxEnhDashWarningBrush ?? dxEnhDashTextBrush;
+                else
+                    textBrush = dxEnhDashTextBrush;
+                if (textBrush != null)
+                    rt.DrawText(line, dxMainDashFormat,
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), textBrush);
+                ty += lineH;
                 first = false;
             }
         }
@@ -5415,13 +5467,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxOTEOptimalBrush   = MakeBrush(rt, OTEOptimalColor, 0.95f);
 
                 // ── Enhanced dashboard resources (IQMainGPU_Enhanced) ─────────
-                if (dxEnhDashFormat != null) { dxEnhDashFormat.Dispose(); dxEnhDashFormat = null; }
-                if (dxEnhMonFormat  != null) { dxEnhMonFormat.Dispose();  dxEnhMonFormat  = null; }
-                dxEnhDashFormat = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", EntryModeFontSize);
-                dxEnhMonFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", MonitoringModeFontSize);
+                if (dxMainDashFormat != null) { dxMainDashFormat.Dispose(); dxMainDashFormat = null; }
+                if (dxEnhDashFormat  != null) { dxEnhDashFormat.Dispose();  dxEnhDashFormat  = null; }
+                if (dxEnhMonFormat   != null) { dxEnhMonFormat.Dispose();   dxEnhMonFormat   = null; }
+                dxMainDashFormat = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", MainDashboardFontSize);
+                dxEnhDashFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", EntryModeDashboardFontSize);
+                dxEnhMonFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", MonitoringDashboardFontSize);
 
+                float dashOpacFrac = Math.Max(0f, Math.Min(1f, DashboardOpacity / 100f));
                 dxEnhDashBgBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color((byte)5, (byte)5, (byte)15, (byte)(opacityFrac * 230)));
+                    new SharpDX.Color((byte)5, (byte)5, (byte)15, (byte)(dashOpacFrac * 230)));
                 dxEnhDashTextBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(0.90f, 0.90f, 0.95f, 0.95f));
                 dxEnhDashHeaderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
@@ -5540,6 +5595,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Enhanced dashboard resources (IQMainGPU_Enhanced)
+            DisposeRef(ref dxMainDashFormat);
             DisposeRef(ref dxEnhDashBgBrush);
             DisposeRef(ref dxEnhDashTextBrush);
             DisposeRef(ref dxEnhDashHeaderBrush);
