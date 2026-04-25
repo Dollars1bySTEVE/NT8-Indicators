@@ -1678,6 +1678,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Parameters — 16. Enhanced Dashboard
 
         [NinjaScriptProperty]
+        [Display(Name = "Enable Dashboard (Master)", Order = 0, GroupName = "16. Enhanced Dashboard",
+            Description = "Master switch for all Enhanced Dashboard modes. Set to false to hide all dashboards.")]
+        public bool EnableDashboardMaster { get; set; }
+
+        [NinjaScriptProperty]
         [Display(Name = "Dashboard Mode", Order = 1, GroupName = "16. Enhanced Dashboard",
             Description = "Hidden = disabled. EntryMode = focused trade setup view. MonitoringMode = compact market health view. FullDetail = original IQMainGPU dashboard.")]
         public DashboardModeType EnhancedDashboardMode { get; set; }
@@ -2073,6 +2078,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 OTELabelPrefix     = "OTE";
 
                 // 16. Enhanced Dashboard
+                EnableDashboardMaster      = true;
                 EnhancedDashboardMode  = DashboardModeType.MonitoringMode;
                 EntryModePosition      = DashboardPositionType.TopLeft;
                 EntryModeFontSize      = 14;
@@ -2916,7 +2922,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (Exception ex) { Print("IQMainGPU_Enhanced: RenderDstTable [" + ex.GetType().Name + "]: " + ex.Message); }
 
             // ── 12. Unified dashboard overlay ─────────────────────────────────
-            try { RenderDashboard(chartControl, chartScale); }
+            try { RenderDashboard(chartControl, chartScale, rtW, rtH); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainGPU_Enhanced: SharpDX error RenderDashboard: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQMainGPU_Enhanced: RenderDashboard [" + ex.GetType().Name + "]: " + ex.Message); }
         }
@@ -3208,7 +3214,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float tx, ty;
             GetTablePosition(TablePosition, rtW, rtH, tableW, tableH, margin, out tx, out ty);
-            ty = ClampTableY(ty, tableH, rtH);
+            float clampedW;
+            ty = ClampTableY(ty, tableH, rtH, tableW, rtW, out clampedW);
+            if (clampedW > 0 && clampedW < tableW) tableW = clampedW;
 
             RenderTarget.FillRectangle(new SharpDX.RectangleF(tx, ty, tableW, tableH), dxDashBgBrush);
             RenderTarget.DrawText("Range Statistics", dxDashFormat,
@@ -3246,7 +3254,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float tx, ty;
             GetTablePosition(DstTablePosition, rtW, rtH, tableW, tableH, margin, out tx, out ty);
-            ty = ClampTableY(ty, tableH, rtH);
+            float clampedWDst;
+            ty = ClampTableY(ty, tableH, rtH, tableW, rtW, out clampedWDst);
+            if (clampedWDst > 0 && clampedWDst < tableW) tableW = clampedWDst;
 
             RenderTarget.FillRectangle(new SharpDX.RectangleF(tx, ty, tableW, tableH), dxDashBgBrush);
             RenderTarget.DrawText("DST Reference", dxDashFormat,
@@ -3257,8 +3267,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     new SharpDX.RectangleF(tx + 4f, ty + 22f + i * cellH, tableW - 8f, cellH), dxDashTextBrush);
         }
 
-        private const float TableTimeAxisBuffer = 28f;   // safe buffer for the time axis at chart bottom
-        private const float TableEdgePadding    = 4f;    // padding from chart edge when clamping
+        private const float TableTimeAxisBuffer = 60f;   // buffer for time axis at chart bottom (increased from 28f)
+        private const float TableEdgePadding    = 8f;    // padding from chart edge when clamping (increased from 4f)
+        private const float TableMinHeight      = 60f;   // minimum panel height
+        private const float TableMinWidth       = 200f;  // minimum panel width
 
         private static void GetTablePosition(IQMDashboardPosition pos,
             float rtW, float rtH, float tableW, float tableH, float margin,
@@ -3273,14 +3285,28 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        /// <summary>Clamps ty so the table stays above the time-axis bar and below the top edge.</summary>
-        private static float ClampTableY(float ty, float tableH, float rtH)
+        /// <summary>Clamps ty so the panel stays within render area with proper buffer for time axis.
+        /// Also clamps tableW to fit within the render area, returned via clampedW.</summary>
+        private static float ClampTableY(float ty, float tableH, float rtH, float tableW, float rtW, out float clampedW)
         {
             float chartBottom = rtH - TableTimeAxisBuffer;
+
+            // Clamp width to available horizontal space
+            clampedW = Math.Min(tableW, rtW - TableEdgePadding * 2);
+
+            // Clamp height if it would exceed available space
+            float maxH = chartBottom - ty - TableEdgePadding;
+            if (tableH > maxH && maxH > TableMinHeight)
+                tableH = maxH;
+
+            // Ensure panel doesn't go below time axis
             if (ty + tableH > chartBottom)
                 ty = chartBottom - tableH - TableEdgePadding;
+
+            // Ensure panel doesn't go above top
             if (ty < TableEdgePadding)
                 ty = TableEdgePadding;
+
             return ty;
         }
 
@@ -3605,8 +3631,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderDashboard(ChartControl cc, ChartScale cs)
+        private void RenderDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
+            if (!EnableDashboardMaster) return;
+
             // Dispatcher: routes to the correct dashboard based on EnhancedDashboardMode
             switch (EnhancedDashboardMode)
             {
@@ -3615,13 +3643,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 case DashboardModeType.EntryMode:
                     CalculateDashboardMetrics();
-                    RenderEntryModeDashboard(cc, cs);
+                    RenderEntryModeDashboard(cc, cs, rtW, rtH);
                     if (DrawStopTargetLines) DrawStopTargetLinesOnChart(cc, cs);
                     return;
 
                 case DashboardModeType.MonitoringMode:
                     CalculateDashboardMetrics();
-                    RenderMonitoringModeDashboard(cc, cs);
+                    RenderMonitoringModeDashboard(cc, cs, rtW, rtH);
                     return;
 
                 case DashboardModeType.FullDetail:
@@ -3910,23 +3938,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             float chartW, float chartH, float panelW, float panelH,
             out float panelX, out float panelY)
         {
-            const float PadX = 8f;
-            const float PadY = 6f;
             switch (pos)
             {
                 case DashboardPositionType.TopLeft:
-                    panelX = PadX;                    panelY = PadY;                    break;
+                    panelX = TableEdgePadding;                              panelY = TableEdgePadding;                              break;
                 case DashboardPositionType.TopRight:
-                    panelX = chartW - panelW - PadX;  panelY = PadY;                    break;
+                    panelX = chartW - panelW - TableEdgePadding;            panelY = TableEdgePadding;                              break;
                 case DashboardPositionType.BottomLeft:
-                    panelX = PadX;                    panelY = chartH - panelH - PadY;  break;
+                    panelX = TableEdgePadding;                              panelY = chartH - panelH - TableTimeAxisBuffer;         break;
                 default: // BottomRight
-                    panelX = chartW - panelW - PadX;  panelY = chartH - panelH - PadY;  break;
+                    panelX = chartW - panelW - TableEdgePadding;            panelY = chartH - panelH - TableTimeAxisBuffer;         break;
             }
         }
 
         /// <summary>Render the Entry Mode dashboard — a focused trade setup view.</summary>
-        private void RenderEntryModeDashboard(ChartControl cc, ChartScale cs)
+        private void RenderEntryModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxEnhDashFormat == null) return;
@@ -3934,7 +3960,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             const float PadX   = 10f;
             const float PadY   = 8f;
             float       lineH  = EntryModeFontSize + 5f;
-            const float PanelW = 380f;
+            float       panelW = 380f;
 
             double rr = 0;
             if (dashboardStopPrice > 0 && dashboardEntryPrice > dashboardStopPrice)
@@ -3969,13 +3995,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             float panelH = PadY * 2 + lines.Count * lineH;
-            float chartW = rt.Size.Width;
-            float chartH = rt.Size.Height;
 
             float panelX, panelY;
-            GetEnhancedDashPosition(EntryModePosition, chartW, chartH, PanelW, panelH, out panelX, out panelY);
+            GetEnhancedDashPosition(EntryModePosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
-            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, PanelW, panelH), dxEnhDashBgBrush);
+            // Clamp to keep panel within render area
+            float clampedW;
+            panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
+            if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
+
+            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, panelW, panelH), dxEnhDashBgBrush);
 
             float ty    = panelY + PadY;
             bool  first = true;
@@ -3990,7 +4019,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (brush != null)
                     rt.DrawText(line, dxEnhDashFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, PanelW - PadX * 2, lineH), brush);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
 
                 ty += lineH;
                 first = false;
@@ -3998,7 +4027,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Render the Monitoring Mode dashboard — compact market health view.</summary>
-        private void RenderMonitoringModeDashboard(ChartControl cc, ChartScale cs)
+        private void RenderMonitoringModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
         {
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return;
@@ -4006,7 +4035,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             const float PadX   = 10f;
             const float PadY   = 8f;
             float       lineH  = MonitoringModeFontSize + 5f;
-            const float PanelW = 420f;
+            float       panelW = 420f;
 
             string session    = GetActiveSessionName();
             string volStatus  = GetVolumeStatus();
@@ -4057,13 +4086,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             float panelH = PadY * 2 + lines.Count * lineH;
-            float chartW = rt.Size.Width;
-            float chartH = rt.Size.Height;
 
             float panelX, panelY;
-            GetEnhancedDashPosition(MonitoringModePosition, chartW, chartH, PanelW, panelH, out panelX, out panelY);
+            GetEnhancedDashPosition(MonitoringModePosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
-            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, PanelW, panelH), dxEnhDashBgBrush);
+            // Clamp to keep panel within render area
+            float clampedW;
+            panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
+            if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
+
+            rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, panelW, panelH), dxEnhDashBgBrush);
 
             float ty    = panelY + PadY;
             bool  first = true;
@@ -4076,7 +4108,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (brush != null)
                     rt.DrawText(line, dxEnhMonFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, PanelW - PadX * 2, lineH), brush);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
 
                 ty += lineH;
                 first = false;
@@ -4156,9 +4188,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case IQMDashboardPosition.TopRight:
                     panelX = chartWidth - PanelW - PadX;  panelY = PadY;  break;
                 case IQMDashboardPosition.BottomLeft:
-                    panelX = PadX;  panelY = chartHeight - panelH - PadY;  break;
+                    panelX = PadX;  panelY = chartHeight - panelH - TableTimeAxisBuffer;  break;
                 default:
-                    panelX = chartWidth - PanelW - PadX;  panelY = chartHeight - panelH - PadY;  break;
+                    panelX = chartWidth - PanelW - PadX;  panelY = chartHeight - panelH - TableTimeAxisBuffer;  break;
             }
 
             rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, PanelW, panelH), dxDashBgBrush);
