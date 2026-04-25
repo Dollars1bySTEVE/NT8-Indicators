@@ -315,9 +315,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string dashboardConflictText   = "";
 
         // Severity tag constants used in VeryDetailed conflict descriptions
-        private const string SeverityCritical = "[CRITICAL]";
-        private const string SeverityHigh     = "[HIGH]";
-        private const string SeverityModerate = "[MODERATE]";
+        private const string SeverityCritical = "\u26a0 [CRITICAL]";
+        private const string SeverityHigh     = "\u26a0 [HIGH]";
+        private const string SeverityModerate = "\u26a0 [MODERATE]";
 
         // Session IDs considered high-participation (London=0, NewYork=1, EuBrinks=5, UsBrinks=6)
         private static readonly int[] HighParticipationSessionIds = { 0, 1, 5, 6 };
@@ -4008,7 +4008,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             const float PadX   = 10f;
             const float PadY   = 8f;
             float       lineH  = EntryModeDashboardFontSize + 8f;
-            float       panelW = 380f;
+            float       panelW = 420f;
 
             double rr = 0;
             if (dashboardStopPrice > 0 && dashboardEntryPrice > dashboardStopPrice)
