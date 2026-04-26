@@ -314,6 +314,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool   dashboardConflictDetected;
         private string dashboardConflictText   = "";
 
+        // Signal timestamp tracking for stale/expired signal detection
+        private DateTime lastSignalDetectedTime = DateTime.MinValue;
+        private string   lastTrackedSignal      = "";
+        private bool     signalIsStale          = false;
+        private const int STALE_SIGNAL_MINUTES  = 15;
+        private const int EXPIRE_SIGNAL_MINUTES = 30;
+
         // Severity tag constants used in VeryDetailed conflict descriptions
         private const string SeverityCritical = "\u26a0 [CRITICAL]";
         private const string SeverityHigh     = "\u26a0 [HIGH]";
@@ -3689,11 +3696,27 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Compute all dashboard metrics once per render frame.</summary>
         private void CalculateDashboardMetrics()
         {
-            dashboardEntryPrice   = Close[0];
-            dashboardConfidence   = CalculateEntryScore();
+            dashboardEntryPrice    = Close[0];
+            dashboardConfidence    = CalculateEntryScore();
             dashboardPrimarySignal = GetPrimarySignal();
-            dashboardStopPrice    = CalculateDynamicStop();
-            dashboardTargetPrice  = CalculateDynamicTarget();
+            dashboardStopPrice     = CalculateDynamicStop();
+            dashboardTargetPrice   = CalculateDynamicTarget();
+
+            // Track signal timestamp: record when an actionable signal first appears or changes.
+            // DateTime.Now is intentional here — stale detection measures real wall-clock time
+            // so that live traders know how long ago (in actual minutes) the signal fired.
+            bool isActionable = dashboardPrimarySignal != "NEUTRAL" && dashboardPrimarySignal != "No Data";
+            if (isActionable && dashboardPrimarySignal != lastTrackedSignal)
+            {
+                lastSignalDetectedTime = DateTime.Now;
+                lastTrackedSignal      = dashboardPrimarySignal;
+            }
+            else if (!isActionable && lastTrackedSignal != "")
+            {
+                lastSignalDetectedTime = DateTime.MinValue;
+                lastTrackedSignal      = "";
+            }
+            signalIsStale = IsSignalStale();
 
             if (ShowConflictWarnings)
                 dashboardConflictDetected = DetectConflicts(out dashboardConflictText);
@@ -3702,6 +3725,32 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dashboardConflictDetected = false;
                 dashboardConflictText     = "";
             }
+        }
+
+        /// <summary>Returns a human-readable elapsed time since the signal was first detected.</summary>
+        private string GetSignalElapsedTime()
+        {
+            if (lastSignalDetectedTime == DateTime.MinValue) return "";
+            TimeSpan elapsed = DateTime.Now - lastSignalDetectedTime;
+            if (elapsed.TotalSeconds < 60)
+                return string.Format("{0}s ago", (int)elapsed.TotalSeconds);
+            if (elapsed.TotalMinutes < 60)
+                return string.Format("{0}m ago", (int)elapsed.TotalMinutes);
+            return string.Format("{0}h {1}m ago", (int)elapsed.TotalHours, (int)elapsed.Minutes);
+        }
+
+        /// <summary>Returns true when the current signal has been active for more than STALE_SIGNAL_MINUTES.</summary>
+        private bool IsSignalStale()
+        {
+            if (lastSignalDetectedTime == DateTime.MinValue) return false;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= STALE_SIGNAL_MINUTES;
+        }
+
+        /// <summary>Returns true when the current signal has been active for more than EXPIRE_SIGNAL_MINUTES.</summary>
+        private bool HasSignalExpired()
+        {
+            if (lastSignalDetectedTime == DateTime.MinValue) return false;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= EXPIRE_SIGNAL_MINUTES;
         }
 
         /// <summary>Compute a 0-100 confidence score for the current bar's setup.</summary>
@@ -4053,39 +4102,64 @@ namespace NinjaTrader.NinjaScript.Indicators
             float       lineH  = EntryModeDashboardFontSize + 8f;
             float       panelW = 420f;
 
-            double rr = 0;
-            if (dashboardStopPrice > 0 && dashboardEntryPrice > dashboardStopPrice)
+            bool  signalExpired  = HasSignalExpired();
+            bool  noSignal       = dashboardPrimarySignal == "NEUTRAL" || dashboardPrimarySignal == "No Data";
+            bool  showNoSignal   = noSignal || signalExpired;
+            string elapsedTime   = GetSignalElapsedTime();
+
+            var lines = new List<string>();
+            lines.Add(string.Format("IQMainGPU Enhanced [{0}]", AssetClass.ToString().ToUpper()));
+
+            if (showNoSignal)
             {
-                double riskDist   = dashboardEntryPrice - dashboardStopPrice;
-                double rewardDist = dashboardTargetPrice - dashboardEntryPrice;
-                if (riskDist > 0) rr = rewardDist / riskDist;
+                lines.Add("No Active Signal");
+                lines.Add("Waiting for signal detection...");
             }
-
-            var lines = new List<string>
+            else
             {
-                string.Format("IQMainGPU Enhanced [{0}]", AssetClass.ToString().ToUpper()),
-                string.Format("Signal:     {0}", dashboardPrimarySignal),
-                string.Format("Confidence: {0}%", dashboardConfidence),
-                string.Format("Entry:      {0}", Instrument.MasterInstrument.FormatPrice(dashboardEntryPrice)),
-                string.Format("Stop:       {0}  ({1:F0}t)",
+                // Signal line with elapsed time
+                string signalLine = elapsedTime.Length > 0
+                    ? string.Format("Signal:     {0} ({1})", dashboardPrimarySignal, elapsedTime)
+                    : string.Format("Signal:     {0}", dashboardPrimarySignal);
+                lines.Add(signalLine);
+                lines.Add(string.Format("Confidence: {0}%", dashboardConfidence));
+                lines.Add(string.Format("Entry:      {0}", Instrument.MasterInstrument.FormatPrice(dashboardEntryPrice)));
+                lines.Add(string.Format("Stop:       {0}  ({1:F0}t)",
                     Instrument.MasterInstrument.FormatPrice(dashboardStopPrice),
-                    Math.Abs(dashboardEntryPrice - dashboardStopPrice) / TickSize),
-                string.Format("Target:     {0}  ({1:F0}t)",
+                    Math.Abs(dashboardEntryPrice - dashboardStopPrice) / TickSize));
+                lines.Add(string.Format("Target:     {0}  ({1:F0}t)",
                     Instrument.MasterInstrument.FormatPrice(dashboardTargetPrice),
-                    Math.Abs(dashboardTargetPrice - dashboardEntryPrice) / TickSize),
-                rr > 0 ? string.Format("R/R:        {0:F2}:1", rr) : "R/R:        N/A"
-            };
+                    Math.Abs(dashboardTargetPrice - dashboardEntryPrice) / TickSize));
 
-            if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
-            {
-                lines.Add(""); // section separator — adds visual gap before alerts
-                float usableW = panelW - PadX * 2;
-                foreach (string part in dashboardConflictText.Split('\n'))
+                double rr = 0;
+                if (dashboardStopPrice > 0 && dashboardEntryPrice > dashboardStopPrice)
                 {
-                    string trimmed = part.TrimEnd('\r');
-                    if (string.IsNullOrEmpty(trimmed)) continue;
-                    foreach (string wrapped in WrapTextToLines(trimmed, usableW, EntryModeDashboardFontSize))
-                        lines.Add(wrapped);
+                    double riskDist   = dashboardEntryPrice - dashboardStopPrice;
+                    double rewardDist = dashboardTargetPrice - dashboardEntryPrice;
+                    if (riskDist > 0) rr = rewardDist / riskDist;
+                }
+                lines.Add(rr > 0 ? string.Format("R/R:        {0:F2}:1", rr) : "R/R:        N/A");
+
+                // Stale signal warning (15–30 min)
+                if (signalIsStale)
+                {
+                    lines.Add("");
+                    lines.Add(string.Format("\u26a0 [STALE] Signal detected {0}", elapsedTime));
+                    lines.Add("Consider waiting for fresh signal");
+                }
+
+                // Conflict warnings
+                if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
+                {
+                    lines.Add("");
+                    float usableW = panelW - PadX * 2;
+                    foreach (string part in dashboardConflictText.Split('\n'))
+                    {
+                        string trimmed = part.TrimEnd('\r');
+                        if (string.IsNullOrEmpty(trimmed)) continue;
+                        foreach (string wrapped in WrapTextToLines(trimmed, usableW, EntryModeDashboardFontSize))
+                            lines.Add(wrapped);
+                    }
                 }
             }
 
