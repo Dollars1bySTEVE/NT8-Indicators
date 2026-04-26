@@ -5510,7 +5510,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
                 dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
-                dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 11f);
+                dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", MainDashboardFontSize);
 
                 // Pivot brushes
                 dxPPBrush     = MakeBrush(rt, PPColor,     0.85f);
