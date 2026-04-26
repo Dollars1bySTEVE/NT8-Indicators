@@ -1357,65 +1357,47 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
-        #region Parameters — 12. Dashboard
+        #region Parameters — 12. Halo & Candle Colors
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Dashboard", Order = 1, GroupName = "12. Dashboard")]
-        public bool ShowDashboard { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Dashboard Position", Order = 2, GroupName = "12. Dashboard")]
-        public IQMDashboardPosition DashPosition { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(10, 50)]
-        [Display(Name = "Dashboard Font Size", Order = 3, GroupName = "12. Dashboard")]
-        public int DashFontSize { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(20, 100)]
-        [Display(Name = "Dashboard Opacity %", Order = 4, GroupName = "12. Dashboard")]
-        public int DashOpacity { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Halo on Signals", Order = 5, GroupName = "12. Dashboard")]
+        [Display(Name = "Show Halo on Signals", Order = 1, GroupName = "12. Halo & Candle Colors")]
         public bool ShowHalo { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Halo Layers", Order = 6, GroupName = "12. Dashboard")]
+        [Display(Name = "Halo Layers", Order = 2, GroupName = "12. Halo & Candle Colors")]
         public int HaloLayers { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Bullish Color", Order = 7, GroupName = "12. Dashboard")]
+        [Display(Name = "Bullish Color", Order = 3, GroupName = "12. Halo & Candle Colors")]
         [XmlIgnore]
         public System.Windows.Media.Brush BullishColor { get; set; }
         [Browsable(false)]
         public string BullishColorSerializable { get { return Serialize.BrushToString(BullishColor); } set { BullishColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Bearish Color", Order = 8, GroupName = "12. Dashboard")]
+        [Display(Name = "Bearish Color", Order = 4, GroupName = "12. Halo & Candle Colors")]
         [XmlIgnore]
         public System.Windows.Media.Brush BearishColor { get; set; }
         [Browsable(false)]
         public string BearishColorSerializable { get { return Serialize.BrushToString(BearishColor); } set { BearishColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Absorption Color", Order = 9, GroupName = "12. Dashboard")]
+        [Display(Name = "Absorption Color", Order = 5, GroupName = "12. Halo & Candle Colors")]
         [XmlIgnore]
         public System.Windows.Media.Brush AbsorptionColor { get; set; }
         [Browsable(false)]
         public string AbsorptionColorSerializable { get { return Serialize.BrushToString(AbsorptionColor); } set { AbsorptionColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Imbalance Color", Order = 10, GroupName = "12. Dashboard")]
+        [Display(Name = "Imbalance Color", Order = 6, GroupName = "12. Halo & Candle Colors")]
         [XmlIgnore]
         public System.Windows.Media.Brush ImbalanceColor { get; set; }
         [Browsable(false)]
         public string ImbalanceColorSerializable { get { return Serialize.BrushToString(ImbalanceColor); } set { ImbalanceColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Fake Breakout Color", Order = 11, GroupName = "12. Dashboard")]
+        [Display(Name = "Fake Breakout Color", Order = 7, GroupName = "12. Halo & Candle Colors")]
         [XmlIgnore]
         public System.Windows.Media.Brush FakeBreakoutColor { get; set; }
         [Browsable(false)]
@@ -2045,11 +2027,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SpoofingChecks = 3;
                 ShowWallLines  = true;
 
-                // 12. Dashboard
-                ShowDashboard     = true;
-                DashPosition      = IQMDashboardPosition.TopRight;
-                DashFontSize      = 11;
-                DashOpacity       = 80;
+                // 12. Halo & Candle Colors
                 ShowHalo          = true;
                 HaloLayers        = 5;
                 BullishColor      = Brushes.LimeGreen;
@@ -5527,12 +5505,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             try
             {
-                float opacityFrac = Math.Max(0f, Math.Min(1f, DashOpacity / 100f));
+                float opacityFrac = Math.Max(0f, Math.Min(1f, DashboardOpacity / 100f));
 
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
                 dxSmallFormat  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 12f);
-                dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", DashFontSize);
+                dxDashFormat   = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Consolas", 11f);
 
                 // Pivot brushes
                 dxPPBrush     = MakeBrush(rt, PPColor,     0.85f);
