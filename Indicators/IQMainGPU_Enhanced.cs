@@ -4097,9 +4097,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxEnhDashFormat == null) return;
 
-            const float PadX   = 10f;
-            const float PadY   = 8f;
-            float       lineH  = EntryModeDashboardFontSize + 8f;
+            const float PadX              = 10f;
+            const float PadY              = 8f;
+            const float LineHeightMult    = 1.8f;
+            const float PanelHeightBuffer = 4f;
+            float       lineH  = EntryModeDashboardFontSize * LineHeightMult;
             float       panelW = 420f;
 
             bool  signalExpired  = HasSignalExpired();
@@ -4163,7 +4165,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            float panelH = PadY * 2 + lines.Count * lineH;
+            float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
 
             float panelX, panelY;
             GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
@@ -4201,9 +4203,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return;
 
-            const float PadX   = 10f;
-            const float PadY   = 8f;
-            float       lineH  = MonitoringDashboardFontSize + 8f;
+            const float PadX              = 10f;
+            const float PadY              = 8f;
+            const float LineHeightMult    = 1.8f;
+            const float PanelHeightBuffer = 4f;
+            float       lineH  = MonitoringDashboardFontSize * LineHeightMult;
             float       panelW = 420f;
 
             string session    = GetActiveSessionName();
@@ -4257,7 +4261,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            float panelH = PadY * 2 + lines.Count * lineH;
+            float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
 
             float panelX, panelY;
             GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
@@ -4334,9 +4338,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return;
 
-            const float PadX   = 8f;
-            const float PadY   = 6f;
-            float       lineH  = MainDashboardFontSize + 8f;
+            const float PadX              = 8f;
+            const float PadY              = 6f;
+            const float LineHeightMult    = 1.8f;
+            const float PanelHeightBuffer = 4f;
+            float       lineH  = MainDashboardFontSize * LineHeightMult;
             float       panelW = 420f;
 
             string activeSessName = "—";
@@ -4367,7 +4373,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             };
 
             int   nonEmpty = lines.Count(s => !string.IsNullOrEmpty(s));
-            float panelH   = PadY * 2 + nonEmpty * lineH;
+            float panelH   = PadY * 2 + nonEmpty * lineH + PanelHeightBuffer;
 
             float panelX, panelY;
             GetDashboardPosition(MainDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
