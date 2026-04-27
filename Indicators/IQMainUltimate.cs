@@ -4191,11 +4191,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                                     nearestZoneHigh = z.HighPrice;
                             }
                             if (nearestZoneHigh < double.MaxValue)
-                                return nearestZoneHigh + TickSize;
+                            {
+                                if (Math.Abs(close - nearestZoneHigh) <= maxDist)
+                                    return nearestZoneHigh + TickSize;
+                                else
+                                    Print(string.Format("IQMainUltimate: AutoDetected bearish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", nearestZoneHigh, Math.Abs(close - nearestZoneHigh) / TickSize));
+                            }
                         }
                         // 4. Pivot R1
                         if (currentPivot != null && currentPivot.R1 > close)
-                            return currentPivot.R1;
+                        {
+                            if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                                return currentPivot.R1;
+                            else
+                                Print(string.Format("IQMainUltimate: AutoDetected bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                        }
                         return close + GetAdrBasedStopDistance();
                     }
                     // Bullish: stop below price
@@ -4217,23 +4227,43 @@ namespace NinjaTrader.NinjaScript.Indicators
                         foreach (LiquidityZone z in liquidityZones)
                         {
                             if (!z.IsRecovered && z.IsBullish && z.LowPrice < close)
-                                return z.LowPrice - TickSize;
+                            {
+                                if (Math.Abs(close - z.LowPrice) <= maxDist)
+                                    return z.LowPrice - TickSize;
+                                else
+                                    Print(string.Format("IQMainUltimate: AutoDetected bullish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", z.LowPrice, Math.Abs(close - z.LowPrice) / TickSize));
+                            }
                         }
                     }
                     // 4. Check pivot S1
-                    if (currentPivot != null && currentPivot.S1 > 0)
-                        return currentPivot.S1;
+                    if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                    {
+                        if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            return currentPivot.S1;
+                        else
+                            Print(string.Format("IQMainUltimate: AutoDetected bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                    }
                     return close - GetAdrBasedStopDistance();
 
                 case UltimateStopMode.PivotBased:
                     if (bearish)
                     {
-                        if (currentPivot != null && currentPivot.R1 > 0)
-                            return currentPivot.R1;
+                        if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
+                        {
+                            if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                                return currentPivot.R1;
+                            else
+                                Print(string.Format("IQMainUltimate: PivotBased bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                        }
                         return close + StopDistanceTicks * TickSize;
                     }
-                    if (currentPivot != null && currentPivot.S1 > 0)
-                        return currentPivot.S1;
+                    if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                    {
+                        if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            return currentPivot.S1;
+                        else
+                            Print(string.Format("IQMainUltimate: PivotBased bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                    }
                     return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.HVNBased:
@@ -4247,7 +4277,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 if (sr > close && sr < bestSrAbove) bestSrAbove = sr;
                             }
                         }
-                        return bestSrAbove < double.MaxValue ? bestSrAbove + TickSize : close + StopDistanceTicks * TickSize;
+                        if (bestSrAbove < double.MaxValue && Math.Abs(close - bestSrAbove) <= maxDist)
+                            return bestSrAbove + TickSize;
+                        if (bestSrAbove < double.MaxValue)
+                            Print(string.Format("IQMainUltimate: HVNBased bearish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSrAbove, Math.Abs(close - bestSrAbove) / TickSize));
+                        return close + StopDistanceTicks * TickSize;
                     }
                     double bestSr = 0;
                     if (srLevels != null)
@@ -4257,7 +4291,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (sr < close && sr > bestSr) bestSr = sr;
                         }
                     }
-                    return bestSr > 0 ? bestSr - TickSize : close - StopDistanceTicks * TickSize;
+                    if (bestSr > 0 && Math.Abs(close - bestSr) <= maxDist)
+                        return bestSr - TickSize;
+                    if (bestSr > 0)
+                        Print(string.Format("IQMainUltimate: HVNBased bullish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSr, Math.Abs(close - bestSr) / TickSize));
+                    return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.ManualInput:
                 default:
@@ -4352,13 +4390,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                                     bestNaked = nl.Price;
                             }
                             if (bestNaked > double.MinValue)
-                                return bestNaked;
+                            {
+                                if (Math.Abs(close - bestNaked) <= maxDist)
+                                    return bestNaked;
+                                else
+                                    Print(string.Format("IQMainUltimate: AutoDetected bearish target — naked POC {0} skipped ({1:F0}t beyond cap)", bestNaked, Math.Abs(close - bestNaked) / TickSize));
+                            }
                         }
                         // 4. Check pivot S1/S2
                         if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
-                            return currentPivot.S1;
+                        {
+                            if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                                return currentPivot.S1;
+                            else
+                                Print(string.Format("IQMainUltimate: AutoDetected bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                        }
                         if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
-                            return currentPivot.S2;
+                        {
+                            if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                                return currentPivot.S2;
+                            else
+                                Print(string.Format("IQMainUltimate: AutoDetected bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
+                        }
                         return close - GetAdrBasedTargetDistance();
                     }
                     // Bullish
@@ -4384,35 +4437,70 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 bestNaked = nl.Price;
                         }
                         if (bestNaked < double.MaxValue)
-                            return bestNaked;
+                        {
+                            if (Math.Abs(close - bestNaked) <= maxDist)
+                                return bestNaked;
+                            else
+                                Print(string.Format("IQMainUltimate: AutoDetected bullish target — naked POC {0} skipped ({1:F0}t beyond cap)", bestNaked, Math.Abs(close - bestNaked) / TickSize));
+                        }
                     }
                     // 4. Check pivot R1/R2
                     if (currentPivot != null && currentPivot.R1 > close)
-                        return currentPivot.R1;
+                    {
+                        if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            return currentPivot.R1;
+                        else
+                            Print(string.Format("IQMainUltimate: AutoDetected bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                    }
                     if (currentPivot != null && currentPivot.R2 > close)
-                        return currentPivot.R2;
+                    {
+                        if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                            return currentPivot.R2;
+                        else
+                            Print(string.Format("IQMainUltimate: AutoDetected bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
+                    }
                     return close + GetAdrBasedTargetDistance();
 
                 case UltimateTargetMode.PivotR1:
                     if (bearish)
                     {
                         if (currentPivot != null && currentPivot.S1 > 0)
-                            return currentPivot.S1;
+                        {
+                            if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                                return currentPivot.S1;
+                            else
+                                Print(string.Format("IQMainUltimate: PivotR1 bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                        }
                         return close - TargetDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.R1 > 0)
-                        return currentPivot.R1;
+                    {
+                        if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            return currentPivot.R1;
+                        else
+                            Print(string.Format("IQMainUltimate: PivotR1 bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.PivotR2:
                     if (bearish)
                     {
                         if (currentPivot != null && currentPivot.S2 > 0)
-                            return currentPivot.S2;
+                        {
+                            if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                                return currentPivot.S2;
+                            else
+                                Print(string.Format("IQMainUltimate: PivotR2 bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
+                        }
                         return close - TargetDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.R2 > 0)
-                        return currentPivot.R2;
+                    {
+                        if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                            return currentPivot.R2;
+                        else
+                            Print(string.Format("IQMainUltimate: PivotR2 bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.ManualInput:
@@ -4760,8 +4848,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     lines.Add(expiryLine);
                 }
 
-                // Conflict warnings
-                if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
+                // Conflict warnings — show here only if the Monitoring Dashboard is not already visible
+                bool monitoringVisible = ShowMonitoringDashboard && MonitoringDashboardPosition != DashboardPositionType.Hidden;
+                if (!monitoringVisible && dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
                 {
                     lines.Add("");
                     float usableW = panelW - PadX * 2;
@@ -5031,6 +5120,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             string assetTag = AssetClass.ToString().ToUpper();
+            string adrStr    = adrValue > 0 ? string.Format("ADR {0:F0}p", adrValue / TickSize) : "ADR N/A";
+            string awrStr    = awrValue > 0 ? string.Format("AWR {0:F0}p", awrValue / TickSize) : "AWR N/A";
+            string amrStr    = amrValue > 0 ? string.Format("AMR {0:F0}p", amrValue / TickSize) : "AMR N/A";
+            string rangeLine = string.Format("{0}  {1}  {2}", adrStr, awrStr, amrStr);
             string[] lines = {
                 string.Format("IQMainUltimate [{0}]  Session: {1}", assetTag, activeSessName),
                 dashLine2,
@@ -5039,8 +5132,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dashLine5,
                 dashLine6,
                 dashLine7,
-                adrValue > 0 ? string.Format("ADR {0:F0}p  AWR {1:F0}p  AMR {2:F0}p",
-                    adrValue / TickSize, awrValue / TickSize, amrValue / TickSize) : "ADR/AWR/AMR: loading…",
+                rangeLine,
                 EnableLevel2 ? l2StatusText : ""
             };
 
@@ -6056,7 +6148,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// positions. Increments by labelHeight until a clear slot is found.
         /// Thread-safety: called only from OnRender (UI thread), so no lock needed.
         /// </summary>
-        private float GetNonCollidingLabelY(float y, float labelHeight = 13f)
+        private float GetNonCollidingLabelY(float y, float labelHeight = 18f)
         {
             int yInt = (int)y;
             int step = (int)labelHeight;
