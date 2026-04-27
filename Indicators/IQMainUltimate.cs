@@ -435,6 +435,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime lastSignalDetectedTime = DateTime.MinValue;
         private string   lastTrackedSignal      = "";
         private bool     signalIsStale          = false;
+        private const int STALE_SIGNAL_MINUTES  = 15;
+        private const int EXPIRE_SIGNAL_MINUTES = 30;
 
         // Maximum TPO-sourced stop/target distances (ticks) — prevents absurd levels on overnight gaps
         private const int MaxTPOStopTicks   = 200;
@@ -1530,72 +1532,65 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
-        #region Parameters — 12. Signal Colors & Halo
+        #region Parameters — 12. Dashboard
 
-        // ShowDashboard and DashPosition are legacy IQMainGPU properties not used in IQMainUltimate
-        // (dashboards are controlled in group 16). Keep backing fields for XML serialization
-        // compatibility but hide them from the settings UI.
         [NinjaScriptProperty]
-        [Browsable(false)]
+        [Display(Name = "Show Dashboard", Order = 1, GroupName = "12. Dashboard")]
         public bool ShowDashboard { get; set; }
 
         [NinjaScriptProperty]
-        [Browsable(false)]
+        [Display(Name = "Dashboard Position", Order = 2, GroupName = "12. Dashboard")]
         public IQMDashboardPosition DashPosition { get; set; }
 
-        // DashFontSize / DashOpacity drive the Range Table and DST Table rendering — they
-        // belong visually with the Tables group (13) but are kept here for serialization order.
         [NinjaScriptProperty]
         [Range(10, 50)]
-        [Display(Name = "Table Font Size", Order = 10, GroupName = "13. Tables",
-            Description = "Font size for Range and DST tables.")]
+        [Display(Name = "Dashboard Font Size", Order = 3, GroupName = "12. Dashboard")]
         public int DashFontSize { get; set; }
 
         [NinjaScriptProperty]
         [Range(20, 100)]
-        [Display(Name = "Table Background Opacity %", Order = 11, GroupName = "13. Tables",
-            Description = "Background opacity for Range and DST tables (20–100%).")]
+        [Display(Name = "Dashboard Opacity %", Order = 4, GroupName = "12. Dashboard")]
         public int DashOpacity { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Halo on Signals", Order = 1, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Show Halo on Signals", Order = 5, GroupName = "12. Dashboard")]
         public bool ShowHalo { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Halo Layers", Order = 2, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Halo Layers", Order = 6, GroupName = "12. Dashboard")]
         public int HaloLayers { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Bullish Color", Order = 3, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Bullish Color", Order = 7, GroupName = "12. Dashboard")]
         [XmlIgnore]
         public System.Windows.Media.Brush BullishColor { get; set; }
         [Browsable(false)]
         public string BullishColorSerializable { get { return Serialize.BrushToString(BullishColor); } set { BullishColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Bearish Color", Order = 4, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Bearish Color", Order = 8, GroupName = "12. Dashboard")]
         [XmlIgnore]
         public System.Windows.Media.Brush BearishColor { get; set; }
         [Browsable(false)]
         public string BearishColorSerializable { get { return Serialize.BrushToString(BearishColor); } set { BearishColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Absorption Color", Order = 5, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Absorption Color", Order = 9, GroupName = "12. Dashboard")]
         [XmlIgnore]
         public System.Windows.Media.Brush AbsorptionColor { get; set; }
         [Browsable(false)]
         public string AbsorptionColorSerializable { get { return Serialize.BrushToString(AbsorptionColor); } set { AbsorptionColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Imbalance Color", Order = 6, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Imbalance Color", Order = 10, GroupName = "12. Dashboard")]
         [XmlIgnore]
         public System.Windows.Media.Brush ImbalanceColor { get; set; }
         [Browsable(false)]
         public string ImbalanceColorSerializable { get { return Serialize.BrushToString(ImbalanceColor); } set { ImbalanceColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Fake Breakout Color", Order = 7, GroupName = "12. Signal Colors & Halo")]
+        [Display(Name = "Fake Breakout Color", Order = 11, GroupName = "12. Dashboard")]
         [XmlIgnore]
         public System.Windows.Media.Brush FakeBreakoutColor { get; set; }
         [Browsable(false)]
@@ -1960,19 +1955,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Target Distance (ticks)", Order = 17, GroupName = "16. Dashboards",
             Description = "Target distance in ticks used when TargetMode = ManualInput (or as fallback).")]
         public int TargetDistanceTicks { get; set; }
-
-        // ── Signal Expiry Settings ────────────────────────────────────────────
-        [NinjaScriptProperty]
-        [Range(1, 240)]
-        [Display(Name = "Signal Stale (minutes)", Order = 18, GroupName = "16. Dashboards",
-            Description = "Minutes after which an unchanged signal is considered stale and a warning is shown on the Entry Mode Dashboard. Must be less than Signal Expire Minutes.")]
-        public int SignalStaleMinutes { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 480)]
-        [Display(Name = "Signal Expire (minutes)", Order = 19, GroupName = "16. Dashboards",
-            Description = "Minutes after which a stale signal is expired entirely and the dashboard resets to 'No Active Signal / Waiting for signal detection...'.")]
-        public int SignalExpireMinutes { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -2384,8 +2366,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 StopDistanceTicks      = 10;
                 TargetMode             = UltimateTargetMode.AutoDetected;
                 TargetDistanceTicks    = 20;
-                SignalStaleMinutes     = 15;
-                SignalExpireMinutes    = 30;
 
                 // 17. TPO Settings
                 ShowPOC              = true;
@@ -3141,10 +3121,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (fromBar > toBar)
                 return;
 
-            // Bug C Fix — clear label collision tracking once per render frame so OTE labels
-            // and TPO labels share the same collision space across all render methods.
-            _usedLabelYPositions.Clear();
-
             // ── 1. Session boxes ──────────────────────────────────────────────
             try { RenderSessionBoxes(chartControl, chartScale, rtW, rtH); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQMainUltimate: SharpDX error RenderSessionBoxes: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
@@ -3898,15 +3874,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float chartWidth = (float)rt.Size.Width;
 
-            // Bug B Fix 3 — respect OTEMaxZones at render time: take only the most recently
-            // created active zones, up to OTEMaxZones.
-            var activeZonesList = oteZones.Where(z => z.IsActive)
-                                           .OrderByDescending(z => z.CreatedBar)
-                                           .Take(OTEMaxZones)
-                                           .ToList();
-
-            foreach (var zone in activeZonesList)
+            foreach (var zone in oteZones)
             {
+                if (!zone.IsActive) continue;
+
                 float y62  = cs.GetYByValue(zone.Level62);
                 float y705 = cs.GetYByValue(zone.Level705);
                 float y79  = cs.GetYByValue(zone.Level79);
@@ -3950,16 +3921,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     DrawStyledLine(xStart, y705, chartWidth, y705, dxOTEOptimalBrush, OTEOptimalThickness, IQMLineStyle.Solid);
 
                 // Position labels at the START of the zone (left side), like session labels
-                // Bug C Fix — apply collision avoidance so overlapping zones don't mangle each other's labels
                 if (ShowOTELabels && dxLabelFormat != null)
                 {
                     string prefix = OTELabelPrefix;
-                    float labelX  = xStart + 4f;
+                    float labelX  = xStart + 4f;  // Small padding from zone start
                     float labelW  = 160f;
-
-                    float safe62  = GetNonCollidingLabelY(y62  - 14f);
-                    float safe705 = GetNonCollidingLabelY(y705 - 14f);
-                    float safe79  = GetNonCollidingLabelY(y79  +  2f);
 
                     string lbl62  = prefix + " 62% "   + Instrument.MasterInstrument.FormatPrice(zone.Level62);
                     string lbl705 = prefix + " 70.5% " + Instrument.MasterInstrument.FormatPrice(zone.Level705);
@@ -3967,11 +3933,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (dxOTELineBrush != null)
                     {
-                        rt.DrawText(lbl62,  dxLabelFormat, new SharpDX.RectangleF(labelX, safe62,  labelW, 16f), dxOTELineBrush);
-                        rt.DrawText(lbl79,  dxLabelFormat, new SharpDX.RectangleF(labelX, safe79,  labelW, 16f), dxOTELineBrush);
+                        rt.DrawText(lbl62,  dxLabelFormat, new SharpDX.RectangleF(labelX, y62  - 14f, labelW, 16f), dxOTELineBrush);
+                        rt.DrawText(lbl79,  dxLabelFormat, new SharpDX.RectangleF(labelX, y79  +  2f, labelW, 16f), dxOTELineBrush);
                     }
                     if (dxOTEOptimalBrush != null)
-                        rt.DrawText(lbl705, dxLabelFormat, new SharpDX.RectangleF(labelX, safe705, labelW, 16f), dxOTEOptimalBrush);
+                        rt.DrawText(lbl705, dxLabelFormat, new SharpDX.RectangleF(labelX, y705 - 14f, labelW, 16f), dxOTEOptimalBrush);
                 }
             }
         }
@@ -4044,18 +4010,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             return string.Format("{0}h {1}m ago", (int)elapsed.TotalHours, (int)elapsed.Minutes);
         }
 
-        /// <summary>Returns true when the current signal has been active for more than SignalStaleMinutes.</summary>
+        /// <summary>Returns true when the current signal has been active for more than STALE_SIGNAL_MINUTES.</summary>
         private bool IsSignalStale()
         {
             if (lastSignalDetectedTime == DateTime.MinValue) return false;
-            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= SignalStaleMinutes;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= STALE_SIGNAL_MINUTES;
         }
 
-        /// <summary>Returns true when the current signal has been active for more than SignalExpireMinutes.</summary>
+        /// <summary>Returns true when the current signal has been active for more than EXPIRE_SIGNAL_MINUTES.</summary>
         private bool HasSignalExpired()
         {
             if (lastSignalDetectedTime == DateTime.MinValue) return false;
-            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= SignalExpireMinutes;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= EXPIRE_SIGNAL_MINUTES;
         }
 
         /// <summary>Compute a 0-100 confidence score for the current bar's setup.</summary>
@@ -4104,26 +4070,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     dashboardPrimarySignal == "FAKE BREAKOUT");
         }
 
-        /// <summary>Returns an ADR-proportional stop distance (15% of ADR) with a floor of
-        /// StopDistanceTicks * TickSize. Used as a sensible fallback when a TPO level is
-        /// beyond the MaxTPOStopTicks cap.</summary>
-        private double GetAdrBasedStopDistance()
-        {
-            double adrFallback    = adrValue > 0 ? adrValue * 0.15 : 0;
-            double manualFallback = StopDistanceTicks * TickSize;
-            return Math.Max(adrFallback, manualFallback);
-        }
-
-        /// <summary>Returns an ADR-proportional target distance (30% of ADR) with a floor of
-        /// TargetDistanceTicks * TickSize. Used as a sensible fallback when a TPO level is
-        /// beyond the MaxTPOTargetTicks cap.</summary>
-        private double GetAdrBasedTargetDistance()
-        {
-            double adrFallback    = adrValue > 0 ? adrValue * 0.30 : 0;
-            double manualFallback = TargetDistanceTicks * TickSize;
-            return Math.Max(adrFallback, manualFallback);
-        }
-
         /// <summary>Calculate the stop price based on StopMode setting.
         /// Priority for AutoDetected: VAL (if available) → liquidity zones → pivot S1 → manual fallback.
         /// TPOBased: always uses the current session VAL.
@@ -4150,7 +4096,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (Math.Abs(close - previousDayTPO.ValueAreaHigh) <= maxDist)
                                 return previousDayTPO.ValueAreaHigh;
                         }
-                        return close + GetAdrBasedStopDistance();
+                        return close + StopDistanceTicks * TickSize;
                     }
                     // Bullish: stop below price — use VAL
                     if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
@@ -4163,7 +4109,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (Math.Abs(close - previousDayTPO.ValueAreaLow) <= maxDist)
                             return previousDayTPO.ValueAreaLow;
                     }
-                    return close - GetAdrBasedStopDistance();
+                    return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.AutoDetected:
                     if (bearish)
@@ -4196,7 +4142,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         // 4. Pivot R1
                         if (currentPivot != null && currentPivot.R1 > close)
                             return currentPivot.R1;
-                        return close + GetAdrBasedStopDistance();
+                        return close + StopDistanceTicks * TickSize;
                     }
                     // Bullish: stop below price
                     // 1. Check yesterday's VAL (if price is above it)
@@ -4223,7 +4169,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // 4. Check pivot S1
                     if (currentPivot != null && currentPivot.S1 > 0)
                         return currentPivot.S1;
-                    return close - GetAdrBasedStopDistance();
+                    return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.PivotBased:
                     if (bearish)
@@ -4286,7 +4232,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
                                 return tpoCurrentVAL;
                         }
-                        return close - GetAdrBasedTargetDistance();
+                        return close - TargetDistanceTicks * TickSize;
                     }
                     // Bullish: target the current session Value Area High
                     if (tpoCurrentVAH > close)
@@ -4294,7 +4240,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
                             return tpoCurrentVAH;
                     }
-                    return close + GetAdrBasedTargetDistance();
+                    return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.IBExtension:
                     if (bearish)
@@ -4311,7 +4257,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
                                 return tpoCurrentVAL;
                         }
-                        return close - GetAdrBasedTargetDistance();
+                        return close - TargetDistanceTicks * TickSize;
                     }
                     // Bullish: Target the IB High Extension if price is trending up
                     if (tpoCurrentIBHighExt > close)
@@ -4325,7 +4271,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
                             return tpoCurrentVAH;
                     }
-                    return close + GetAdrBasedTargetDistance();
+                    return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.AutoDetected:
                     if (bearish)
@@ -4359,7 +4305,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                             return currentPivot.S1;
                         if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
                             return currentPivot.S2;
-                        return close - GetAdrBasedTargetDistance();
+                        return close - TargetDistanceTicks * TickSize;
                     }
                     // Bullish
                     // 1. Check current session VAH (if price is below it)
@@ -4391,7 +4337,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         return currentPivot.R1;
                     if (currentPivot != null && currentPivot.R2 > close)
                         return currentPivot.R2;
-                    return close + GetAdrBasedTargetDistance();
+                    return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.PivotR1:
                     if (bearish)
@@ -4660,10 +4606,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX              = 10f;
             const float PadY              = 8f;
-            const float LineHeightMult    = 2.2f;
+            const float LineHeightMult    = 1.8f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = EntryModeDashboardFontSize * LineHeightMult;
-            float       panelW = 480f;
+            float       panelW = 420f;
+
             bool  signalExpired  = HasSignalExpired();
             bool  noSignal       = dashboardPrimarySignal == "NEUTRAL" || dashboardPrimarySignal == "No Data";
             bool  showNoSignal   = noSignal || signalExpired;
@@ -4747,17 +4694,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                             Instrument.MasterInstrument.FormatPrice(tpoNearestNakedLevel.Price)));
                 }
 
-                // Stale/expiry warning
+                // Stale signal warning (15–30 min)
                 if (signalIsStale)
                 {
-                    double elapsedMin  = (DateTime.Now - lastSignalDetectedTime).TotalMinutes;
-                    double remaining   = SignalExpireMinutes - elapsedMin;
-                    string expiryLine  = remaining <= 1.0
-                        ? "\u23f3 Expiring imminently — wait for fresh signal"
-                        : string.Format("\u23f3 Expires in {0}m — consider fresh signal", (int)Math.Ceiling(remaining));
                     lines.Add("");
                     lines.Add(string.Format("\u26a0 [STALE] Signal detected {0}", elapsedTime));
-                    lines.Add(expiryLine);
+                    lines.Add("Consider waiting for fresh signal");
                 }
 
                 // Conflict warnings
@@ -4805,8 +4747,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (brush != null && !string.IsNullOrEmpty(line))
                     rt.DrawText(line, dxEnhDashFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush,
-                        SharpDX.Direct2D1.DrawTextOptions.Clip, SharpDX.DirectWrite.MeasuringMode.Natural);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
 
                 ty += lineH;
                 first = false;
@@ -4821,10 +4762,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX              = 10f;
             const float PadY              = 8f;
-            const float LineHeightMult    = 2.2f;
+            const float LineHeightMult    = 1.8f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = MonitoringDashboardFontSize * LineHeightMult;
-            float       panelW = 480f;
+            float       panelW = 420f;
 
             string session    = GetActiveSessionName();
 
@@ -4870,11 +4811,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (tpoCurrentPOC > 0 && tpoCurrentVAH > 0 && tpoCurrentVAL > 0)
                 {
                     double vaRange = (tpoCurrentVAH - tpoCurrentVAL) / TickSize;
-                    lines.Add(string.Format("\u25ba POC:{0} VAH:{1} VAL:{2}",
+                    lines.Add(string.Format("\u25ba POC: {0}  VAH: {1}  VAL: {2}  (VA {3:F0}p)",
                         Instrument.MasterInstrument.FormatPrice(tpoCurrentPOC),
                         Instrument.MasterInstrument.FormatPrice(tpoCurrentVAH),
-                        Instrument.MasterInstrument.FormatPrice(tpoCurrentVAL)));
-                    lines.Add(string.Format("  VA range: {0:F0}p", vaRange));
+                        Instrument.MasterInstrument.FormatPrice(tpoCurrentVAL),
+                        vaRange));
 
                     // Price location relative to value area
                     double closePx = _latestClose;
@@ -4961,8 +4902,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (brush != null && !string.IsNullOrEmpty(line))
                     rt.DrawText(line, dxEnhMonFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush,
-                        SharpDX.Direct2D1.DrawTextOptions.Clip, SharpDX.DirectWrite.MeasuringMode.Natural);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
 
                 ty += lineH;
                 first = false;
@@ -5014,7 +4954,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX              = 8f;
             const float PadY              = 6f;
-            const float LineHeightMult    = 2.2f;
+            const float LineHeightMult    = 1.8f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = MainDashboardFontSize * LineHeightMult;
             float       panelW = 420f;
@@ -5073,8 +5013,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     textBrush = dxEnhDashTextBrush;
                 if (textBrush != null)
                     rt.DrawText(line, dxMainDashFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), textBrush,
-                        SharpDX.Direct2D1.DrawTextOptions.Clip, SharpDX.DirectWrite.MeasuringMode.Natural);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), textBrush);
                 ty += lineH;
                 first = false;
             }
@@ -5986,6 +5925,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (rt == null) return;
             if (tpoSessions == null) return;
 
+            // Bug 10: reset label Y-position tracking for this render pass
+            _usedLabelYPositions.Clear();
+
             // Render completed sessions (historical) and active sessions
             lock (_sessionLock)
             {
@@ -6411,23 +6353,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void UpdateOTEZones()
         {
             if (CurrentBar < OTESwingStrength * 2 + 1) return;
-
-            // Bug B Fix 1 — Age-based deactivation
-            int maxZoneAgeBars = OTEMaxZones * OTESwingStrength * 20;
-            foreach (var z in oteZones)
-                if (z.IsActive && (CurrentBar - z.CreatedBar) > maxZoneAgeBars)
-                    z.IsActive = false;
-
-            // Bug B Fix 2 — Price-based deactivation (price traded through the 79% level)
-            foreach (var z in oteZones)
-            {
-                if (!z.IsActive) continue;
-                bool priceThroughZone = z.IsBullish
-                    ? Low[0] < z.Level79   // price traded below 79% on a bullish zone
-                    : High[0] > z.Level79; // price traded above 79% on a bearish zone
-                if (priceThroughZone)
-                    z.IsActive = false;
-            }
 
             int swingBar = OTESwingStrength;
 
