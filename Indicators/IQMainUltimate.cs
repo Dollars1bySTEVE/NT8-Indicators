@@ -4660,7 +4660,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX              = 10f;
             const float PadY              = 8f;
-            const float LineHeightMult    = 1.8f;
+            const float LineHeightMult    = 2.2f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = EntryModeDashboardFontSize * LineHeightMult;
             float       panelW = 480f;
@@ -4805,7 +4805,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (brush != null && !string.IsNullOrEmpty(line))
                     rt.DrawText(line, dxEnhDashFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush,
+                        SharpDX.Direct2D1.DrawTextOptions.Clip, SharpDX.DirectWrite.MeasuringMode.Natural);
 
                 ty += lineH;
                 first = false;
@@ -4820,7 +4821,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX              = 10f;
             const float PadY              = 8f;
-            const float LineHeightMult    = 1.8f;
+            const float LineHeightMult    = 2.2f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = MonitoringDashboardFontSize * LineHeightMult;
             float       panelW = 480f;
@@ -4960,7 +4961,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (brush != null && !string.IsNullOrEmpty(line))
                     rt.DrawText(line, dxEnhMonFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), brush,
+                        SharpDX.Direct2D1.DrawTextOptions.Clip, SharpDX.DirectWrite.MeasuringMode.Natural);
 
                 ty += lineH;
                 first = false;
@@ -5012,7 +5014,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             const float PadX              = 8f;
             const float PadY              = 6f;
-            const float LineHeightMult    = 1.8f;
+            const float LineHeightMult    = 2.2f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = MainDashboardFontSize * LineHeightMult;
             float       panelW = 420f;
@@ -5071,7 +5073,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     textBrush = dxEnhDashTextBrush;
                 if (textBrush != null)
                     rt.DrawText(line, dxMainDashFormat,
-                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), textBrush);
+                        new SharpDX.RectangleF(panelX + PadX, ty, panelW - PadX * 2, lineH), textBrush,
+                        SharpDX.Direct2D1.DrawTextOptions.Clip, SharpDX.DirectWrite.MeasuringMode.Natural);
                 ty += lineH;
                 first = false;
             }
