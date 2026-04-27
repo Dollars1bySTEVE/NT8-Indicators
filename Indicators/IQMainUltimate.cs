@@ -5099,12 +5099,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return;
 
-            const float PadX              = 8f;
-            const float PadY              = 6f;
+            const float PadX              = 10f;
+            const float PadY              = 8f;
             const float LineHeightMult    = 2.2f;
             const float PanelHeightBuffer = 4f;
             float       lineH  = MainDashboardFontSize * LineHeightMult;
-            float       panelW = 420f;
+            float       panelW = 480f;
 
             string activeSessName = "—";
             if (activeSessions != null)
