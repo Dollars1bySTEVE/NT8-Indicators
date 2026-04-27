@@ -1532,65 +1532,72 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
-        #region Parameters — 12. Dashboard
+        #region Parameters — 12. Signal Colors & Halo
 
+        // ShowDashboard and DashPosition are legacy IQMainGPU properties not used in IQMainUltimate
+        // (dashboards are controlled in group 16). Keep backing fields for XML serialization
+        // compatibility but hide them from the settings UI.
         [NinjaScriptProperty]
-        [Display(Name = "Show Dashboard", Order = 1, GroupName = "12. Dashboard")]
+        [Browsable(false)]
         public bool ShowDashboard { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Dashboard Position", Order = 2, GroupName = "12. Dashboard")]
+        [Browsable(false)]
         public IQMDashboardPosition DashPosition { get; set; }
 
+        // DashFontSize / DashOpacity drive the Range Table and DST Table rendering — they
+        // belong visually with the Tables group (13) but are kept here for serialization order.
         [NinjaScriptProperty]
         [Range(10, 50)]
-        [Display(Name = "Dashboard Font Size", Order = 3, GroupName = "12. Dashboard")]
+        [Display(Name = "Table Font Size", Order = 10, GroupName = "13. Tables",
+            Description = "Font size for Range and DST tables.")]
         public int DashFontSize { get; set; }
 
         [NinjaScriptProperty]
         [Range(20, 100)]
-        [Display(Name = "Dashboard Opacity %", Order = 4, GroupName = "12. Dashboard")]
+        [Display(Name = "Table Background Opacity %", Order = 11, GroupName = "13. Tables",
+            Description = "Background opacity for Range and DST tables (20–100%).")]
         public int DashOpacity { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Halo on Signals", Order = 5, GroupName = "12. Dashboard")]
+        [Display(Name = "Show Halo on Signals", Order = 1, GroupName = "12. Signal Colors & Halo")]
         public bool ShowHalo { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Halo Layers", Order = 6, GroupName = "12. Dashboard")]
+        [Display(Name = "Halo Layers", Order = 2, GroupName = "12. Signal Colors & Halo")]
         public int HaloLayers { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Bullish Color", Order = 7, GroupName = "12. Dashboard")]
+        [Display(Name = "Bullish Color", Order = 3, GroupName = "12. Signal Colors & Halo")]
         [XmlIgnore]
         public System.Windows.Media.Brush BullishColor { get; set; }
         [Browsable(false)]
         public string BullishColorSerializable { get { return Serialize.BrushToString(BullishColor); } set { BullishColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Bearish Color", Order = 8, GroupName = "12. Dashboard")]
+        [Display(Name = "Bearish Color", Order = 4, GroupName = "12. Signal Colors & Halo")]
         [XmlIgnore]
         public System.Windows.Media.Brush BearishColor { get; set; }
         [Browsable(false)]
         public string BearishColorSerializable { get { return Serialize.BrushToString(BearishColor); } set { BearishColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Absorption Color", Order = 9, GroupName = "12. Dashboard")]
+        [Display(Name = "Absorption Color", Order = 5, GroupName = "12. Signal Colors & Halo")]
         [XmlIgnore]
         public System.Windows.Media.Brush AbsorptionColor { get; set; }
         [Browsable(false)]
         public string AbsorptionColorSerializable { get { return Serialize.BrushToString(AbsorptionColor); } set { AbsorptionColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Imbalance Color", Order = 10, GroupName = "12. Dashboard")]
+        [Display(Name = "Imbalance Color", Order = 6, GroupName = "12. Signal Colors & Halo")]
         [XmlIgnore]
         public System.Windows.Media.Brush ImbalanceColor { get; set; }
         [Browsable(false)]
         public string ImbalanceColorSerializable { get { return Serialize.BrushToString(ImbalanceColor); } set { ImbalanceColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
-        [Display(Name = "Fake Breakout Color", Order = 11, GroupName = "12. Dashboard")]
+        [Display(Name = "Fake Breakout Color", Order = 7, GroupName = "12. Signal Colors & Halo")]
         [XmlIgnore]
         public System.Windows.Media.Brush FakeBreakoutColor { get; set; }
         [Browsable(false)]
