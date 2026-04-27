@@ -438,6 +438,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private const int STALE_SIGNAL_MINUTES  = 15;
         private const int EXPIRE_SIGNAL_MINUTES = 30;
 
+        // Maximum TPO-sourced stop/target distances (ticks) — prevents absurd levels on overnight gaps
+        private const int MaxTPOStopTicks   = 200;
+        private const int MaxTPOTargetTicks = 400;
+
+        // Cached bar values — set every OnBarUpdate call so OnRender always reads the freshest tick
+        private double _latestClose;
+        private double _cachedVwapValue;
+        private double _cachedEma50Value;
+
         // Severity tag constants used in VeryDetailed conflict descriptions
         private const string SeverityCritical = "\u26a0 [CRITICAL]";
         private const string SeverityHigh     = "\u26a0 [HIGH]";
@@ -492,6 +501,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // ── Nearest naked level (for dashboards) ─────────────────────────────
         private NakedTPOLevel tpoNearestNakedLevel;
+
+        // ── Label Y-position de-collision tracking (cleared at start of RenderTPOLevels) ──
+        private HashSet<int> _usedLabelYPositions = new HashSet<int>();
 
         // ── TPO SharpDX brushes ───────────────────────────────────────────────
         /// <summary>Gold brush for POC horizontal lines (#FFD700).</summary>
@@ -2504,7 +2516,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < 1)
                 return;
 
-            // ── EMA plot series ───────────────────────────────────────────────
+            // Cache latest close and indicator values so OnRender always reads the freshest tick
+            _latestClose = Close[0];
             Values[0][0] = (ShowEma5   && CurrentBar >= 5)   ? ema5Ind[0]   : double.NaN;
             Values[1][0] = (ShowEma13  && CurrentBar >= 13)  ? ema13Ind[0]  : double.NaN;
             Values[2][0] = (ShowEma50  && CurrentBar >= 50)  ? ema50Ind[0]  : double.NaN;
@@ -2790,6 +2803,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (Low[0]  < psyWeekLow)  psyWeekLow  = Low[0];
                 }
             }
+
+            // Cache VWAP and EMA50 values so CalculateEntryScore() and RenderMonitoringDashboard()
+            // always reference the same bar data regardless of render timing (Bug 8 fix)
+            if (vwapEthData != null && vwapEthData.Count > 0)
+            {
+                var vd = vwapEthData[vwapEthData.Count - 1];
+                if (vd != null) _cachedVwapValue = vd.Vwap;
+            }
+            if (CurrentBar >= 50)
+                _cachedEma50Value = ema50Ind[0];
 
             // ── Sessions alerts ───────────────────────────────────────────────
             if (IsFirstTickOfBar && adrValue > 0)
@@ -3944,7 +3967,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Compute all dashboard metrics once per render frame.</summary>
         private void CalculateDashboardMetrics()
         {
-            dashboardEntryPrice    = Close[0];
+            dashboardEntryPrice    = _latestClose;
             dashboardConfidence    = CalculateEntryScore();
             dashboardPrimarySignal = GetPrimarySignal();
             dashboardStopPrice     = CalculateDynamicStop();
@@ -4015,52 +4038,122 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (snap.IsFakeBreakout) score -= 20;
             }
 
-            if (vwapEthData != null && vwapEthData.Count > 0)
+            if (_cachedVwapValue > 0)
             {
-                var vd = vwapEthData[vwapEthData.Count - 1];
-                if (vd != null)
-                {
-                    if (Close[0] > vd.Vwap) score += 10;
-                    else                     score -= 10;
-                }
+                if (_latestClose > _cachedVwapValue) score += 10;
+                else                                  score -= 10;
             }
 
             if (CurrentBar >= 50)
             {
-                if (Close[0] > ema50Ind[0]) score += 5;
-                else                         score -= 5;
+                if (_latestClose > _cachedEma50Value) score += 5;
+                else                                   score -= 5;
             }
 
             return Math.Max(0, Math.Min(100, score));
         }
 
+        /// <summary>Returns true when the current primary signal is directionally bullish.</summary>
+        private bool IsBullishSignal()
+        {
+            return dashboardPrimarySignal != null &&
+                   (dashboardPrimarySignal.Contains("BULLISH") ||
+                    dashboardPrimarySignal == "BUY PRESSURE");
+        }
+
+        /// <summary>Returns true when the current primary signal is directionally bearish.</summary>
+        private bool IsBearishSignal()
+        {
+            return dashboardPrimarySignal != null &&
+                   (dashboardPrimarySignal.Contains("BEARISH")    ||
+                    dashboardPrimarySignal == "SELL PRESSURE"      ||
+                    dashboardPrimarySignal == "FAKE BREAKOUT");
+        }
+
         /// <summary>Calculate the stop price based on StopMode setting.
         /// Priority for AutoDetected: VAL (if available) → liquidity zones → pivot S1 → manual fallback.
-        /// TPOBased: always uses the current session VAL.</summary>
+        /// TPOBased: always uses the current session VAL.
+        /// Direction-aware: bearish signals place stop above price, bullish signals below.</summary>
         private double CalculateDynamicStop()
         {
-            double close = Close[0];
+            double close    = _latestClose;
+            bool   bearish  = IsBearishSignal();
+            double maxDist  = MaxTPOStopTicks * TickSize;
 
             switch (StopMode)
             {
                 case UltimateStopMode.TPOBased:
-                    // Always use the Value Area Low — TPO purist mode
+                    if (bearish)
+                    {
+                        // Bearish: stop above price — use VAH
+                        if (tpoCurrentVAH > 0 && tpoCurrentVAH > close)
+                        {
+                            if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                                return tpoCurrentVAH;
+                        }
+                        if (previousDayTPO != null && previousDayTPO.ValueAreaHigh > 0 && previousDayTPO.ValueAreaHigh > close)
+                        {
+                            if (Math.Abs(close - previousDayTPO.ValueAreaHigh) <= maxDist)
+                                return previousDayTPO.ValueAreaHigh;
+                        }
+                        return close + StopDistanceTicks * TickSize;
+                    }
+                    // Bullish: stop below price — use VAL
                     if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
-                        return tpoCurrentVAL;
-                    // Fallback: previous day VAL via previousDayTPO
+                    {
+                        if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                            return tpoCurrentVAL;
+                    }
                     if (previousDayTPO != null && previousDayTPO.ValueAreaLow > 0 && previousDayTPO.ValueAreaLow < close)
-                        return previousDayTPO.ValueAreaLow;
+                    {
+                        if (Math.Abs(close - previousDayTPO.ValueAreaLow) <= maxDist)
+                            return previousDayTPO.ValueAreaLow;
+                    }
                     return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.AutoDetected:
+                    if (bearish)
+                    {
+                        // Bearish: stop above price
+                        // 1. Previous day VAH
+                        if (previousDayTPO != null && previousDayTPO.ValueAreaHigh > 0 && previousDayTPO.ValueAreaHigh > close)
+                        {
+                            if (Math.Abs(close - previousDayTPO.ValueAreaHigh) <= maxDist)
+                                return previousDayTPO.ValueAreaHigh + TickSize;
+                        }
+                        // 2. Current session VAH
+                        if (tpoCurrentVAH > 0 && tpoCurrentVAH > close)
+                        {
+                            if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                                return tpoCurrentVAH + TickSize;
+                        }
+                        // 3. Bearish liquidity zone highs
+                        if (liquidityZones != null)
+                        {
+                            foreach (LiquidityZone z in liquidityZones)
+                            {
+                                if (!z.IsRecovered && !z.IsBullish && z.HighPrice > close)
+                                    return z.HighPrice + TickSize;
+                            }
+                        }
+                        // 4. Pivot R1
+                        if (currentPivot != null && currentPivot.R1 > close)
+                            return currentPivot.R1;
+                        return close + StopDistanceTicks * TickSize;
+                    }
+                    // Bullish: stop below price
                     // 1. Check yesterday's VAL (if price is above it)
                     if (previousDayTPO != null && previousDayTPO.ValueAreaLow > 0 && previousDayTPO.ValueAreaLow < close)
-                        return previousDayTPO.ValueAreaLow - TickSize;
-
+                    {
+                        if (Math.Abs(close - previousDayTPO.ValueAreaLow) <= maxDist)
+                            return previousDayTPO.ValueAreaLow - TickSize;
+                    }
                     // 2. Check current session VAL
                     if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
-                        return tpoCurrentVAL - TickSize;
-
+                    {
+                        if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                            return tpoCurrentVAL - TickSize;
+                    }
                     // 3. Check liquidity zones (original logic)
                     if (liquidityZones != null)
                     {
@@ -4070,19 +4163,35 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 return z.LowPrice - TickSize;
                         }
                     }
-
                     // 4. Check pivot S1
                     if (currentPivot != null && currentPivot.S1 > 0)
                         return currentPivot.S1;
-
                     return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.PivotBased:
+                    if (bearish)
+                    {
+                        if (currentPivot != null && currentPivot.R1 > 0)
+                            return currentPivot.R1;
+                        return close + StopDistanceTicks * TickSize;
+                    }
                     if (currentPivot != null && currentPivot.S1 > 0)
                         return currentPivot.S1;
                     return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.HVNBased:
+                    if (bearish)
+                    {
+                        double bestSrAbove = double.MaxValue;
+                        if (srLevels != null)
+                        {
+                            foreach (double sr in srLevels)
+                            {
+                                if (sr > close && sr < bestSrAbove) bestSrAbove = sr;
+                            }
+                        }
+                        return bestSrAbove < double.MaxValue ? bestSrAbove + TickSize : close + StopDistanceTicks * TickSize;
+                    }
                     double bestSr = 0;
                     if (srLevels != null)
                     {
@@ -4095,43 +4204,119 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 case UltimateStopMode.ManualInput:
                 default:
-                    return close - StopDistanceTicks * TickSize;
+                    return bearish ? close + StopDistanceTicks * TickSize : close - StopDistanceTicks * TickSize;
             }
         }
 
         /// <summary>Calculate the target price based on TargetMode setting.
         /// Priority for AutoDetected: VAH → IB High Extension (if trending) → naked POC → pivot R1/R2.
-        /// VAH: use current session VAH. IBExtension: use IB high extension.</summary>
+        /// VAH: use current session VAH. IBExtension: use IB high extension.
+        /// Direction-aware: bearish signals target below price, bullish signals above.</summary>
         private double CalculateDynamicTarget()
         {
-            double close = Close[0];
+            double close    = _latestClose;
+            bool   bearish  = IsBearishSignal();
+            double maxDist  = MaxTPOTargetTicks * TickSize;
 
             switch (TargetMode)
             {
                 case UltimateTargetMode.VAH:
-                    // Target the current session Value Area High
+                    if (bearish)
+                    {
+                        // Bearish: target the current session Value Area Low
+                        if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
+                        {
+                            if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                                return tpoCurrentVAL;
+                        }
+                        return close - TargetDistanceTicks * TickSize;
+                    }
+                    // Bullish: target the current session Value Area High
                     if (tpoCurrentVAH > close)
-                        return tpoCurrentVAH;
+                    {
+                        if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                            return tpoCurrentVAH;
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.IBExtension:
-                    // Target the IB High Extension if price is trending up
+                    if (bearish)
+                    {
+                        // Bearish: target IB Low Extension if price is trending down
+                        if (tpoCurrentIBLowExt > 0 && tpoCurrentIBLowExt < close)
+                        {
+                            if (Math.Abs(close - tpoCurrentIBLowExt) <= maxDist)
+                                return tpoCurrentIBLowExt;
+                        }
+                        // Fallback to VAL
+                        if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
+                        {
+                            if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                                return tpoCurrentVAL;
+                        }
+                        return close - TargetDistanceTicks * TickSize;
+                    }
+                    // Bullish: Target the IB High Extension if price is trending up
                     if (tpoCurrentIBHighExt > close)
-                        return tpoCurrentIBHighExt;
+                    {
+                        if (Math.Abs(close - tpoCurrentIBHighExt) <= maxDist)
+                            return tpoCurrentIBHighExt;
+                    }
                     // Fallback to VAH
                     if (tpoCurrentVAH > close)
-                        return tpoCurrentVAH;
+                    {
+                        if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                            return tpoCurrentVAH;
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.AutoDetected:
+                    if (bearish)
+                    {
+                        // 1. Check current session VAL (if price is above it)
+                        if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
+                        {
+                            if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                                return tpoCurrentVAL;
+                        }
+                        // 2. Check IB Low Extension (if session is in trend mode)
+                        if (tpoCurrentShape == TPOProfileShape.TrendDay && tpoCurrentIBLowExt > 0 && tpoCurrentIBLowExt < close)
+                        {
+                            if (Math.Abs(close - tpoCurrentIBLowExt) <= maxDist)
+                                return tpoCurrentIBLowExt;
+                        }
+                        // 3. Check nearest naked POC from previous days (below price)
+                        if (nakedTPOLevels != null)
+                        {
+                            double bestNaked = double.MinValue;
+                            foreach (var nl in nakedTPOLevels)
+                            {
+                                if (!nl.IsClosed && nl.LevelType == "POC" && nl.Price < close && nl.Price > bestNaked)
+                                    bestNaked = nl.Price;
+                            }
+                            if (bestNaked > double.MinValue)
+                                return bestNaked;
+                        }
+                        // 4. Check pivot S1/S2
+                        if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                            return currentPivot.S1;
+                        if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
+                            return currentPivot.S2;
+                        return close - TargetDistanceTicks * TickSize;
+                    }
+                    // Bullish
                     // 1. Check current session VAH (if price is below it)
                     if (tpoCurrentVAH > close)
-                        return tpoCurrentVAH;
-
+                    {
+                        if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                            return tpoCurrentVAH;
+                    }
                     // 2. Check IB High Extension (if session is in trending mode)
                     if (tpoCurrentShape == TPOProfileShape.TrendDay && tpoCurrentIBHighExt > close)
-                        return tpoCurrentIBHighExt;
-
+                    {
+                        if (Math.Abs(close - tpoCurrentIBHighExt) <= maxDist)
+                            return tpoCurrentIBHighExt;
+                    }
                     // 3. Check nearest naked POC from previous days (above price)
                     if (nakedTPOLevels != null)
                     {
@@ -4144,7 +4329,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (bestNaked < double.MaxValue)
                             return bestNaked;
                     }
-
                     // 4. Check pivot R1/R2
                     if (currentPivot != null && currentPivot.R1 > close)
                         return currentPivot.R1;
@@ -4153,18 +4337,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.PivotR1:
+                    if (bearish)
+                    {
+                        if (currentPivot != null && currentPivot.S1 > 0)
+                            return currentPivot.S1;
+                        return close - TargetDistanceTicks * TickSize;
+                    }
                     if (currentPivot != null && currentPivot.R1 > 0)
                         return currentPivot.R1;
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.PivotR2:
+                    if (bearish)
+                    {
+                        if (currentPivot != null && currentPivot.S2 > 0)
+                            return currentPivot.S2;
+                        return close - TargetDistanceTicks * TickSize;
+                    }
                     if (currentPivot != null && currentPivot.R2 > 0)
                         return currentPivot.R2;
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.ManualInput:
                 default:
-                    return close + TargetDistanceTicks * TickSize;
+                    return bearish ? close - TargetDistanceTicks * TickSize : close + TargetDistanceTicks * TickSize;
             }
         }
 
@@ -4269,92 +4465,90 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool DetectConflicts(out string description)
         {
             description = "";
-            if (snapshots == null || snapshots.Count == 0 ||
-                vwapEthData == null || vwapEthData.Count == 0)
+            if (snapshots == null || snapshots.Count == 0)
                 return false;
 
-            var snap     = snapshots[snapshots.Count - 1];
-            var vwapData = vwapEthData[vwapEthData.Count - 1];
-            if (vwapData == null) return false;
+            var snap = snapshots[snapshots.Count - 1];
 
-            var  parts     = new System.Text.StringBuilder();
-            bool anyConflict = false;
+            var  parts        = new System.Text.StringBuilder();
+            bool anyConflict  = false;
+            var  addedLines   = new HashSet<string>();   // Bug 1: deduplicate identical conflict lines
 
             bool volumeBullish  = snap.Delta > 0;
-            bool priceAboveVwap = Close[0] > vwapData.Vwap;
+            bool priceAboveVwap = _cachedVwapValue > 0 && _latestClose > _cachedVwapValue;
 
             // Volume vs VWAP direction conflict
-            if (volumeBullish && !priceAboveVwap)
+            if (_cachedVwapValue > 0 && volumeBullish && !priceAboveVwap)
             {
                 anyConflict = true;
+                string line1 = "", line2 = "";
                 switch (ConflictLevel)
                 {
                     case ConflictDescriptionLevel.Brief:
-                        parts.AppendLine("\u26a0 Conflict detected");
-                        break;
+                        line1 = "\u26a0 Conflict detected"; break;
                     case ConflictDescriptionLevel.Detailed:
-                        parts.AppendLine("\u26a0 VOLUME BULLISH BUT PRICE BELOW VWAP (Exhaustion Risk)");
-                        break;
+                        line1 = "\u26a0 VOLUME BULLISH BUT PRICE BELOW VWAP (Exhaustion Risk)"; break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine(SeverityHigh + " VOLUME BULLISH BUT PRICE BELOW VWAP");
-                        parts.AppendLine("  \u2192 Possible exhaustion or accumulation phase");
-                        break;
+                        line1 = SeverityHigh + " VOLUME BULLISH BUT PRICE BELOW VWAP";
+                        line2 = "  \u2192 Possible exhaustion or accumulation phase"; break;
                 }
+                if (!string.IsNullOrEmpty(line1) && addedLines.Add(line1)) parts.AppendLine(line1);
+                if (!string.IsNullOrEmpty(line2) && addedLines.Add(line2)) parts.AppendLine(line2);
             }
-            else if (!volumeBullish && priceAboveVwap)
+            else if (_cachedVwapValue > 0 && !volumeBullish && priceAboveVwap)
             {
                 anyConflict = true;
+                string line1 = "", line2 = "";
                 switch (ConflictLevel)
                 {
                     case ConflictDescriptionLevel.Brief:
-                        parts.AppendLine("\u26a0 Conflict detected");
-                        break;
+                        line1 = "\u26a0 Conflict detected"; break;
                     case ConflictDescriptionLevel.Detailed:
-                        parts.AppendLine("\u26a0 VOLUME BEARISH BUT PRICE ABOVE VWAP (Distribution Risk)");
-                        break;
+                        line1 = "\u26a0 VOLUME BEARISH BUT PRICE ABOVE VWAP (Distribution Risk)"; break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine(SeverityHigh + " VOLUME BEARISH BUT PRICE ABOVE VWAP");
-                        parts.AppendLine("  \u2192 Possible distribution or reversal setup");
-                        break;
+                        line1 = SeverityHigh + " VOLUME BEARISH BUT PRICE ABOVE VWAP";
+                        line2 = "  \u2192 Possible distribution or reversal setup"; break;
                 }
+                if (!string.IsNullOrEmpty(line1) && addedLines.Add(line1)) parts.AppendLine(line1);
+                if (!string.IsNullOrEmpty(line2) && addedLines.Add(line2)) parts.AppendLine(line2);
             }
 
             // Fake breakout conflict
             if (snap.IsFakeBreakout)
             {
                 anyConflict = true;
+                string line1 = "", line2 = "";
                 switch (ConflictLevel)
                 {
                     case ConflictDescriptionLevel.Brief:
-                        parts.AppendLine("\u26a0 Fake breakout");
-                        break;
+                        line1 = "\u26a0 Fake breakout"; break;
                     case ConflictDescriptionLevel.Detailed:
-                        parts.AppendLine("\u26a0 FAKE BREAKOUT DETECTED (High-Risk Entry)");
-                        break;
+                        line1 = "\u26a0 FAKE BREAKOUT DETECTED (High-Risk Entry)"; break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine(SeverityCritical + " FAKE BREAKOUT DETECTED");
-                        parts.AppendLine("  \u2192 Avoid entries — wait for confirmation close");
-                        break;
+                        line1 = SeverityCritical + " FAKE BREAKOUT DETECTED";
+                        line2 = "  \u2192 Avoid entries \u2014 wait for confirmation close"; break;
                 }
+                if (!string.IsNullOrEmpty(line1) && addedLines.Add(line1)) parts.AppendLine(line1);
+                if (!string.IsNullOrEmpty(line2) && addedLines.Add(line2)) parts.AppendLine(line2);
             }
 
             // Low participation session
             if (!IsHighParticipationSession())
             {
                 anyConflict = true;
+                string line1 = "", line2 = "";
                 switch (ConflictLevel)
                 {
                     case ConflictDescriptionLevel.Brief:
-                        parts.AppendLine("\u26a0 Low participation");
-                        break;
+                        line1 = "\u26a0 Low participation"; break;
                     case ConflictDescriptionLevel.Detailed:
-                        parts.AppendLine("\u26a0 LOW PARTICIPATION SESSION (Thin Market)");
-                        break;
+                        line1 = "\u26a0 LOW PARTICIPATION SESSION (Thin Market)"; break;
                     case ConflictDescriptionLevel.VeryDetailed:
-                        parts.AppendLine(SeverityModerate + " LOW PARTICIPATION SESSION");
-                        parts.AppendLine("  \u2192 Off-hours: fills may be poor, spread elevated");
-                        break;
+                        line1 = SeverityModerate + " LOW PARTICIPATION SESSION";
+                        line2 = "  \u2192 Off-hours: fills may be poor, spread elevated"; break;
                 }
+                if (!string.IsNullOrEmpty(line1) && addedLines.Add(line1)) parts.AppendLine(line1);
+                if (!string.IsNullOrEmpty(line2) && addedLines.Add(line2)) parts.AppendLine(line2);
             }
 
             description = parts.ToString().TrimEnd();
@@ -4445,11 +4639,27 @@ namespace NinjaTrader.NinjaScript.Indicators
                 lines.Add(targetLabel);
 
                 double rr = 0;
-                if (dashboardStopPrice > 0 && dashboardEntryPrice > dashboardStopPrice)
+                if (IsBullishSignal())
                 {
                     double riskDist   = dashboardEntryPrice - dashboardStopPrice;
                     double rewardDist = dashboardTargetPrice - dashboardEntryPrice;
-                    if (riskDist > 0) rr = rewardDist / riskDist;
+                    if (riskDist > 0 && rewardDist > 0) rr = rewardDist / riskDist;
+                }
+                else if (IsBearishSignal())
+                {
+                    double riskDist   = dashboardStopPrice - dashboardEntryPrice;
+                    double rewardDist = dashboardEntryPrice - dashboardTargetPrice;
+                    if (riskDist > 0 && rewardDist > 0) rr = rewardDist / riskDist;
+                }
+                else
+                {
+                    // Neutral: try both directions
+                    if (dashboardEntryPrice > dashboardStopPrice && dashboardStopPrice > 0)
+                    {
+                        double riskDist   = dashboardEntryPrice - dashboardStopPrice;
+                        double rewardDist = dashboardTargetPrice - dashboardEntryPrice;
+                        if (riskDist > 0) rr = rewardDist / riskDist;
+                    }
                 }
                 lines.Add(rr > 0 ? string.Format("R/R:        {0:F2}:1", rr) : "R/R:        N/A");
 
@@ -4458,7 +4668,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (hasTpoContext)
                 {
                     lines.Add("");
-                    double closePx = Close[0];
+                    double closePx = _latestClose;
                     if (tpoCurrentVAH > 0 && tpoCurrentVAL > 0)
                     {
                         bool  atVAH = Math.Abs(closePx - tpoCurrentVAH) <= 3 * TickSize;
@@ -4503,6 +4713,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
+
+            // Bug 1: deduplicate consecutive identical lines before rendering
+            for (int i = lines.Count - 1; i > 0; i--)
+                if (lines[i] == lines[i - 1])
+                    lines.RemoveAt(i);
 
             float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
 
@@ -4552,18 +4767,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             string session    = GetActiveSessionName();
 
             string vwapStatus = "VWAP: N/A";
-            if (vwapEthData != null && vwapEthData.Count > 0 && CurrentBar >= 50)
+            if (_cachedVwapValue > 0 && CurrentBar >= 50)
             {
-                var vd = vwapEthData[vwapEthData.Count - 1];
-                if (vd != null)
-                {
-                    bool aboveVwap  = Close[0] > vd.Vwap;
-                    bool aboveEma50 = Close[0] > ema50Ind[0];
-                    string vwapDir  = aboveVwap  ? "Price>VWAP"  : "Price<VWAP";
-                    string emaDir   = aboveEma50 ? "Price>EMA50" : "Price<EMA50";
-                    string align    = (aboveVwap == aboveEma50) ? "ALIGNED" : "DIVERGED";
-                    vwapStatus = string.Format("{0} | {1} [{2}]", vwapDir, emaDir, align);
-                }
+                bool aboveVwap  = _latestClose > _cachedVwapValue;
+                bool aboveEma50 = _cachedEma50Value > 0 && _latestClose > _cachedEma50Value;
+                string vwapDir  = aboveVwap  ? "Price>VWAP"  : "Price<VWAP";
+                string emaDir   = aboveEma50 ? "Price>EMA50" : "Price<EMA50";
+                string align    = (aboveVwap == aboveEma50) ? "ALIGNED" : "DIVERGED";
+                vwapStatus = string.Format("{0} | {1} [{2}]", vwapDir, emaDir, align);
             }
 
             string rangeInfo = adrValue > 0
@@ -4604,7 +4815,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         vaRange));
 
                     // Price location relative to value area
-                    double closePx = Close[0];
+                    double closePx = _latestClose;
                     string priceCtx;
                     if (Math.Abs(closePx - tpoCurrentVAH) <= 3 * TickSize)
                         priceCtx = string.Format("Price at VAH -{0:F0}t (testing upper value)", (tpoCurrentVAH - closePx) / TickSize);
@@ -4655,6 +4866,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         lines.Add(wrapped);
                 }
             }
+
+            // Bug 1: deduplicate consecutive identical lines before rendering
+            for (int i = lines.Count - 1; i > 0; i--)
+                if (lines[i] == lines[i - 1])
+                    lines.RemoveAt(i);
 
             float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
 
@@ -5349,13 +5565,24 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Update cached dashboard metrics from best active session
             if (bestActive != null)
             {
-                tpoCurrentPOC          = bestActive.POCPrice;
-                tpoCurrentVAH          = bestActive.ValueAreaHigh;
-                tpoCurrentVAL          = bestActive.ValueAreaLow;
-                tpoCurrentIBHigh       = bestActive.IBHigh > double.MinValue ? bestActive.IBHigh : 0;
-                tpoCurrentIBLow        = bestActive.IBLow  < double.MaxValue ? bestActive.IBLow  : 0;
-                tpoCurrentIBHighExt    = bestActive.IBHighExtension;
-                tpoCurrentIBLowExt     = bestActive.IBLowExtension;
+                tpoCurrentPOC = bestActive.POCPrice;
+                tpoCurrentVAH = bestActive.ValueAreaHigh;
+                tpoCurrentVAL = bestActive.ValueAreaLow;
+
+                // Bug 3: apply IB range sanity guard — suppress IB values if range exceeds 3× ADR
+                double ibHigh = bestActive.IBHigh > double.MinValue ? bestActive.IBHigh : 0;
+                double ibLow  = bestActive.IBLow  < double.MaxValue ? bestActive.IBLow  : 0;
+                double maxIBRange = adrValue > 0 ? adrValue * 3.0 : double.MaxValue;
+                if (ibHigh > 0 && ibLow > 0 && (ibHigh - ibLow) > maxIBRange)
+                {
+                    ibHigh = 0;
+                    ibLow  = 0;
+                }
+                tpoCurrentIBHigh    = ibHigh;
+                tpoCurrentIBLow     = ibLow;
+                tpoCurrentIBHighExt = (ibHigh > 0 && ibLow > 0) ? bestActive.IBHighExtension : 0;
+                tpoCurrentIBLowExt  = (ibHigh > 0 && ibLow > 0) ? bestActive.IBLowExtension  : 0;
+
                 tpoCurrentShape        = bestActive.ProfileShape;
                 tpoCurrentSessionLabel = GetSessionLabel(bestActive.SessionId);
             }
@@ -5695,6 +5922,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (rt == null) return;
             if (tpoSessions == null) return;
 
+            // Bug 10: reset label Y-position tracking for this render pass
+            _usedLabelYPositions.Clear();
+
             // Render completed sessions (historical) and active sessions
             lock (_sessionLock)
             {
@@ -5744,8 +5974,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                                     GetSessionLabel(sess.SessionId),
                                     Instrument.MasterInstrument.FormatPrice(sess.POCPrice),
                                     volStr);
+                                float labelYPoc = GetNonCollidingLabelY(yPoc - 14f, 14f);
                                 rt.DrawText(lbl, dxTPOLabelFormat,
-                                    new SharpDX.RectangleF(xStart + 2f, yPoc - 14f, 220f, 14f),
+                                    new SharpDX.RectangleF(xStart + 2f, labelYPoc, 220f, 14f),
                                     dxTPOPocBrush);
                             }
                         }
@@ -5760,6 +5991,29 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Naked levels (extend from creation bar forward to current bar)
             if (ShowNakedLevels)
                 RenderNakedLevels(rt, cc, cs, rtW);
+        }
+
+        /// <summary>
+        /// Returns a Y pixel coordinate for a TPO label that does not collide with already-used
+        /// positions. Increments by labelHeight until a clear slot is found.
+        /// Thread-safety: called only from OnRender (UI thread), so no lock needed.
+        /// </summary>
+        private float GetNonCollidingLabelY(float y, float labelHeight = 13f)
+        {
+            int yInt = (int)y;
+            int step = (int)labelHeight;
+            bool collision = true;
+            while (collision)
+            {
+                collision = false;
+                foreach (int used in _usedLabelYPositions)
+                {
+                    if (Math.Abs(used - yInt) < step) { collision = true; break; }
+                }
+                if (collision) yInt += step;
+            }
+            _usedLabelYPositions.Add(yInt);
+            return (float)yInt;
         }
 
         /// <summary>
@@ -5788,13 +6042,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             // VAL line (cyan dashed)
             DrawStyledLine(xStart, yVAL, xStart + lineW, yVAL, dxTPOVALineBrush, 1, IQMLineStyle.Dashed);
 
-            // Labels
+            // Labels — use collision avoidance for Y positions (Bug 10)
             if (dxTPOLabelFormat != null)
             {
+                float labelYVAH = GetNonCollidingLabelY(yVAH - 13f);
+                float labelYVAL = GetNonCollidingLabelY(yVAL + 1f);
                 rt.DrawText(string.Format("VAH {0}", Instrument.MasterInstrument.FormatPrice(sess.ValueAreaHigh)),
-                    dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, yVAH - 13f, 100f, 13f), dxTPOVALineBrush);
+                    dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, labelYVAH, 100f, 13f), dxTPOVALineBrush);
                 rt.DrawText(string.Format("VAL {0}", Instrument.MasterInstrument.FormatPrice(sess.ValueAreaLow)),
-                    dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, yVAL + 1f,  100f, 13f), dxTPOVALineBrush);
+                    dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, labelYVAL,  100f, 13f), dxTPOVALineBrush);
             }
         }
 
@@ -5825,13 +6081,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             rt.DrawLine(new SharpDX.Vector2(bracketX, yIBL), new SharpDX.Vector2(bracketX + 8f, yIBL),
                 dxTPOIBBrush, 2f);
 
-            // Labels
+            // Labels — use collision avoidance (Bug 10)
             if (dxTPOLabelFormat != null)
             {
+                float labelYIBH = GetNonCollidingLabelY(yIBH - 13f);
+                float labelYIBL = GetNonCollidingLabelY(yIBL + 1f);
                 rt.DrawText(string.Format("IB H {0}", Instrument.MasterInstrument.FormatPrice(sess.IBHigh)),
-                    dxTPOLabelFormat, new SharpDX.RectangleF(bracketX + 10f, yIBH - 13f, 100f, 13f), dxTPOIBBrush);
+                    dxTPOLabelFormat, new SharpDX.RectangleF(bracketX + 10f, labelYIBH, 100f, 13f), dxTPOIBBrush);
                 rt.DrawText(string.Format("IB L {0}", Instrument.MasterInstrument.FormatPrice(sess.IBLow)),
-                    dxTPOLabelFormat, new SharpDX.RectangleF(bracketX + 10f, yIBL + 1f,  100f, 13f), dxTPOIBBrush);
+                    dxTPOLabelFormat, new SharpDX.RectangleF(bracketX + 10f, labelYIBL,  100f, 13f), dxTPOIBBrush);
             }
 
             // IB extension dotted lines (if enabled and IB is complete)
@@ -5849,15 +6107,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     DrawStyledLine(xStart, yExtH, xEnd, yExtH, dxTPOIBBrush, 1, IQMLineStyle.Dotted);
                     if (dxTPOLabelFormat != null)
+                    {
+                        float labelYExtH = GetNonCollidingLabelY(yExtH - 13f);
                         rt.DrawText(string.Format("IB+1R {0}", Instrument.MasterInstrument.FormatPrice(sess.IBHighExtension)),
-                            dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, yExtH - 13f, 120f, 13f), dxTPOIBBrush);
+                            dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, labelYExtH, 120f, 13f), dxTPOIBBrush);
+                    }
                 }
                 if (!float.IsNaN(yExtL))
                 {
                     DrawStyledLine(xStart, yExtL, xEnd, yExtL, dxTPOIBBrush, 1, IQMLineStyle.Dotted);
                     if (dxTPOLabelFormat != null)
+                    {
+                        float labelYExtL = GetNonCollidingLabelY(yExtL + 1f);
                         rt.DrawText(string.Format("IB-1R {0}", Instrument.MasterInstrument.FormatPrice(sess.IBLowExtension)),
-                            dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, yExtL + 1f,  120f, 13f), dxTPOIBBrush);
+                            dxTPOLabelFormat, new SharpDX.RectangleF(xStart + 2f, labelYExtL,  120f, 13f), dxTPOIBBrush);
+                    }
                 }
             }
         }
@@ -5887,15 +6151,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Orange dashed line extending to the right edge
                 DrawStyledLine(xStart, y, rtW, y, dxTPONakedBrush, 1, IQMLineStyle.Dashed);
 
-                // Label at left edge of the naked level
+                // Label at left edge of the naked level — use collision avoidance (Bug 10)
                 if (dxTPOLabelFormat != null)
                 {
                     string dateStr = nl.SessionDate.ToString("M/d");
                     string lbl = string.Format("Naked {0} {1} ({2})",
                         nl.LevelType, dateStr,
                         Instrument.MasterInstrument.FormatPrice(nl.Price));
+                    float labelY = GetNonCollidingLabelY(y - 13f);
                     rt.DrawText(lbl, dxTPOLabelFormat,
-                        new SharpDX.RectangleF(xStart + 2f, y - 13f, 180f, 13f), dxTPONakedBrush);
+                        new SharpDX.RectangleF(xStart + 2f, labelY, 180f, 13f), dxTPONakedBrush);
                 }
             }
         }
