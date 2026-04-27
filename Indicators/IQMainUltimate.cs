@@ -4248,7 +4248,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case UltimateStopMode.PivotBased:
                     if (bearish)
                     {
-                        if (currentPivot != null && currentPivot.R1 > 0)
+                        if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
                         {
                             if (Math.Abs(close - currentPivot.R1) <= maxDist)
                                 return currentPivot.R1;
@@ -4257,7 +4257,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         }
                         return close + StopDistanceTicks * TickSize;
                     }
-                    if (currentPivot != null && currentPivot.S1 > 0)
+                    if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                     {
                         if (Math.Abs(close - currentPivot.S1) <= maxDist)
                             return currentPivot.S1;
