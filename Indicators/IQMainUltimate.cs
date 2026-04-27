@@ -4127,14 +4127,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
                                 return tpoCurrentVAH + TickSize;
                         }
-                        // 3. Bearish liquidity zone highs
+                        // 3. Bearish liquidity zone highs — find nearest above price
                         if (liquidityZones != null)
                         {
+                            double nearestZoneHigh = double.MaxValue;
                             foreach (LiquidityZone z in liquidityZones)
                             {
-                                if (!z.IsRecovered && !z.IsBullish && z.HighPrice > close)
-                                    return z.HighPrice + TickSize;
+                                if (!z.IsRecovered && !z.IsBullish && z.HighPrice > close && z.HighPrice < nearestZoneHigh)
+                                    nearestZoneHigh = z.HighPrice;
                             }
+                            if (nearestZoneHigh < double.MaxValue)
+                                return nearestZoneHigh + TickSize;
                         }
                         // 4. Pivot R1
                         if (currentPivot != null && currentPivot.R1 > close)
