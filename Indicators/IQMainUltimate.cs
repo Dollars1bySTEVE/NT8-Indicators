@@ -435,8 +435,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime lastSignalDetectedTime = DateTime.MinValue;
         private string   lastTrackedSignal      = "";
         private bool     signalIsStale          = false;
-        private const int STALE_SIGNAL_MINUTES  = 15;
-        private const int EXPIRE_SIGNAL_MINUTES = 30;
 
         // Maximum TPO-sourced stop/target distances (ticks) — prevents absurd levels on overnight gaps
         private const int MaxTPOStopTicks   = 200;
@@ -1963,6 +1961,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Target distance in ticks used when TargetMode = ManualInput (or as fallback).")]
         public int TargetDistanceTicks { get; set; }
 
+        // ── Signal Expiry Settings ────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Range(1, 240)]
+        [Display(Name = "Signal Stale (minutes)", Order = 18, GroupName = "16. Dashboards",
+            Description = "Minutes after which an unchanged signal is considered stale and a warning is shown on the Entry Mode Dashboard. Must be less than Signal Expire Minutes.")]
+        public int SignalStaleMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 480)]
+        [Display(Name = "Signal Expire (minutes)", Order = 19, GroupName = "16. Dashboards",
+            Description = "Minutes after which a stale signal is expired entirely and the dashboard resets to 'No Active Signal / Waiting for signal detection...'.")]
+        public int SignalExpireMinutes { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters — 17. TPO Settings
@@ -2373,6 +2384,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 StopDistanceTicks      = 10;
                 TargetMode             = UltimateTargetMode.AutoDetected;
                 TargetDistanceTicks    = 20;
+                SignalStaleMinutes     = 15;
+                SignalExpireMinutes    = 30;
 
                 // 17. TPO Settings
                 ShowPOC              = true;
@@ -4031,18 +4044,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             return string.Format("{0}h {1}m ago", (int)elapsed.TotalHours, (int)elapsed.Minutes);
         }
 
-        /// <summary>Returns true when the current signal has been active for more than STALE_SIGNAL_MINUTES.</summary>
+        /// <summary>Returns true when the current signal has been active for more than SignalStaleMinutes.</summary>
         private bool IsSignalStale()
         {
             if (lastSignalDetectedTime == DateTime.MinValue) return false;
-            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= STALE_SIGNAL_MINUTES;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= SignalStaleMinutes;
         }
 
-        /// <summary>Returns true when the current signal has been active for more than EXPIRE_SIGNAL_MINUTES.</summary>
+        /// <summary>Returns true when the current signal has been active for more than SignalExpireMinutes.</summary>
         private bool HasSignalExpired()
         {
             if (lastSignalDetectedTime == DateTime.MinValue) return false;
-            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= EXPIRE_SIGNAL_MINUTES;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= SignalExpireMinutes;
         }
 
         /// <summary>Compute a 0-100 confidence score for the current bar's setup.</summary>
@@ -4734,12 +4747,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                             Instrument.MasterInstrument.FormatPrice(tpoNearestNakedLevel.Price)));
                 }
 
-                // Stale signal warning (15–30 min)
+                // Stale/expiry warning
                 if (signalIsStale)
                 {
+                    double elapsedMin  = (DateTime.Now - lastSignalDetectedTime).TotalMinutes;
+                    double remaining   = SignalExpireMinutes - elapsedMin;
+                    string expiryLine  = remaining <= 1.0
+                        ? "\u23f3 Expiring imminently — wait for fresh signal"
+                        : string.Format("\u23f3 Expires in {0}m — consider fresh signal", (int)Math.Ceiling(remaining));
                     lines.Add("");
                     lines.Add(string.Format("\u26a0 [STALE] Signal detected {0}", elapsedTime));
-                    lines.Add("Consider waiting for fresh signal");
+                    lines.Add(expiryLine);
                 }
 
                 // Conflict warnings
