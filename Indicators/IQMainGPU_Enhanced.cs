@@ -2179,6 +2179,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 }
+
+                // Enforce stale < expire: if user sets stale >= expire, bump expire up by 1
+                if (SignalStaleMinutes >= SignalExpireMinutes)
+                    SignalExpireMinutes = SignalStaleMinutes + 1;
             }
             else if (State == State.DataLoaded)
             {
