@@ -318,8 +318,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime lastSignalDetectedTime = DateTime.MinValue;
         private string   lastTrackedSignal      = "";
         private bool     signalIsStale          = false;
-        private const int STALE_SIGNAL_MINUTES  = 15;
-        private const int EXPIRE_SIGNAL_MINUTES = 30;
 
         // Sanity caps for AutoDetected stop/target distance (ticks)
         private const int MaxStopTicks   = 200;
@@ -332,6 +330,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Session IDs considered high-participation (London=0, NewYork=1, EuBrinks=5, UsBrinks=6)
         private static readonly int[] HighParticipationSessionIds = { 0, 1, 5, 6 };
+
+        // DST reference table rows — hoisted to avoid per-frame allocation in RenderDstTable
+        private static readonly string[] DstTableRows =
+        {
+            "UK DST: Last Sun Mar → Last Sun Oct",
+            "US DST: 2nd Sun Mar → 1st Sun Nov",
+            "AU DST: 1st Sun Oct → 1st Sun Apr",
+            "London  08:00-16:30 UTC (UK DST -1)",
+            "NY      14:30-21:00 UTC (US DST -1)",
+            "Tokyo   00:00-06:00 UTC (no DST)",
+            "HK      01:30-08:00 UTC (no DST)",
+            "Sydney  22:00-06:00 UTC (AU DST -1)",
+            "EUBrnks 08:00-09:00 UTC (UK DST -1)",
+            "USBrnks 14:00-15:00 UTC (US DST -1)",
+            "Frankft 07:00-16:30 UTC (UK DST -1)",
+        };
 
         // SharpDX resources for the new Enhanced dashboard panels
         private SharpDX.Direct2D1.SolidColorBrush dxEnhDashBgBrush;
@@ -1407,6 +1421,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Browsable(false)]
         public string FakeBreakoutColorSerializable { get { return Serialize.BrushToString(FakeBreakoutColor); } set { FakeBreakoutColor = Serialize.StringToBrush(value); } }
 
+        // ShowDashboard and DashPosition are legacy IQMainGPU properties not used in IQMainGPU_Enhanced
+        // (dashboards are controlled in group 16). Keep backing fields for XML serialization
+        // compatibility so loading a saved IQMainGPU template does not log "unrecognized element" warnings.
+        [NinjaScriptProperty]
+        [Browsable(false)]
+        public bool ShowDashboard { get; set; }
+
+        [NinjaScriptProperty]
+        [Browsable(false)]
+        public IQMDashboardPosition DashPosition { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters — 13. Tables
@@ -1767,6 +1792,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Target distance in ticks used when TargetMode = ManualInput (or as fallback).")]
         public int TargetDistanceTicks { get; set; }
 
+        // ── Signal Expiry Settings ────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Range(1, 120)]
+        [Display(Name = "Signal Stale Minutes", Order = 18, GroupName = "16. Dashboards",
+            Description = "Minutes after which an unchanged signal is considered stale and a warning is shown on the Entry Mode Dashboard. Must be less than Signal Expire Minutes.")]
+        public int SignalStaleMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 120)]
+        [Display(Name = "Signal Expire Minutes", Order = 19, GroupName = "16. Dashboards",
+            Description = "Minutes after which a stale signal is expired entirely and the dashboard resets to 'No Active Signal / Waiting for signal detection...'.")]
+        public int SignalExpireMinutes { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
@@ -1777,7 +1815,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 Description              = "IQMainGPU_Enhanced — Standalone enhanced indicator. All IQMainGPU features plus Entry Mode, Monitoring Mode, and conflict detection dashboards.";
                 Name                     = "IQMainGPU_Enhanced";
-                Calculate                = Calculate.OnEachTick;
+                Calculate                = Calculate.OnPriceChange;
                 IsOverlay                = true;
                 IsAutoScale              = false;
                 DisplayInDataBox         = true;
@@ -2039,6 +2077,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 AbsorptionColor   = Brushes.Gold;
                 ImbalanceColor    = Brushes.DodgerBlue;
                 FakeBreakoutColor = Brushes.OrangeRed;
+                ShowDashboard     = true;
+                DashPosition      = IQMDashboardPosition.TopLeft;
 
                 // 13. Tables
                 ShowRangeTable       = true;
@@ -2118,6 +2158,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 StopDistanceTicks      = 10;
                 TargetMode             = TargetPlacementMode.AutoDetected;
                 TargetDistanceTicks    = 20;
+                SignalStaleMinutes     = 15;
+                SignalExpireMinutes    = 30;
             }
             else if (State == State.Configure)
             {
@@ -2137,6 +2179,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 }
+
+                // Enforce stale < expire: if user sets stale >= expire, bump expire up by 1
+                if (SignalStaleMinutes >= SignalExpireMinutes)
+                    SignalExpireMinutes = SignalStaleMinutes + 1;
             }
             else if (State == State.DataLoaded)
             {
@@ -3259,24 +3305,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (dxDashBgBrush == null || dxDashTextBrush == null || dxDashFormat == null)
                 return;
 
-            string[] rows =
-            {
-                "UK DST: Last Sun Mar → Last Sun Oct",
-                "US DST: 2nd Sun Mar → 1st Sun Nov",
-                "AU DST: 1st Sun Oct → 1st Sun Apr",
-                "London  08:00-16:30 UTC (UK DST -1)",
-                "NY      14:30-21:00 UTC (US DST -1)",
-                "Tokyo   00:00-06:00 UTC (no DST)",
-                "HK      01:30-08:00 UTC (no DST)",
-                "Sydney  22:00-06:00 UTC (AU DST -1)",
-                "EUBrnks 08:00-09:00 UTC (UK DST -1)",
-                "USBrnks 14:00-15:00 UTC (US DST -1)",
-                "Frankft 07:00-16:30 UTC (UK DST -1)",
-            };
-
             float cellH  = 18f;
             float tableW = 340f;
-            float tableH = rows.Length * cellH + 24f;
+            float tableH = DstTableRows.Length * cellH + 24f;
             float margin = 8f;
 
             float tx, ty;
@@ -3289,8 +3320,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             RenderTarget.DrawText("DST Reference", dxDashFormat,
                 new SharpDX.RectangleF(tx + 4f, ty + 2f, tableW - 8f, 18f), dxDashHeaderBrush ?? dxDashTextBrush);
 
-            for (int i = 0; i < rows.Length; i++)
-                RenderTarget.DrawText(rows[i], dxSmallFormat ?? dxDashFormat,
+            for (int i = 0; i < DstTableRows.Length; i++)
+                RenderTarget.DrawText(DstTableRows[i], dxSmallFormat ?? dxDashFormat,
                     new SharpDX.RectangleF(tx + 4f, ty + 22f + i * cellH, tableW - 8f, cellH), dxDashTextBrush);
         }
 
@@ -3721,18 +3752,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             return string.Format("{0}h {1}m ago", (int)elapsed.TotalHours, (int)elapsed.Minutes);
         }
 
-        /// <summary>Returns true when the current signal has been active for more than STALE_SIGNAL_MINUTES.</summary>
+        /// <summary>Returns true when the current signal has been active for more than SignalStaleMinutes.</summary>
         private bool IsSignalStale()
         {
             if (lastSignalDetectedTime == DateTime.MinValue) return false;
-            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= STALE_SIGNAL_MINUTES;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= SignalStaleMinutes;
         }
 
-        /// <summary>Returns true when the current signal has been active for more than EXPIRE_SIGNAL_MINUTES.</summary>
+        /// <summary>Returns true when the current signal has been active for more than SignalExpireMinutes.</summary>
         private bool HasSignalExpired()
         {
             if (lastSignalDetectedTime == DateTime.MinValue) return false;
-            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= EXPIRE_SIGNAL_MINUTES;
+            return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= SignalExpireMinutes;
         }
 
         /// <summary>Returns true when the current primary signal is directionally bullish.</summary>
@@ -4346,31 +4377,36 @@ namespace NinjaTrader.NinjaScript.Indicators
                     lines.Add(string.Format("\u26a0 [STALE] Signal detected {0}", elapsedTime));
                     lines.Add("Consider waiting for fresh signal");
                 }
-
-                // Conflict warnings
-                if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
-                {
-                    lines.Add("");
-                    float usableW = panelW - PadX * 2;
-                    foreach (string part in dashboardConflictText.Split('\n'))
-                    {
-                        string trimmed = part.TrimEnd('\r');
-                        if (string.IsNullOrEmpty(trimmed)) continue;
-                        foreach (string wrapped in WrapTextToLines(trimmed, usableW, EntryModeDashboardFontSize))
-                            lines.Add(wrapped);
-                    }
-                }
             }
 
+            // Preliminary panel height (conflict text not yet wrapped — added after ClampTableY)
             float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
 
             float panelX, panelY;
             GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
-            // Clamp to keep panel within render area
+            // Clamp to keep panel within render area; capture clamped width before wrapping conflict text
             float clampedW;
             panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
             if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
+
+            // Conflict warnings — wrapped using the post-clamp panel width to prevent overflow
+            if (!showNoSignal && dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
+            {
+                lines.Add("");
+                float usableW = panelW - PadX * 2;
+                foreach (string part in dashboardConflictText.Split('\n'))
+                {
+                    string trimmed = part.TrimEnd('\r');
+                    if (string.IsNullOrEmpty(trimmed)) continue;
+                    foreach (string wrapped in WrapTextToLines(trimmed, usableW, EntryModeDashboardFontSize))
+                        lines.Add(wrapped);
+                }
+                // Recompute height and position now that conflict lines are included
+                panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
+                GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+                panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
+            }
 
             rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, panelW, panelH), dxEnhDashBgBrush);
 
@@ -4445,6 +4481,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 zoneInfo
             };
 
+            // Preliminary panel height (conflict text not yet wrapped — added after ClampTableY)
+            float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
+
+            float panelX, panelY;
+            GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+
+            // Clamp to keep panel within render area; capture clamped width before wrapping conflict text
+            float clampedW;
+            panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
+            if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
+
+            // Conflict warnings — wrapped using the post-clamp panel width to prevent overflow
             if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
             {
                 lines.Add(""); // section separator — adds visual gap before alerts
@@ -4456,17 +4504,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     foreach (string wrapped in WrapTextToLines(trimmed, usableW, MonitoringDashboardFontSize))
                         lines.Add(wrapped);
                 }
+                // Recompute height and position now that conflict lines are included
+                panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
+                GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+                panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
             }
-
-            float panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
-
-            float panelX, panelY;
-            GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
-
-            // Clamp to keep panel within render area
-            float clampedW;
-            panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
-            if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
 
             rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, panelW, panelH), dxEnhDashBgBrush);
 
@@ -4574,7 +4616,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EnableLevel2 ? l2StatusText : ""
             };
 
-            int   nonEmpty = lines.Count(s => !string.IsNullOrEmpty(s));
+            int   nonEmpty = 0;
+            for (int i = 0; i < lines.Length; i++)
+                if (!string.IsNullOrEmpty(lines[i])) nonEmpty++;
             float panelH   = PadY * 2 + nonEmpty * lineH + PanelHeightBuffer;
 
             float panelX, panelY;
