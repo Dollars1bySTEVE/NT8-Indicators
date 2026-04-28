@@ -379,6 +379,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool alertAwrHighFired, alertAwrLowFired;
         private bool alertAmrHighFired, alertAmrLowFired;
 
+        // Fallback-log gating flags — reset on each new calendar day to prevent per-tick spam
+        private bool _tpoStopBearishFallbackLogged;
+        private bool _tpoStopBullishFallbackLogged;
+        private bool _ibTargetBearishFallbackLogged;
+        private bool _ibTargetBullishFallbackLogged;
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — Candles / Microstructure
@@ -2594,6 +2600,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Print(string.Format("  ET zone resolved: {0}", EtZone != null ? EtZone.Id : "(null)"));
                     Print("=== end session anchors ===");
                 }
+            }
+            else if (State == State.Terminated)
+            {
+                DisposeDXResources();
+            }
+        }
+
+        protected override void OnBarUpdate()
+        {
+            if (CurrentBar < 1)
                 return;
 
             // Cache latest close and indicator values so OnRender always reads the freshest tick
@@ -2716,6 +2732,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
 
                     alertAdrHighFired = alertAdrLowFired = false;
+                    _tpoStopBearishFallbackLogged  = false;
+                    _tpoStopBullishFallbackLogged  = false;
+                    _ibTargetBearishFallbackLogged = false;
+                    _ibTargetBullishFallbackLogged = false;
                 }
                 else
                 {
@@ -3091,11 +3111,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             ForceRefresh();
-        }
-            else if (State == State.Terminated)
-            {
-                DisposeDXResources();
-            }
         }
 
         #endregion
@@ -4247,7 +4262,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         }
                         _lastStopSource = StopSource.ADR;
                         _lastStopWasFallback = true;
-                        Print("IQMainUltimate: TPOBased bearish stop — no usable VAH/prev-VAH; falling back to ADR");
+                        if (!_tpoStopBearishFallbackLogged)
+                        {
+                            Print("IQMainUltimate: TPOBased bearish stop — no usable VAH/prev-VAH; falling back to ADR");
+                            _tpoStopBearishFallbackLogged = true;
+                        }
                         return close + GetAdrBasedStopDistance();
                     }
                     // Bullish: stop below price — use VAL
@@ -4274,7 +4293,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                     _lastStopSource = StopSource.ADR;
                     _lastStopWasFallback = true;
-                    Print("IQMainUltimate: TPOBased bullish stop — no usable VAL/prev-VAL; falling back to ADR");
+                    if (!_tpoStopBullishFallbackLogged)
+                    {
+                        Print("IQMainUltimate: TPOBased bullish stop — no usable VAL/prev-VAL; falling back to ADR");
+                        _tpoStopBullishFallbackLogged = true;
+                    }
                     return close - GetAdrBasedStopDistance();
 
                 case UltimateStopMode.AutoDetected:
@@ -4525,7 +4548,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         }
                         else if (tpoCurrentIBLowExt == 0)
                         {
-                            Print("IQMainUltimate: IBExtension bearish target — IB low ext unavailable (IB window not finalized or sanity guard tripped); falling back to VAL");
+                            if (!_ibTargetBearishFallbackLogged)
+                            {
+                                Print("IQMainUltimate: IBExtension bearish target — IB low ext unavailable (IB window not finalized or sanity guard tripped); falling back to VAL");
+                                _ibTargetBearishFallbackLogged = true;
+                            }
                         }
                         // Fallback to VAL
                         if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
@@ -4554,7 +4581,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                     else if (tpoCurrentIBHighExt == 0)
                     {
-                        Print("IQMainUltimate: IBExtension bullish target — IB high ext unavailable (IB window not finalized or sanity guard tripped); falling back to VAH");
+                        if (!_ibTargetBullishFallbackLogged)
+                        {
+                            Print("IQMainUltimate: IBExtension bullish target — IB high ext unavailable (IB window not finalized or sanity guard tripped); falling back to VAH");
+                            _ibTargetBullishFallbackLogged = true;
+                        }
                     }
                     // Fallback to VAH
                     if (tpoCurrentVAH > close)
