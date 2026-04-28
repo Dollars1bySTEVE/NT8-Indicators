@@ -321,6 +321,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private const int STALE_SIGNAL_MINUTES  = 15;
         private const int EXPIRE_SIGNAL_MINUTES = 30;
 
+        // Sanity caps for AutoDetected stop/target distance (ticks)
+        private const int MaxStopTicks   = 200;
+        private const int MaxTargetTicks = 400;
+
         // Severity tag constants used in VeryDetailed conflict descriptions
         private const string SeverityCritical = "\u26a0 [CRITICAL]";
         private const string SeverityHigh     = "\u26a0 [HIGH]";
@@ -3731,6 +3735,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             return (DateTime.Now - lastSignalDetectedTime).TotalMinutes >= EXPIRE_SIGNAL_MINUTES;
         }
 
+        /// <summary>Returns true when the current primary signal is directionally bullish.</summary>
+        private bool IsBullishSignal()
+        {
+            return dashboardPrimarySignal != null &&
+                   (dashboardPrimarySignal.Contains("BULLISH") ||
+                    dashboardPrimarySignal == "BUY PRESSURE");
+        }
+
+        /// <summary>Returns true when the current primary signal is directionally bearish.</summary>
+        private bool IsBearishSignal()
+        {
+            return dashboardPrimarySignal != null &&
+                   (dashboardPrimarySignal.Contains("BEARISH")  ||
+                    dashboardPrimarySignal == "SELL PRESSURE"    ||
+                    dashboardPrimarySignal == "FAKE BREAKOUT");
+        }
+
         /// <summary>Compute a 0-100 confidence score for the current bar's setup.</summary>
         private int CalculateEntryScore()
         {
@@ -3764,32 +3785,114 @@ namespace NinjaTrader.NinjaScript.Indicators
             return Math.Max(0, Math.Min(100, score));
         }
 
-        /// <summary>Calculate the stop price based on StopMode setting.</summary>
+        /// <summary>Calculate the stop price based on StopMode setting.
+        /// Direction-aware: bearish signals place stop above price; bullish signals below.
+        /// AutoDetected picks the nearest valid level on the correct side, with a MaxStopTicks sanity cap.</summary>
         private double CalculateDynamicStop()
         {
-            double close = Close[0];
+            double close   = Close[0];
+            bool   bearish = IsBearishSignal();
+            double maxDist = MaxStopTicks * TickSize;
 
             switch (StopMode)
             {
                 case StopPlacementMode.AutoDetected:
+                    if (bearish)
+                    {
+                        // Bearish: stop above price
+                        // 1. Nearest unrecovered bearish liquidity zone high above price
+                        if (liquidityZones != null)
+                        {
+                            double nearestZoneHigh = double.MaxValue;
+                            foreach (LiquidityZone z in liquidityZones)
+                            {
+                                if (!z.IsRecovered && !z.IsBullish && z.HighPrice > close && z.HighPrice < nearestZoneHigh)
+                                    nearestZoneHigh = z.HighPrice;
+                            }
+                            if (nearestZoneHigh < double.MaxValue)
+                            {
+                                if (Math.Abs(close - nearestZoneHigh) <= maxDist)
+                                    return nearestZoneHigh + TickSize;
+                                else
+                                    Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", nearestZoneHigh, Math.Abs(close - nearestZoneHigh) / TickSize));
+                            }
+                        }
+                        // 2. Pivot R1
+                        if (currentPivot != null && currentPivot.R1 > close)
+                        {
+                            if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                                return currentPivot.R1;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                        }
+                        return close + StopDistanceTicks * TickSize;
+                    }
+                    // Bullish: stop below price
+                    // 1. Nearest unrecovered bullish liquidity zone low below price
                     if (liquidityZones != null)
                     {
+                        double nearestZoneLow = double.MinValue;
                         foreach (LiquidityZone z in liquidityZones)
                         {
-                            if (!z.IsRecovered && z.IsBullish && z.LowPrice < close)
-                                return z.LowPrice - TickSize;
+                            if (!z.IsRecovered && z.IsBullish && z.LowPrice < close && z.LowPrice > nearestZoneLow)
+                                nearestZoneLow = z.LowPrice;
+                        }
+                        if (nearestZoneLow > double.MinValue)
+                        {
+                            if (Math.Abs(close - nearestZoneLow) <= maxDist)
+                                return nearestZoneLow - TickSize;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", nearestZoneLow, Math.Abs(close - nearestZoneLow) / TickSize));
                         }
                     }
-                    if (currentPivot != null && currentPivot.S1 > 0)
-                        return currentPivot.S1;
+                    // 2. Pivot S1
+                    if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                    {
+                        if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            return currentPivot.S1;
+                        else
+                            Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                    }
                     return close - StopDistanceTicks * TickSize;
 
                 case StopPlacementMode.PivotBased:
-                    if (currentPivot != null && currentPivot.S1 > 0)
-                        return currentPivot.S1;
+                    if (bearish)
+                    {
+                        if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
+                        {
+                            if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                                return currentPivot.R1;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: PivotBased bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                        }
+                        return close + StopDistanceTicks * TickSize;
+                    }
+                    if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                    {
+                        if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            return currentPivot.S1;
+                        else
+                            Print(string.Format("IQMainGPU_Enhanced: PivotBased bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                    }
                     return close - StopDistanceTicks * TickSize;
 
                 case StopPlacementMode.HVNBased:
+                    if (bearish)
+                    {
+                        double bestSrAbove = double.MaxValue;
+                        if (srLevels != null)
+                        {
+                            foreach (double sr in srLevels)
+                            {
+                                if (sr > close && sr < bestSrAbove) bestSrAbove = sr;
+                            }
+                        }
+                        if (bestSrAbove < double.MaxValue && Math.Abs(close - bestSrAbove) <= maxDist)
+                            return bestSrAbove + TickSize;
+                        if (bestSrAbove < double.MaxValue)
+                            Print(string.Format("IQMainGPU_Enhanced: HVNBased bearish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSrAbove, Math.Abs(close - bestSrAbove) / TickSize));
+                        return close + StopDistanceTicks * TickSize;
+                    }
                     double bestSr = 0;
                     if (srLevels != null)
                     {
@@ -3798,41 +3901,141 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (sr < close && sr > bestSr) bestSr = sr;
                         }
                     }
-                    return bestSr > 0 ? bestSr - TickSize : close - StopDistanceTicks * TickSize;
+                    if (bestSr > 0 && Math.Abs(close - bestSr) <= maxDist)
+                        return bestSr - TickSize;
+                    if (bestSr > 0)
+                        Print(string.Format("IQMainGPU_Enhanced: HVNBased bullish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSr, Math.Abs(close - bestSr) / TickSize));
+                    return close - StopDistanceTicks * TickSize;
 
                 case StopPlacementMode.ManualInput:
                 default:
-                    return close - StopDistanceTicks * TickSize;
+                    return bearish ? close + StopDistanceTicks * TickSize : close - StopDistanceTicks * TickSize;
             }
         }
 
-        /// <summary>Calculate the target price based on TargetMode setting.</summary>
+        /// <summary>Calculate the target price based on TargetMode setting.
+        /// Direction-aware: bearish signals target below price; bullish signals above.
+        /// AutoDetected picks the nearest valid level on the correct side, with a MaxTargetTicks sanity cap.</summary>
         private double CalculateDynamicTarget()
         {
-            double close = Close[0];
+            double close   = Close[0];
+            bool   bearish = IsBearishSignal();
+            double maxDist = MaxTargetTicks * TickSize;
 
             switch (TargetMode)
             {
                 case TargetPlacementMode.AutoDetected:
+                    if (bearish)
+                    {
+                        // Bearish: target below price
+                        // 1. Nearest SR level below price
+                        if (srLevels != null)
+                        {
+                            double bestSrBelow = double.MinValue;
+                            foreach (double sr in srLevels)
+                            {
+                                if (sr < close && sr > bestSrBelow) bestSrBelow = sr;
+                            }
+                            if (bestSrBelow > double.MinValue && Math.Abs(close - bestSrBelow) <= maxDist)
+                                return bestSrBelow;
+                            if (bestSrBelow > double.MinValue)
+                                Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish target — SR {0} skipped ({1:F0}t beyond cap)", bestSrBelow, Math.Abs(close - bestSrBelow) / TickSize));
+                        }
+                        // 2. Pivot S1
+                        if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                        {
+                            if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                                return currentPivot.S1;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                        }
+                        // 3. Pivot S2
+                        if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
+                        {
+                            if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                                return currentPivot.S2;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
+                        }
+                        return close - TargetDistanceTicks * TickSize;
+                    }
+                    // Bullish: target above price
+                    // 1. Nearest SR level above price
+                    if (srLevels != null)
+                    {
+                        double bestSrAbove = double.MaxValue;
+                        foreach (double sr in srLevels)
+                        {
+                            if (sr > close && sr < bestSrAbove) bestSrAbove = sr;
+                        }
+                        if (bestSrAbove < double.MaxValue && Math.Abs(close - bestSrAbove) <= maxDist)
+                            return bestSrAbove;
+                        if (bestSrAbove < double.MaxValue)
+                            Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish target — SR {0} skipped ({1:F0}t beyond cap)", bestSrAbove, Math.Abs(close - bestSrAbove) / TickSize));
+                    }
+                    // 2. Pivot R1
                     if (currentPivot != null && currentPivot.R1 > close)
-                        return currentPivot.R1;
+                    {
+                        if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            return currentPivot.R1;
+                        else
+                            Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                    }
+                    // 3. Pivot R2
                     if (currentPivot != null && currentPivot.R2 > close)
-                        return currentPivot.R2;
+                    {
+                        if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                            return currentPivot.R2;
+                        else
+                            Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case TargetPlacementMode.PivotR1:
-                    if (currentPivot != null && currentPivot.R1 > 0)
-                        return currentPivot.R1;
+                    if (bearish)
+                    {
+                        if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
+                        {
+                            if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                                return currentPivot.S1;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: PivotR1 bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
+                        }
+                        return close - TargetDistanceTicks * TickSize;
+                    }
+                    if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
+                    {
+                        if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            return currentPivot.R1;
+                        else
+                            Print(string.Format("IQMainGPU_Enhanced: PivotR1 bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case TargetPlacementMode.PivotR2:
-                    if (currentPivot != null && currentPivot.R2 > 0)
-                        return currentPivot.R2;
+                    if (bearish)
+                    {
+                        if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
+                        {
+                            if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                                return currentPivot.S2;
+                            else
+                                Print(string.Format("IQMainGPU_Enhanced: PivotR2 bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
+                        }
+                        return close - TargetDistanceTicks * TickSize;
+                    }
+                    if (currentPivot != null && currentPivot.R2 > 0 && currentPivot.R2 > close)
+                    {
+                        if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                            return currentPivot.R2;
+                        else
+                            Print(string.Format("IQMainGPU_Enhanced: PivotR2 bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
+                    }
                     return close + TargetDistanceTicks * TickSize;
 
                 case TargetPlacementMode.ManualInput:
                 default:
-                    return close + TargetDistanceTicks * TickSize;
+                    return bearish ? close - TargetDistanceTicks * TickSize : close + TargetDistanceTicks * TickSize;
             }
         }
 
@@ -4112,11 +4315,27 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Math.Abs(dashboardTargetPrice - dashboardEntryPrice) / TickSize));
 
                 double rr = 0;
-                if (dashboardStopPrice > 0 && dashboardEntryPrice > dashboardStopPrice)
+                if (IsBullishSignal())
                 {
                     double riskDist   = dashboardEntryPrice - dashboardStopPrice;
                     double rewardDist = dashboardTargetPrice - dashboardEntryPrice;
-                    if (riskDist > 0) rr = rewardDist / riskDist;
+                    if (riskDist > 0 && rewardDist > 0) rr = rewardDist / riskDist;
+                }
+                else if (IsBearishSignal())
+                {
+                    double riskDist   = dashboardStopPrice - dashboardEntryPrice;
+                    double rewardDist = dashboardEntryPrice - dashboardTargetPrice;
+                    if (riskDist > 0 && rewardDist > 0) rr = rewardDist / riskDist;
+                }
+                else
+                {
+                    // Neutral: attempt bullish direction as best-effort
+                    if (dashboardEntryPrice > dashboardStopPrice && dashboardStopPrice > 0)
+                    {
+                        double riskDist   = dashboardEntryPrice - dashboardStopPrice;
+                        double rewardDist = dashboardTargetPrice - dashboardEntryPrice;
+                        if (riskDist > 0) rr = rewardDist / riskDist;
+                    }
                 }
                 lines.Add(rr > 0 ? string.Format("R/R:        {0:F2}:1", rr) : "R/R:        N/A");
 
@@ -4291,19 +4510,24 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null) return;
 
+            // E6 guard: do not draw lines when there is no actionable signal
+            bool noSignal = dashboardPrimarySignal == "NEUTRAL" || dashboardPrimarySignal == "No Data";
+            if (noSignal || HasSignalExpired()) return;
+            if (dashboardEntryPrice <= 0 || dashboardStopPrice <= 0 || dashboardTargetPrice <= 0) return;
+
             float rtW = rt.Size.Width;
 
-            if (dashboardEntryPrice > 0 && dxEntryLineBrush != null)
+            if (dxEntryLineBrush != null)
             {
                 float y = cs.GetYByValue(dashboardEntryPrice);
                 DrawStyledLine(0, y, rtW, y, dxEntryLineBrush, 1, IQMLineStyle.Solid);
             }
-            if (dashboardStopPrice > 0 && dxStopLineBrush != null)
+            if (dxStopLineBrush != null)
             {
                 float y = cs.GetYByValue(dashboardStopPrice);
                 DrawStyledLine(0, y, rtW, y, dxStopLineBrush, 1, IQMLineStyle.Dashed);
             }
-            if (dashboardTargetPrice > 0 && dxTargetLineBrush != null)
+            if (dxTargetLineBrush != null)
             {
                 float y = cs.GetYByValue(dashboardTargetPrice);
                 DrawStyledLine(0, y, rtW, y, dxTargetLineBrush, 1, IQMLineStyle.Dashed);
