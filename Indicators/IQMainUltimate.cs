@@ -464,6 +464,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxTargetLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush _brushDimmedText;
         private bool                               _dashboardSkipDueToRR;
+
+        // Source-tracking enums and fields for stop/target label transparency (PR-B4)
+        private enum TargetSource { None, IBExtHigh, IBExtLow, VAH, VAL, PivotR1, PivotR2, PivotS1, PivotS2, NakedPOC, SRLevel, ADR, Manual }
+        private enum StopSource   { None, VAH, VAL, PrevVAH, PrevVAL, PivotS1, PivotR1, LiquidityZone, SRLevel, ADR, Manual }
+
+        private TargetSource _lastTargetSource      = TargetSource.None;
+        private StopSource   _lastStopSource        = StopSource.None;
+        private bool         _lastTargetWasFallback = false;
+        private bool         _lastStopWasFallback   = false;
+        private string       _lastTargetSourceDetail = "";
+        private string       _lastStopSourceDetail   = "";
         private SharpDX.DirectWrite.TextFormat     dxMainDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhMonFormat;
@@ -4066,8 +4077,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (!isActionable && lastTrackedSignal != "")
             {
-                lastSignalDetectedTime = DateTime.MinValue;
-                lastTrackedSignal      = "";
+                lastSignalDetectedTime  = DateTime.MinValue;
+                lastTrackedSignal       = "";
+                _lastTargetSource       = TargetSource.None;
+                _lastStopSource         = StopSource.None;
+                _lastTargetWasFallback  = false;
+                _lastStopWasFallback    = false;
             }
             signalIsStale = IsSignalStale();
 
@@ -4182,6 +4197,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool   bearish  = IsBearishSignal();
             double maxDist  = MaxTPOStopTicks * TickSize;
 
+            _lastStopSource      = StopSource.None;
+            _lastStopWasFallback = false;
+            _lastStopSourceDetail = "";
+
             switch (StopMode)
             {
                 case UltimateStopMode.TPOBased:
@@ -4191,26 +4210,54 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (tpoCurrentVAH > 0 && tpoCurrentVAH > close)
                         {
                             if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                            {
+                                _lastStopSource = StopSource.VAH;
                                 return tpoCurrentVAH;
+                            }
+                            Print(string.Format("IQMainUltimate: TPOBased bearish stop — VAH {0} skipped ({1:F0}t beyond cap {2}t)",
+                                tpoCurrentVAH, Math.Abs(close - tpoCurrentVAH) / TickSize, MaxTPOStopTicks));
                         }
                         if (previousDayTPO != null && previousDayTPO.ValueAreaHigh > 0 && previousDayTPO.ValueAreaHigh > close)
                         {
                             if (Math.Abs(close - previousDayTPO.ValueAreaHigh) <= maxDist)
+                            {
+                                _lastStopSource = StopSource.PrevVAH;
+                                _lastStopWasFallback = true;
                                 return previousDayTPO.ValueAreaHigh;
+                            }
+                            Print(string.Format("IQMainUltimate: TPOBased bearish stop — prev VAH {0} skipped ({1:F0}t beyond cap {2}t)",
+                                previousDayTPO.ValueAreaHigh, Math.Abs(close - previousDayTPO.ValueAreaHigh) / TickSize, MaxTPOStopTicks));
                         }
+                        _lastStopSource = StopSource.ADR;
+                        _lastStopWasFallback = true;
+                        Print("IQMainUltimate: TPOBased bearish stop — no usable VAH/prev-VAH; falling back to ADR");
                         return close + GetAdrBasedStopDistance();
                     }
                     // Bullish: stop below price — use VAL
                     if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
                     {
                         if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.VAL;
                             return tpoCurrentVAL;
+                        }
+                        Print(string.Format("IQMainUltimate: TPOBased bullish stop — VAL {0} skipped ({1:F0}t beyond cap {2}t)",
+                            tpoCurrentVAL, Math.Abs(close - tpoCurrentVAL) / TickSize, MaxTPOStopTicks));
                     }
                     if (previousDayTPO != null && previousDayTPO.ValueAreaLow > 0 && previousDayTPO.ValueAreaLow < close)
                     {
                         if (Math.Abs(close - previousDayTPO.ValueAreaLow) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.PrevVAL;
+                            _lastStopWasFallback = true;
                             return previousDayTPO.ValueAreaLow;
+                        }
+                        Print(string.Format("IQMainUltimate: TPOBased bullish stop — prev VAL {0} skipped ({1:F0}t beyond cap {2}t)",
+                            previousDayTPO.ValueAreaLow, Math.Abs(close - previousDayTPO.ValueAreaLow) / TickSize, MaxTPOStopTicks));
                     }
+                    _lastStopSource = StopSource.ADR;
+                    _lastStopWasFallback = true;
+                    Print("IQMainUltimate: TPOBased bullish stop — no usable VAL/prev-VAL; falling back to ADR");
                     return close - GetAdrBasedStopDistance();
 
                 case UltimateStopMode.AutoDetected:
@@ -4221,13 +4268,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (previousDayTPO != null && previousDayTPO.ValueAreaHigh > 0 && previousDayTPO.ValueAreaHigh > close)
                         {
                             if (Math.Abs(close - previousDayTPO.ValueAreaHigh) <= maxDist)
+                            {
+                                _lastStopSource = StopSource.PrevVAH;
                                 return previousDayTPO.ValueAreaHigh + TickSize;
+                            }
                         }
                         // 2. Current session VAH
                         if (tpoCurrentVAH > 0 && tpoCurrentVAH > close)
                         {
                             if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                            {
+                                _lastStopSource = StopSource.VAH;
                                 return tpoCurrentVAH + TickSize;
+                            }
                         }
                         // 3. Bearish liquidity zone highs — find nearest above price
                         if (liquidityZones != null)
@@ -4241,7 +4294,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (nearestZoneHigh < double.MaxValue)
                             {
                                 if (Math.Abs(close - nearestZoneHigh) <= maxDist)
+                                {
+                                    _lastStopSource = StopSource.LiquidityZone;
                                     return nearestZoneHigh + TickSize;
+                                }
                                 else
                                     Print(string.Format("IQMainUltimate: AutoDetected bearish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", nearestZoneHigh, Math.Abs(close - nearestZoneHigh) / TickSize));
                             }
@@ -4250,10 +4306,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.R1 > close)
                         {
                             if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            {
+                                _lastStopSource = StopSource.PivotR1;
                                 return currentPivot.R1;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: AutoDetected bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                         }
+                        _lastStopSource = StopSource.ADR;
+                        _lastStopWasFallback = true;
                         return close + GetAdrBasedStopDistance();
                     }
                     // Bullish: stop below price
@@ -4261,13 +4322,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (previousDayTPO != null && previousDayTPO.ValueAreaLow > 0 && previousDayTPO.ValueAreaLow < close)
                     {
                         if (Math.Abs(close - previousDayTPO.ValueAreaLow) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.PrevVAL;
                             return previousDayTPO.ValueAreaLow - TickSize;
+                        }
                     }
                     // 2. Check current session VAL
                     if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
                     {
                         if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.VAL;
                             return tpoCurrentVAL - TickSize;
+                        }
                     }
                     // 3. Check liquidity zones (original logic)
                     if (liquidityZones != null)
@@ -4277,7 +4344,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (!z.IsRecovered && z.IsBullish && z.LowPrice < close)
                             {
                                 if (Math.Abs(close - z.LowPrice) <= maxDist)
+                                {
+                                    _lastStopSource = StopSource.LiquidityZone;
                                     return z.LowPrice - TickSize;
+                                }
                                 else
                                     Print(string.Format("IQMainUltimate: AutoDetected bullish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", z.LowPrice, Math.Abs(close - z.LowPrice) / TickSize));
                             }
@@ -4287,10 +4357,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                     {
                         if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.PivotS1;
                             return currentPivot.S1;
+                        }
                         else
                             Print(string.Format("IQMainUltimate: AutoDetected bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                     }
+                    _lastStopSource = StopSource.ADR;
+                    _lastStopWasFallback = true;
                     return close - GetAdrBasedStopDistance();
 
                 case UltimateStopMode.PivotBased:
@@ -4299,19 +4374,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
                         {
                             if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            {
+                                _lastStopSource = StopSource.PivotR1;
                                 return currentPivot.R1;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: PivotBased bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                         }
+                        _lastStopSource = StopSource.Manual;
+                        _lastStopWasFallback = true;
                         return close + StopDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                     {
                         if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.PivotS1;
                             return currentPivot.S1;
+                        }
                         else
                             Print(string.Format("IQMainUltimate: PivotBased bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                     }
+                    _lastStopSource = StopSource.Manual;
+                    _lastStopWasFallback = true;
                     return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.HVNBased:
@@ -4326,9 +4411,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                             }
                         }
                         if (bestSrAbove < double.MaxValue && Math.Abs(close - bestSrAbove) <= maxDist)
+                        {
+                            _lastStopSource = StopSource.SRLevel;
                             return bestSrAbove + TickSize;
+                        }
                         if (bestSrAbove < double.MaxValue)
                             Print(string.Format("IQMainUltimate: HVNBased bearish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSrAbove, Math.Abs(close - bestSrAbove) / TickSize));
+                        _lastStopSource = StopSource.Manual;
+                        _lastStopWasFallback = true;
                         return close + StopDistanceTicks * TickSize;
                     }
                     double bestSr = 0;
@@ -4340,13 +4430,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                         }
                     }
                     if (bestSr > 0 && Math.Abs(close - bestSr) <= maxDist)
+                    {
+                        _lastStopSource = StopSource.SRLevel;
                         return bestSr - TickSize;
+                    }
                     if (bestSr > 0)
                         Print(string.Format("IQMainUltimate: HVNBased bullish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSr, Math.Abs(close - bestSr) / TickSize));
+                    _lastStopSource = StopSource.Manual;
+                    _lastStopWasFallback = true;
                     return close - StopDistanceTicks * TickSize;
 
                 case UltimateStopMode.ManualInput:
                 default:
+                    _lastStopSource = StopSource.Manual;
                     return bearish ? close + StopDistanceTicks * TickSize : close - StopDistanceTicks * TickSize;
             }
         }
@@ -4361,6 +4457,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool   bearish  = IsBearishSignal();
             double maxDist  = MaxTPOTargetTicks * TickSize;
 
+            _lastTargetSource      = TargetSource.None;
+            _lastTargetWasFallback = false;
+            _lastTargetSourceDetail = "";
+
             switch (TargetMode)
             {
                 case UltimateTargetMode.VAH:
@@ -4370,16 +4470,26 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
                         {
                             if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.VAL;
                                 return tpoCurrentVAL;
+                            }
                         }
+                        _lastTargetSource = TargetSource.ADR;
+                        _lastTargetWasFallback = true;
                         return close - GetAdrBasedTargetDistance();
                     }
                     // Bullish: target the current session Value Area High
                     if (tpoCurrentVAH > close)
                     {
                         if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.VAH;
                             return tpoCurrentVAH;
+                        }
                     }
+                    _lastTargetSource = TargetSource.ADR;
+                    _lastTargetWasFallback = true;
                     return close + GetAdrBasedTargetDistance();
 
                 case UltimateTargetMode.IBExtension:
@@ -4389,28 +4499,58 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (tpoCurrentIBLowExt > 0 && tpoCurrentIBLowExt < close)
                         {
                             if (Math.Abs(close - tpoCurrentIBLowExt) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.IBExtLow;
                                 return tpoCurrentIBLowExt;
+                            }
+                            Print(string.Format("IQMainUltimate: IBExtension bearish target — IB low ext {0} skipped ({1:F0}t beyond cap {2}t)",
+                                tpoCurrentIBLowExt, Math.Abs(close - tpoCurrentIBLowExt) / TickSize, MaxTPOTargetTicks));
+                        }
+                        else if (tpoCurrentIBLowExt == 0)
+                        {
+                            Print("IQMainUltimate: IBExtension bearish target — IB low ext unavailable (IB window not finalized or sanity guard tripped); falling back to VAL");
                         }
                         // Fallback to VAL
                         if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
                         {
                             if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.VAL;
+                                _lastTargetWasFallback = true;
                                 return tpoCurrentVAL;
+                            }
                         }
+                        _lastTargetSource = TargetSource.ADR;
+                        _lastTargetWasFallback = true;
                         return close - GetAdrBasedTargetDistance();
                     }
                     // Bullish: Target the IB High Extension if price is trending up
                     if (tpoCurrentIBHighExt > close)
                     {
                         if (Math.Abs(close - tpoCurrentIBHighExt) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.IBExtHigh;
                             return tpoCurrentIBHighExt;
+                        }
+                        Print(string.Format("IQMainUltimate: IBExtension bullish target — IB high ext {0} skipped ({1:F0}t beyond cap {2}t)",
+                            tpoCurrentIBHighExt, Math.Abs(close - tpoCurrentIBHighExt) / TickSize, MaxTPOTargetTicks));
+                    }
+                    else if (tpoCurrentIBHighExt == 0)
+                    {
+                        Print("IQMainUltimate: IBExtension bullish target — IB high ext unavailable (IB window not finalized or sanity guard tripped); falling back to VAH");
                     }
                     // Fallback to VAH
                     if (tpoCurrentVAH > close)
                     {
                         if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.VAH;
+                            _lastTargetWasFallback = true;
                             return tpoCurrentVAH;
+                        }
                     }
+                    _lastTargetSource = TargetSource.ADR;
+                    _lastTargetWasFallback = true;
                     return close + GetAdrBasedTargetDistance();
 
                 case UltimateTargetMode.AutoDetected:
@@ -4420,27 +4560,41 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
                         {
                             if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.VAL;
                                 return tpoCurrentVAL;
+                            }
                         }
                         // 2. Check IB Low Extension (if session is in trend mode)
                         if (tpoCurrentShape == TPOProfileShape.TrendDay && tpoCurrentIBLowExt > 0 && tpoCurrentIBLowExt < close)
                         {
                             if (Math.Abs(close - tpoCurrentIBLowExt) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.IBExtLow;
                                 return tpoCurrentIBLowExt;
+                            }
                         }
                         // 3. Check nearest naked POC from previous days (below price)
                         if (nakedTPOLevels != null)
                         {
-                            double bestNaked = double.MinValue;
+                            double bestNaked      = double.MinValue;
+                            string bestNakedLabel = "";
                             foreach (var nl in nakedTPOLevels)
                             {
                                 if (!nl.IsClosed && nl.LevelType == "POC" && nl.Price < close && nl.Price > bestNaked)
-                                    bestNaked = nl.Price;
+                                {
+                                    bestNaked      = nl.Price;
+                                    bestNakedLabel = nl.SessionLabel;
+                                }
                             }
                             if (bestNaked > double.MinValue)
                             {
                                 if (Math.Abs(close - bestNaked) <= maxDist)
+                                {
+                                    _lastTargetSource       = TargetSource.NakedPOC;
+                                    _lastTargetSourceDetail = bestNakedLabel;
                                     return bestNaked;
+                                }
                                 else
                                     Print(string.Format("IQMainUltimate: AutoDetected bearish target — naked POC {0} skipped ({1:F0}t beyond cap)", bestNaked, Math.Abs(close - bestNaked) / TickSize));
                             }
@@ -4449,17 +4603,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                         {
                             if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.PivotS1;
                                 return currentPivot.S1;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: AutoDetected bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                         }
                         if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
                         {
                             if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.PivotS2;
                                 return currentPivot.S2;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: AutoDetected bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
                         }
+                        _lastTargetSource = TargetSource.ADR;
+                        _lastTargetWasFallback = true;
                         return close - GetAdrBasedTargetDistance();
                     }
                     // Bullish
@@ -4467,27 +4629,41 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (tpoCurrentVAH > close)
                     {
                         if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.VAH;
                             return tpoCurrentVAH;
+                        }
                     }
                     // 2. Check IB High Extension (if session is in trending mode)
                     if (tpoCurrentShape == TPOProfileShape.TrendDay && tpoCurrentIBHighExt > close)
                     {
                         if (Math.Abs(close - tpoCurrentIBHighExt) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.IBExtHigh;
                             return tpoCurrentIBHighExt;
+                        }
                     }
                     // 3. Check nearest naked POC from previous days (above price)
                     if (nakedTPOLevels != null)
                     {
-                        double bestNaked = double.MaxValue;
+                        double bestNaked      = double.MaxValue;
+                        string bestNakedLabel = "";
                         foreach (var nl in nakedTPOLevels)
                         {
                             if (!nl.IsClosed && nl.LevelType == "POC" && nl.Price > close && nl.Price < bestNaked)
-                                bestNaked = nl.Price;
+                            {
+                                bestNaked      = nl.Price;
+                                bestNakedLabel = nl.SessionLabel;
+                            }
                         }
                         if (bestNaked < double.MaxValue)
                         {
                             if (Math.Abs(close - bestNaked) <= maxDist)
+                            {
+                                _lastTargetSource       = TargetSource.NakedPOC;
+                                _lastTargetSourceDetail = bestNakedLabel;
                                 return bestNaked;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: AutoDetected bullish target — naked POC {0} skipped ({1:F0}t beyond cap)", bestNaked, Math.Abs(close - bestNaked) / TickSize));
                         }
@@ -4496,17 +4672,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (currentPivot != null && currentPivot.R1 > close)
                     {
                         if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.PivotR1;
                             return currentPivot.R1;
+                        }
                         else
                             Print(string.Format("IQMainUltimate: AutoDetected bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                     }
                     if (currentPivot != null && currentPivot.R2 > close)
                     {
                         if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.PivotR2;
                             return currentPivot.R2;
+                        }
                         else
                             Print(string.Format("IQMainUltimate: AutoDetected bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
                     }
+                    _lastTargetSource = TargetSource.ADR;
+                    _lastTargetWasFallback = true;
                     return close + GetAdrBasedTargetDistance();
 
                 case UltimateTargetMode.PivotR1:
@@ -4515,19 +4699,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S1 > 0)
                         {
                             if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.PivotS1;
                                 return currentPivot.S1;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: PivotR1 bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                         }
+                        _lastTargetSource = TargetSource.Manual;
+                        _lastTargetWasFallback = true;
                         return close - TargetDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.R1 > 0)
                     {
                         if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.PivotR1;
                             return currentPivot.R1;
+                        }
                         else
                             Print(string.Format("IQMainUltimate: PivotR1 bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                     }
+                    _lastTargetSource = TargetSource.Manual;
+                    _lastTargetWasFallback = true;
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.PivotR2:
@@ -4536,23 +4730,34 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S2 > 0)
                         {
                             if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                            {
+                                _lastTargetSource = TargetSource.PivotS2;
                                 return currentPivot.S2;
+                            }
                             else
                                 Print(string.Format("IQMainUltimate: PivotR2 bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
                         }
+                        _lastTargetSource = TargetSource.Manual;
+                        _lastTargetWasFallback = true;
                         return close - TargetDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.R2 > 0)
                     {
                         if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                        {
+                            _lastTargetSource = TargetSource.PivotR2;
                             return currentPivot.R2;
+                        }
                         else
                             Print(string.Format("IQMainUltimate: PivotR2 bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
                     }
+                    _lastTargetSource = TargetSource.Manual;
+                    _lastTargetWasFallback = true;
                     return close + TargetDistanceTicks * TickSize;
 
                 case UltimateTargetMode.ManualInput:
                 default:
+                    _lastTargetSource = TargetSource.Manual;
                     return bearish ? close - TargetDistanceTicks * TickSize : close + TargetDistanceTicks * TickSize;
             }
         }
@@ -6110,7 +6315,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         /// <summary>
         /// Build a descriptive stop line label for the Entry Mode dashboard.
-        /// Appends TPO level name (e.g. "VAL", "yesterday VAL") when applicable.
+        /// Reads _lastStopSource set by CalculateDynamicStop; shows fallback origin when applicable.
         /// </summary>
         private string BuildStopLabel(double stopPrice, double entryPrice)
         {
@@ -6118,18 +6323,37 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Instrument.MasterInstrument.FormatPrice(stopPrice),
                 Math.Abs(entryPrice - stopPrice) / TickSize);
 
-            // Annotate with TPO level name if stop price matches a known level
-            if (tpoCurrentVAL > 0 && Math.Abs(stopPrice - tpoCurrentVAL) <= TickSize)
-                return baseStr + "  [VAL]";
-            if (previousDayTPO != null && previousDayTPO.ValueAreaLow > 0 &&
-                Math.Abs(stopPrice - previousDayTPO.ValueAreaLow) <= TickSize)
-                return baseStr + "  [prev VAL]";
-            return baseStr;
+            string sourceTag = StopSourceTag(_lastStopSource, _lastStopSourceDetail);
+            if (string.IsNullOrEmpty(sourceTag))
+                return baseStr;
+
+            if (_lastStopWasFallback)
+                return baseStr + "  [" + sourceTag + " \u2190 " + StopMode.ToString() + " fallback]";
+
+            return baseStr + "  [" + sourceTag + "]";
+        }
+
+        private static string StopSourceTag(StopSource src, string detail)
+        {
+            switch (src)
+            {
+                case StopSource.VAH:           return "VAH";
+                case StopSource.VAL:           return "VAL";
+                case StopSource.PrevVAH:       return "prev VAH";
+                case StopSource.PrevVAL:       return "prev VAL";
+                case StopSource.PivotS1:       return "S1";
+                case StopSource.PivotR1:       return "R1";
+                case StopSource.LiquidityZone: return "Liq Zone";
+                case StopSource.SRLevel:       return "SR";
+                case StopSource.ADR:           return "ADR";
+                case StopSource.Manual:        return "Manual";
+                default: return "";
+            }
         }
 
         /// <summary>
         /// Build a descriptive target line label for the Entry Mode dashboard.
-        /// Appends TPO level name (e.g. "VAH", "IB ext", "Naked POC") when applicable.
+        /// Reads _lastTargetSource set by CalculateDynamicTarget; shows fallback origin when applicable.
         /// </summary>
         private string BuildTargetLabel(double targetPrice, double entryPrice)
         {
@@ -6137,20 +6361,34 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Instrument.MasterInstrument.FormatPrice(targetPrice),
                 Math.Abs(targetPrice - entryPrice) / TickSize);
 
-            if (tpoCurrentVAH > 0 && Math.Abs(targetPrice - tpoCurrentVAH) <= TickSize)
-                return baseStr + "  [VAH]";
-            if (tpoCurrentIBHighExt > 0 && Math.Abs(targetPrice - tpoCurrentIBHighExt) <= TickSize)
-                return baseStr + "  [IB ext]";
-            // Check if it matches a naked POC
-            if (nakedTPOLevels != null)
+            string sourceTag = TargetSourceTag(_lastTargetSource, _lastTargetSourceDetail);
+            if (string.IsNullOrEmpty(sourceTag))
+                return baseStr;
+
+            if (_lastTargetWasFallback)
+                return baseStr + "  [" + sourceTag + " \u2190 " + TargetMode.ToString() + " fallback]";
+
+            return baseStr + "  [" + sourceTag + "]";
+        }
+
+        private static string TargetSourceTag(TargetSource src, string detail)
+        {
+            switch (src)
             {
-                foreach (var nl in nakedTPOLevels)
-                {
-                    if (!nl.IsClosed && nl.LevelType == "POC" && Math.Abs(targetPrice - nl.Price) <= TickSize)
-                        return baseStr + string.Format("  [Naked POC {0}]", nl.SessionLabel);
-                }
+                case TargetSource.IBExtHigh: return "IB ext H";
+                case TargetSource.IBExtLow:  return "IB ext L";
+                case TargetSource.VAH:       return "VAH";
+                case TargetSource.VAL:       return "VAL";
+                case TargetSource.PivotR1:   return "R1";
+                case TargetSource.PivotR2:   return "R2";
+                case TargetSource.PivotS1:   return "S1";
+                case TargetSource.PivotS2:   return "S2";
+                case TargetSource.NakedPOC:  return string.IsNullOrEmpty(detail) ? "Naked POC" : "Naked POC " + detail;
+                case TargetSource.SRLevel:   return "SR";
+                case TargetSource.ADR:       return "ADR";
+                case TargetSource.Manual:    return "Manual";
+                default: return "";
             }
-            return baseStr;
         }
 
         #endregion
