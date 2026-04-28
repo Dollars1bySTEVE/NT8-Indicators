@@ -365,6 +365,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxEntryLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxStopLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxTargetLineBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _brushDimmedText;
+        private bool                               _dashboardSkipDueToRR;
         private SharpDX.DirectWrite.TextFormat     dxMainDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhMonFormat;
@@ -1823,6 +1825,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "When ON, shows a conflict warning during low-participation hours (outside London/NY/EU Brinks/US Brinks). Turn OFF to silence off-hours noise.")]
         public bool ShowLowParticipationWarning { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Gate Display by Min R:R", Order = 21, GroupName = "16. Dashboards",
+            Description = "When ON, the Entry Mode dashboard greys out and the on-chart entry/stop/target lines are suppressed when the computed R:R is below MinRiskReward. Helps skip low-quality setups visually.")]
+        public bool MinRiskRewardDisplay { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
@@ -2180,6 +2187,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SignalStaleMinutes     = 15;
                 SignalExpireMinutes    = 30;
                 ShowLowParticipationWarning = true;
+                MinRiskRewardDisplay        = true;
             }
             else if (State == State.Configure)
             {
@@ -4398,6 +4406,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool  showNoSignal   = noSignal || signalExpired;
             string elapsedTime   = GetSignalElapsedTime();
 
+            // Reset per-frame R/R gate
+            _dashboardSkipDueToRR = false;
+
             var lines = new List<string>();
             lines.Add(string.Format("IQMainGPU Enhanced [{0}]", AssetClass.ToString().ToUpper()));
 
@@ -4408,20 +4419,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else
             {
-                // Signal line with elapsed time
-                string signalLine = elapsedTime.Length > 0
-                    ? string.Format("Signal:     {0} ({1})", dashboardPrimarySignal, elapsedTime)
-                    : string.Format("Signal:     {0}", dashboardPrimarySignal);
-                lines.Add(signalLine);
-                lines.Add(string.Format("Confidence: {0}%", dashboardConfidence));
-                lines.Add(string.Format("Entry:      {0}", Instrument.MasterInstrument.FormatPrice(dashboardEntryPrice)));
-                lines.Add(string.Format("Stop:       {0}  ({1:F0}t)",
-                    Instrument.MasterInstrument.FormatPrice(dashboardStopPrice),
-                    Math.Abs(dashboardEntryPrice - dashboardStopPrice) / TickSize));
-                lines.Add(string.Format("Target:     {0}  ({1:F0}t)",
-                    Instrument.MasterInstrument.FormatPrice(dashboardTargetPrice),
-                    Math.Abs(dashboardTargetPrice - dashboardEntryPrice) / TickSize));
-
+                // Compute R/R early so we can gate the display before building lines
                 double rr = 0;
                 if (IsBullishSignal())
                 {
@@ -4445,7 +4443,26 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (riskDist > 0) rr = rewardDist / riskDist;
                     }
                 }
-                lines.Add(rr > 0 ? string.Format("R/R:        {0:F2}:1", rr) : "R/R:        N/A");
+                _dashboardSkipDueToRR = MinRiskRewardDisplay && rr > 0 && rr < MinRiskReward;
+
+                // Signal line with elapsed time
+                string signalBase = elapsedTime.Length > 0
+                    ? string.Format("Signal:     {0} ({1})", dashboardPrimarySignal, elapsedTime)
+                    : string.Format("Signal:     {0}", dashboardPrimarySignal);
+                lines.Add(_dashboardSkipDueToRR ? signalBase + " \u2014 SKIP (R/R below min)" : signalBase);
+                lines.Add(string.Format("Confidence: {0}%", dashboardConfidence));
+                lines.Add(string.Format("Entry:      {0}", Instrument.MasterInstrument.FormatPrice(dashboardEntryPrice)));
+                lines.Add(string.Format("Stop:       {0}  ({1:F0}t)",
+                    Instrument.MasterInstrument.FormatPrice(dashboardStopPrice),
+                    Math.Abs(dashboardEntryPrice - dashboardStopPrice) / TickSize));
+                lines.Add(string.Format("Target:     {0}  ({1:F0}t)",
+                    Instrument.MasterInstrument.FormatPrice(dashboardTargetPrice),
+                    Math.Abs(dashboardTargetPrice - dashboardEntryPrice) / TickSize));
+
+                if (_dashboardSkipDueToRR)
+                    lines.Add(string.Format("R/R:        {0:F2}:1  (< min {1})", rr, MinRiskReward.ToString("0.0")));
+                else
+                    lines.Add(rr > 0 ? string.Format("R/R:        {0:F2}:1", rr) : "R/R:        N/A");
 
                 // Stale signal warning (15–30 min)
                 if (signalIsStale)
@@ -4495,7 +4512,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             foreach (string line in lines)
             {
                 SharpDX.Direct2D1.SolidColorBrush brush;
-                if      (first)                                             brush = dxEnhDashHeaderBrush  ?? dxEnhDashTextBrush;
+                if (_dashboardSkipDueToRR && _brushDimmedText != null)
+                    brush = _brushDimmedText;
+                else if (first)                                             brush = dxEnhDashHeaderBrush  ?? dxEnhDashTextBrush;
                 else if (line.Contains("\u26a0") || line.Contains("["))    brush = dxEnhDashWarningBrush ?? dxEnhDashTextBrush;
                 else if (line.StartsWith("Target"))                        brush = dxEnhDashGreenBrush   ?? dxEnhDashTextBrush;
                 else if (line.StartsWith("Stop"))                          brush = dxEnhDashRedBrush     ?? dxEnhDashTextBrush;
@@ -4637,7 +4656,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // E6 guard: do not draw lines when there is no actionable signal
             bool noSignal = dashboardPrimarySignal == "NEUTRAL" || dashboardPrimarySignal == "No Data";
-            if (noSignal || HasSignalExpired()) return;
+            if (noSignal || HasSignalExpired() || _dashboardSkipDueToRR) return;
             if (dashboardEntryPrice <= 0 || dashboardStopPrice <= 0 || dashboardTargetPrice <= 0) return;
 
             float rtW = rt.Size.Width;
@@ -6038,6 +6057,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     new SharpDX.Color4(0.95f, 0.20f, 0.20f, 0.75f));
                 dxTargetLineBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(0.20f, 0.90f, 0.30f, 0.75f));
+                _brushDimmedText = new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new SharpDX.Color4(0.6f, 0.6f, 0.6f, 0.5f));
 
                 dxReady = true;
             }
@@ -6151,6 +6172,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxEntryLineBrush);
             DisposeRef(ref dxStopLineBrush);
             DisposeRef(ref dxTargetLineBrush);
+            DisposeRef(ref _brushDimmedText);
             DisposeRef(ref dxEnhDashFormat);
             DisposeRef(ref dxEnhMonFormat);
         }
