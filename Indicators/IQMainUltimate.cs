@@ -436,9 +436,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string   lastTrackedSignal      = "";
         private bool     signalIsStale          = false;
 
-        // Maximum TPO-sourced stop/target distances (ticks) — prevents absurd levels on overnight gaps
-        private const int MaxTPOStopTicks   = 200;
-        private const int MaxTPOTargetTicks = 400;
+        // MaxTPOStopTicks / MaxTPOTargetTicks are now user properties (see group 17. TPO Settings)
 
         // Cached bar values — set every OnBarUpdate call so OnRender always reads the freshest tick
         private double _latestClose;
@@ -2033,6 +2031,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Display the session profile shape (Normal / TrendDay / DoubleDistribution / Balanced) in the Monitoring Dashboard.")]
         public bool ShowProfileShape { get; set; }
 
+        [NinjaScriptProperty]
+        [Range(10, 2000)]
+        [Display(Name = "Max TPO Stop Distance (ticks)", Order = 11, GroupName = "17. TPO Settings",
+            Description = "Hard cap on TPO-derived stop distance from price. When a TPO stop level exceeds this, the indicator falls back to the ADR-based stop. Increase for small-tick instruments (CL, bonds).")]
+        public int MaxTPOStopTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 4000)]
+        [Display(Name = "Max TPO Target Distance (ticks)", Order = 12, GroupName = "17. TPO Settings",
+            Description = "Hard cap on TPO-derived target distance from price. When a TPO target level exceeds this, the indicator falls back to the ADR-based target. Increase for small-tick instruments.")]
+        public int MaxTPOTargetTicks { get; set; }
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -2398,6 +2408,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 MaxNakedLevels       = 10;
                 NakedLevelMaxAgeDays = 10;
                 ShowProfileShape     = true;
+                MaxTPOStopTicks      = 200;
+                MaxTPOTargetTicks    = 400;
             }
             else if (State == State.Configure)
             {
@@ -2417,6 +2429,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 }
+                if (!ShowLondon && !ShowNewYork)
+                    Print("[IQMainUltimate] Both London and New York sessions are disabled — TPO previous-day reference levels will not update. Enable at least one to use TPO-based stops/targets.");
             }
             else if (State == State.DataLoaded)
             {
@@ -4752,6 +4766,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             const float PanelHeightBuffer = 4f;
             float       lineH  = EntryModeDashboardFontSize * LineHeightMult;
             float       panelW = 480f;
+            // U13: pre-compute clamped panel width so WrapTextToLines uses the post-clamp usable width
+            float clampedW;
+            ClampTableY(0f, 0f, rtH, panelW, rtW, out clampedW);
+            float usableW = (clampedW > 0 && clampedW < panelW ? clampedW : panelW) - PadX * 2;
             bool  signalExpired  = HasSignalExpired();
             bool  noSignal       = dashboardPrimarySignal == "NEUTRAL" || dashboardPrimarySignal == "No Data";
             bool  showNoSignal   = noSignal || signalExpired;
@@ -4853,7 +4871,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!monitoringVisible && dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
                 {
                     lines.Add("");
-                    float usableW = panelW - PadX * 2;
                     foreach (string part in dashboardConflictText.Split('\n'))
                     {
                         string trimmed = part.TrimEnd('\r');
@@ -4875,7 +4892,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
             // Clamp to keep panel within render area
-            float clampedW;
             panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
             if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
 
@@ -4913,6 +4929,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             const float PanelHeightBuffer = 4f;
             float       lineH  = MonitoringDashboardFontSize * LineHeightMult;
             float       panelW = 480f;
+            // U13: pre-compute clamped panel width so WrapTextToLines uses the post-clamp usable width
+            float clampedW;
+            ClampTableY(0f, 0f, rtH, panelW, rtW, out clampedW);
+            float usableW = (clampedW > 0 && clampedW < panelW ? clampedW : panelW) - PadX * 2;
 
             string session    = GetActiveSessionName();
 
@@ -5007,7 +5027,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (dashboardConflictDetected && ShowConflictWarnings && !string.IsNullOrEmpty(dashboardConflictText))
             {
                 lines.Add(""); // section separator — adds visual gap before alerts
-                float usableW = panelW - PadX * 2;
                 foreach (string part in dashboardConflictText.Split('\n'))
                 {
                     string trimmed = part.TrimEnd('\r');
@@ -5028,7 +5047,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
 
             // Clamp to keep panel within render area
-            float clampedW;
             panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
             if (clampedW > 0 && clampedW < panelW) panelW = clampedW;
 
@@ -5073,6 +5091,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             var rt = RenderTarget;
             if (rt == null) return;
+
+            // U12: hide lines when there is no actionable signal
+            string sig = dashboardPrimarySignal;
+            if (sig == "NEUTRAL" || sig == "No Data" || HasSignalExpired()) return;
+            if (dashboardEntryPrice <= 0 || dashboardStopPrice <= 0 || dashboardTargetPrice <= 0) return;
 
             float rtW = rt.Size.Width;
 
@@ -5136,7 +5159,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EnableLevel2 ? l2StatusText : ""
             };
 
-            int   nonEmpty = lines.Count(s => !string.IsNullOrEmpty(s));
+            int   nonEmpty = 0;
+            for (int i = 0; i < lines.Length; i++)
+                if (!string.IsNullOrEmpty(lines[i])) nonEmpty++;
             float panelH   = PadY * 2 + nonEmpty * lineH + PanelHeightBuffer;
 
             float panelX, panelY;
@@ -5863,10 +5888,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 // IB window closed — compute range and extensions
                 if (sess.IBHigh > double.MinValue && sess.IBLow < double.MaxValue)
-                {
-                    sess.IBRange         = sess.IBHigh - sess.IBLow;
-                    CalculateIBExtensions(sess);
-                }
+                    sess.IBRange = sess.IBHigh - sess.IBLow;
                 sess.IBComplete = true;
             }
         }
