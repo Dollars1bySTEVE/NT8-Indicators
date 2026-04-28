@@ -2339,6 +2339,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Print(string.Format("  ET zone resolved: {0}", EtZone != null ? EtZone.Id : "(null)"));
                     Print("=== end session anchors ===");
                 }
+            }
+            else if (State == State.Terminated)
+            {
+                DisposeDXResources();
+            }
+        }
 
         protected override void OnBarUpdate()
         {

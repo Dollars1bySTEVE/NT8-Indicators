@@ -3092,6 +3092,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             ForceRefresh();
         }
+            else if (State == State.Terminated)
+            {
+                DisposeDXResources();
+            }
+        }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
