@@ -367,6 +367,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxTargetLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush _brushDimmedText;
         private bool                               _dashboardSkipDueToRR;
+
+        // Source-tracking enums and fields for stop/target label transparency (PR-B4)
+        private enum EnhancedTargetSource { None, SRLevel, PivotR1, PivotR2, PivotS1, PivotS2, Manual }
+        private enum EnhancedStopSource   { None, PivotR1, PivotS1, LiquidityZone, SRLevel, Manual }
+
+        private EnhancedTargetSource _lastTargetSource      = EnhancedTargetSource.None;
+        private EnhancedStopSource   _lastStopSource        = EnhancedStopSource.None;
+        private bool                 _lastTargetWasFallback = false;
+        private bool                 _lastStopWasFallback   = false;
         private SharpDX.DirectWrite.TextFormat     dxMainDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhDashFormat;
         private SharpDX.DirectWrite.TextFormat     dxEnhMonFormat;
@@ -3803,9 +3812,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else
             {
-                dashboardEntryPrice  = 0;
-                dashboardStopPrice   = 0;
-                dashboardTargetPrice = 0;
+                dashboardEntryPrice    = 0;
+                dashboardStopPrice     = 0;
+                dashboardTargetPrice   = 0;
+                _lastTargetSource      = EnhancedTargetSource.None;
+                _lastStopSource        = EnhancedStopSource.None;
+                _lastTargetWasFallback = false;
+                _lastStopWasFallback   = false;
             }
 
             if (ShowConflictWarnings)
@@ -3902,6 +3915,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool   bearish = IsBearishSignal();
             double maxDist = MaxStopTicks * TickSize;
 
+            _lastStopSource      = EnhancedStopSource.None;
+            _lastStopWasFallback = false;
+
             switch (StopMode)
             {
                 case StopPlacementMode.AutoDetected:
@@ -3920,7 +3936,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (nearestZoneHigh < double.MaxValue)
                             {
                                 if (Math.Abs(close - nearestZoneHigh) <= maxDist)
+                                {
+                                    _lastStopSource = EnhancedStopSource.LiquidityZone;
                                     return nearestZoneHigh + TickSize;
+                                }
                                 else
                                     Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", nearestZoneHigh, Math.Abs(close - nearestZoneHigh) / TickSize));
                             }
@@ -3929,10 +3948,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.R1 > close)
                         {
                             if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            {
+                                _lastStopSource = EnhancedStopSource.PivotR1;
                                 return currentPivot.R1;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                         }
+                        _lastStopSource = EnhancedStopSource.Manual;
+                        _lastStopWasFallback = true;
                         return close + StopDistanceTicks * TickSize;
                     }
                     // Bullish: stop below price
@@ -3948,7 +3972,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (nearestZoneLow > double.MinValue)
                         {
                             if (Math.Abs(close - nearestZoneLow) <= maxDist)
+                            {
+                                _lastStopSource = EnhancedStopSource.LiquidityZone;
                                 return nearestZoneLow - TickSize;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish stop — liquidity zone {0} skipped ({1:F0}t beyond cap)", nearestZoneLow, Math.Abs(close - nearestZoneLow) / TickSize));
                         }
@@ -3957,10 +3984,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                     {
                         if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                        {
+                            _lastStopSource = EnhancedStopSource.PivotS1;
                             return currentPivot.S1;
+                        }
                         else
                             Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                     }
+                    _lastStopSource = EnhancedStopSource.Manual;
+                    _lastStopWasFallback = true;
                     return close - StopDistanceTicks * TickSize;
 
                 case StopPlacementMode.PivotBased:
@@ -3969,19 +4001,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
                         {
                             if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                            {
+                                _lastStopSource = EnhancedStopSource.PivotR1;
                                 return currentPivot.R1;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: PivotBased bearish stop — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                         }
+                        _lastStopSource = EnhancedStopSource.Manual;
+                        _lastStopWasFallback = true;
                         return close + StopDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                     {
                         if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                        {
+                            _lastStopSource = EnhancedStopSource.PivotS1;
                             return currentPivot.S1;
+                        }
                         else
                             Print(string.Format("IQMainGPU_Enhanced: PivotBased bullish stop — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                     }
+                    _lastStopSource = EnhancedStopSource.Manual;
+                    _lastStopWasFallback = true;
                     return close - StopDistanceTicks * TickSize;
 
                 case StopPlacementMode.HVNBased:
@@ -3996,9 +4038,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                             }
                         }
                         if (bestSrAbove < double.MaxValue && Math.Abs(close - bestSrAbove) <= maxDist)
+                        {
+                            _lastStopSource = EnhancedStopSource.SRLevel;
                             return bestSrAbove + TickSize;
+                        }
                         if (bestSrAbove < double.MaxValue)
                             Print(string.Format("IQMainGPU_Enhanced: HVNBased bearish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSrAbove, Math.Abs(close - bestSrAbove) / TickSize));
+                        _lastStopSource = EnhancedStopSource.Manual;
+                        _lastStopWasFallback = true;
                         return close + StopDistanceTicks * TickSize;
                     }
                     double bestSr = 0;
@@ -4010,13 +4057,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                         }
                     }
                     if (bestSr > 0 && Math.Abs(close - bestSr) <= maxDist)
+                    {
+                        _lastStopSource = EnhancedStopSource.SRLevel;
                         return bestSr - TickSize;
+                    }
                     if (bestSr > 0)
                         Print(string.Format("IQMainGPU_Enhanced: HVNBased bullish stop — SR {0} skipped ({1:F0}t beyond cap)", bestSr, Math.Abs(close - bestSr) / TickSize));
+                    _lastStopSource = EnhancedStopSource.Manual;
+                    _lastStopWasFallback = true;
                     return close - StopDistanceTicks * TickSize;
 
                 case StopPlacementMode.ManualInput:
                 default:
+                    _lastStopSource = EnhancedStopSource.Manual;
                     return bearish ? close + StopDistanceTicks * TickSize : close - StopDistanceTicks * TickSize;
             }
         }
@@ -4029,6 +4082,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             double close   = _latestClose;
             bool   bearish = IsBearishSignal();
             double maxDist = MaxTargetTicks * TickSize;
+
+            _lastTargetSource      = EnhancedTargetSource.None;
+            _lastTargetWasFallback = false;
 
             switch (TargetMode)
             {
@@ -4045,7 +4101,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 if (sr < close && sr > bestSrBelow) bestSrBelow = sr;
                             }
                             if (bestSrBelow > double.MinValue && Math.Abs(close - bestSrBelow) <= maxDist)
+                            {
+                                _lastTargetSource = EnhancedTargetSource.SRLevel;
                                 return bestSrBelow;
+                            }
                             if (bestSrBelow > double.MinValue)
                                 Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish target — SR {0} skipped ({1:F0}t beyond cap)", bestSrBelow, Math.Abs(close - bestSrBelow) / TickSize));
                         }
@@ -4053,7 +4112,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                         {
                             if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            {
+                                _lastTargetSource = EnhancedTargetSource.PivotS1;
                                 return currentPivot.S1;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                         }
@@ -4061,10 +4123,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
                         {
                             if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                            {
+                                _lastTargetSource = EnhancedTargetSource.PivotS2;
                                 return currentPivot.S2;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: AutoDetected bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
                         }
+                        _lastTargetSource = EnhancedTargetSource.Manual;
+                        _lastTargetWasFallback = true;
                         return close - TargetDistanceTicks * TickSize;
                     }
                     // Bullish: target above price
@@ -4077,7 +4144,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                             if (sr > close && sr < bestSrAbove) bestSrAbove = sr;
                         }
                         if (bestSrAbove < double.MaxValue && Math.Abs(close - bestSrAbove) <= maxDist)
+                        {
+                            _lastTargetSource = EnhancedTargetSource.SRLevel;
                             return bestSrAbove;
+                        }
                         if (bestSrAbove < double.MaxValue)
                             Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish target — SR {0} skipped ({1:F0}t beyond cap)", bestSrAbove, Math.Abs(close - bestSrAbove) / TickSize));
                     }
@@ -4085,7 +4155,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (currentPivot != null && currentPivot.R1 > close)
                     {
                         if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                        {
+                            _lastTargetSource = EnhancedTargetSource.PivotR1;
                             return currentPivot.R1;
+                        }
                         else
                             Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                     }
@@ -4093,10 +4166,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (currentPivot != null && currentPivot.R2 > close)
                     {
                         if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                        {
+                            _lastTargetSource = EnhancedTargetSource.PivotR2;
                             return currentPivot.R2;
+                        }
                         else
                             Print(string.Format("IQMainGPU_Enhanced: AutoDetected bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
                     }
+                    _lastTargetSource = EnhancedTargetSource.Manual;
+                    _lastTargetWasFallback = true;
                     return close + TargetDistanceTicks * TickSize;
 
                 case TargetPlacementMode.PivotR1:
@@ -4105,19 +4183,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S1 > 0 && currentPivot.S1 < close)
                         {
                             if (Math.Abs(close - currentPivot.S1) <= maxDist)
+                            {
+                                _lastTargetSource = EnhancedTargetSource.PivotS1;
                                 return currentPivot.S1;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: PivotR1 bearish target — pivot S1 {0} skipped ({1:F0}t beyond cap)", currentPivot.S1, Math.Abs(close - currentPivot.S1) / TickSize));
                         }
+                        _lastTargetSource = EnhancedTargetSource.Manual;
+                        _lastTargetWasFallback = true;
                         return close - TargetDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.R1 > 0 && currentPivot.R1 > close)
                     {
                         if (Math.Abs(close - currentPivot.R1) <= maxDist)
+                        {
+                            _lastTargetSource = EnhancedTargetSource.PivotR1;
                             return currentPivot.R1;
+                        }
                         else
                             Print(string.Format("IQMainGPU_Enhanced: PivotR1 bullish target — pivot R1 {0} skipped ({1:F0}t beyond cap)", currentPivot.R1, Math.Abs(close - currentPivot.R1) / TickSize));
                     }
+                    _lastTargetSource = EnhancedTargetSource.Manual;
+                    _lastTargetWasFallback = true;
                     return close + TargetDistanceTicks * TickSize;
 
                 case TargetPlacementMode.PivotR2:
@@ -4126,24 +4214,102 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (currentPivot != null && currentPivot.S2 > 0 && currentPivot.S2 < close)
                         {
                             if (Math.Abs(close - currentPivot.S2) <= maxDist)
+                            {
+                                _lastTargetSource = EnhancedTargetSource.PivotS2;
                                 return currentPivot.S2;
+                            }
                             else
                                 Print(string.Format("IQMainGPU_Enhanced: PivotR2 bearish target — pivot S2 {0} skipped ({1:F0}t beyond cap)", currentPivot.S2, Math.Abs(close - currentPivot.S2) / TickSize));
                         }
+                        _lastTargetSource = EnhancedTargetSource.Manual;
+                        _lastTargetWasFallback = true;
                         return close - TargetDistanceTicks * TickSize;
                     }
                     if (currentPivot != null && currentPivot.R2 > 0 && currentPivot.R2 > close)
                     {
                         if (Math.Abs(close - currentPivot.R2) <= maxDist)
+                        {
+                            _lastTargetSource = EnhancedTargetSource.PivotR2;
                             return currentPivot.R2;
+                        }
                         else
                             Print(string.Format("IQMainGPU_Enhanced: PivotR2 bullish target — pivot R2 {0} skipped ({1:F0}t beyond cap)", currentPivot.R2, Math.Abs(close - currentPivot.R2) / TickSize));
                     }
+                    _lastTargetSource = EnhancedTargetSource.Manual;
+                    _lastTargetWasFallback = true;
                     return close + TargetDistanceTicks * TickSize;
 
                 case TargetPlacementMode.ManualInput:
                 default:
+                    _lastTargetSource = EnhancedTargetSource.Manual;
                     return bearish ? close - TargetDistanceTicks * TickSize : close + TargetDistanceTicks * TickSize;
+            }
+        }
+
+        /// <summary>
+        /// Build a descriptive stop line label for the Entry Mode dashboard.
+        /// Reads _lastStopSource set by CalculateDynamicStop; shows fallback origin when applicable.
+        /// </summary>
+        private string BuildStopLabel(double stopPrice, double entryPrice)
+        {
+            string baseStr = string.Format("Stop:       {0}  ({1:F0}t)",
+                Instrument.MasterInstrument.FormatPrice(stopPrice),
+                Math.Abs(entryPrice - stopPrice) / TickSize);
+
+            string sourceTag = StopSourceTag(_lastStopSource);
+            if (string.IsNullOrEmpty(sourceTag))
+                return baseStr;
+
+            if (_lastStopWasFallback)
+                return baseStr + "  [" + sourceTag + " \u2190 " + StopMode.ToString() + " fallback]";
+
+            return baseStr + "  [" + sourceTag + "]";
+        }
+
+        private static string StopSourceTag(EnhancedStopSource src)
+        {
+            switch (src)
+            {
+                case EnhancedStopSource.PivotR1:       return "R1";
+                case EnhancedStopSource.PivotS1:       return "S1";
+                case EnhancedStopSource.LiquidityZone: return "Liq Zone";
+                case EnhancedStopSource.SRLevel:       return "SR";
+                case EnhancedStopSource.Manual:        return "Manual";
+                default: return "";
+            }
+        }
+
+        /// <summary>
+        /// Build a descriptive target line label for the Entry Mode dashboard.
+        /// Reads _lastTargetSource set by CalculateDynamicTarget; shows fallback origin when applicable.
+        /// </summary>
+        private string BuildTargetLabel(double targetPrice, double entryPrice)
+        {
+            string baseStr = string.Format("Target:     {0}  ({1:F0}t)",
+                Instrument.MasterInstrument.FormatPrice(targetPrice),
+                Math.Abs(targetPrice - entryPrice) / TickSize);
+
+            string sourceTag = TargetSourceTag(_lastTargetSource);
+            if (string.IsNullOrEmpty(sourceTag))
+                return baseStr;
+
+            if (_lastTargetWasFallback)
+                return baseStr + "  [" + sourceTag + " \u2190 " + TargetMode.ToString() + " fallback]";
+
+            return baseStr + "  [" + sourceTag + "]";
+        }
+
+        private static string TargetSourceTag(EnhancedTargetSource src)
+        {
+            switch (src)
+            {
+                case EnhancedTargetSource.SRLevel:  return "SR";
+                case EnhancedTargetSource.PivotR1:  return "R1";
+                case EnhancedTargetSource.PivotR2:  return "R2";
+                case EnhancedTargetSource.PivotS1:  return "S1";
+                case EnhancedTargetSource.PivotS2:  return "S2";
+                case EnhancedTargetSource.Manual:   return "Manual";
+                default: return "";
             }
         }
 
@@ -4452,12 +4618,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 lines.Add(_dashboardSkipDueToRR ? signalBase + " \u2014 SKIP (R/R below min)" : signalBase);
                 lines.Add(string.Format("Confidence: {0}%", dashboardConfidence));
                 lines.Add(string.Format("Entry:      {0}", Instrument.MasterInstrument.FormatPrice(dashboardEntryPrice)));
-                lines.Add(string.Format("Stop:       {0}  ({1:F0}t)",
-                    Instrument.MasterInstrument.FormatPrice(dashboardStopPrice),
-                    Math.Abs(dashboardEntryPrice - dashboardStopPrice) / TickSize));
-                lines.Add(string.Format("Target:     {0}  ({1:F0}t)",
-                    Instrument.MasterInstrument.FormatPrice(dashboardTargetPrice),
-                    Math.Abs(dashboardTargetPrice - dashboardEntryPrice) / TickSize));
+                lines.Add(BuildStopLabel(dashboardStopPrice, dashboardEntryPrice));
+                lines.Add(BuildTargetLabel(dashboardTargetPrice, dashboardEntryPrice));
 
                 if (_dashboardSkipDueToRR)
                     lines.Add(string.Format("R/R:        {0:F2}:1  (< min {1})", rr, MinRiskReward.ToString("0.0")));
