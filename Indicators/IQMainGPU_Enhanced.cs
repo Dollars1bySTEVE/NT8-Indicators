@@ -1373,6 +1373,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Show Wall Lines", Order = 3, GroupName = "11. Order Book")]
         public bool ShowWallLines { get; set; }
 
+        [NinjaScriptProperty]
+        [Range(200, 10000)]
+        [Display(Name = "Max Order Book Levels", Order = 4, GroupName = "11. Order Book",
+            Description = "Per-side cap on retained order book price levels. When exceeded, levels farthest from the current price are evicted first.")]
+        public int MaxBookLevels { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters — 12. Halo & Candle Colors
@@ -1805,6 +1811,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Minutes after which a stale signal is expired entirely and the dashboard resets to 'No Active Signal / Waiting for signal detection...'.")]
         public int SignalExpireMinutes { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Show Low-Participation Warning", Order = 20, GroupName = "16. Dashboards",
+            Description = "When ON, shows a conflict warning during low-participation hours (outside London/NY/EU Brinks/US Brinks). Turn OFF to silence off-hours noise.")]
+        public bool ShowLowParticipationWarning { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
@@ -2068,6 +2079,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 WallMultiplier = 5;
                 SpoofingChecks = 3;
                 ShowWallLines  = true;
+                MaxBookLevels  = 2000;
 
                 // 12. Halo & Candle Colors
                 ShowHalo          = true;
@@ -2160,6 +2172,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 TargetDistanceTicks    = 20;
                 SignalStaleMinutes     = 15;
                 SignalExpireMinutes    = 30;
+                ShowLowParticipationWarning = true;
             }
             else if (State == State.Configure)
             {
@@ -2831,6 +2844,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             DetectOrderBookWalls(isBid ? bidBook : askBook, isBid);
+
+            // E11: Prune book if it exceeds MaxBookLevels — evict farthest-from-price levels first.
+            // Only sort when overflow occurs (O(n log n) on breach, O(1) otherwise).
+            if (CurrentBar >= 0)
+            {
+                double currentPrice = Close[0];
+                PruneOrderBook(bidBook, currentPrice);
+                PruneOrderBook(askBook, currentPrice);
+            }
 
             if (bestBidPrice > 0 && bestAskPrice > 0)
             {
@@ -3692,16 +3714,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                 (ShowEntryModeDashboard  && EntryModeDashboardPosition  != DashboardPositionType.Hidden);
             if (needMetrics) CalculateDashboardMetrics();
 
-            // Each dashboard renders independently based on its own Show flag and Position
+            // Per-corner stack cursors — track accumulated rendered height so panels sharing a corner
+            // stack vertically instead of overlapping.  Indexed by (int)DashboardPositionType:
+            //   0=Hidden (unused), 1=TopLeft, 2=TopRight, 3=BottomLeft, 4=BottomRight, 5=CenterTop, 6=CenterBottom
+            const float StackGutter = 8f;
+            var sc = new float[7]; // all 0f — each element accumulates (panelH + gutter) for that corner
+
+            // Render order: Main → Monitoring → Entry (deterministic; earlier panels claim cursor space)
             if (ShowMainDashboard && MainDashboardPosition != DashboardPositionType.Hidden)
-                RenderMainDashboard(cc, cs, rtW, rtH);
+            {
+                float h = RenderMainDashboard(cc, cs, rtW, rtH, sc[(int)MainDashboardPosition]);
+                sc[(int)MainDashboardPosition] += h + StackGutter;
+            }
 
             if (ShowMonitoringDashboard && MonitoringDashboardPosition != DashboardPositionType.Hidden)
-                RenderMonitoringDashboard(cc, cs, rtW, rtH);
+            {
+                float h = RenderMonitoringDashboard(cc, cs, rtW, rtH, sc[(int)MonitoringDashboardPosition]);
+                sc[(int)MonitoringDashboardPosition] += h + StackGutter;
+            }
 
             if (ShowEntryModeDashboard && EntryModeDashboardPosition != DashboardPositionType.Hidden)
             {
-                RenderEntryModeDashboard(cc, cs, rtW, rtH);
+                float h = RenderEntryModeDashboard(cc, cs, rtW, rtH, sc[(int)EntryModeDashboardPosition]);
+                sc[(int)EntryModeDashboardPosition] += h + StackGutter;
                 if (ShowStopTargetLines) DrawStopTargetLinesOnChart(cc, cs);
             }
         }
@@ -4241,7 +4276,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Low participation session
-            if (!IsHighParticipationSession())
+            if (ShowLowParticipationWarning && !IsHighParticipationSession())
             {
                 anyConflict = true;
                 switch (ConflictLevel)
@@ -4261,6 +4296,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             description = parts.ToString().TrimEnd();
             return anyConflict;
+        }
+
+        /// <summary>Returns true when the given position is at the top of the chart (stacks downward).
+        /// Top positions: TopLeft, TopRight, CenterTop. Bottom positions: BottomLeft, BottomRight, CenterBottom.</summary>
+        private static bool IsTopPosition(DashboardPositionType pos)
+        {
+            return pos == DashboardPositionType.TopLeft  ||
+                   pos == DashboardPositionType.TopRight ||
+                   pos == DashboardPositionType.CenterTop;
         }
 
         /// <summary>Resolve a DashboardPositionType to pixel X/Y coordinates with boundary clamping.
@@ -4304,10 +4348,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Render the Entry Mode dashboard — a focused trade setup view.</summary>
-        private void RenderEntryModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <param name="stackOffset">Y offset applied to stack this panel below/above a same-corner panel.</param>
+        /// <returns>The rendered panel height so the caller can advance its stack cursor.</returns>
+        private float RenderEntryModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH, float stackOffset)
         {
             var rt = RenderTarget;
-            if (rt == null || dxEnhDashBgBrush == null || dxEnhDashFormat == null) return;
+            if (rt == null || dxEnhDashBgBrush == null || dxEnhDashFormat == null) return 0f;
 
             const float PadX              = 10f;
             const float PadY              = 8f;
@@ -4384,6 +4430,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float panelX, panelY;
             GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            // Apply stack offset: top positions stack downward, bottom positions stack upward
+            if (IsTopPosition(EntryModeDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
 
             // Clamp to keep panel within render area; capture clamped width before wrapping conflict text
             float clampedW;
@@ -4405,6 +4453,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Recompute height and position now that conflict lines are included
                 panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
                 GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+                if (IsTopPosition(EntryModeDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
                 panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
             }
 
@@ -4428,13 +4477,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ty += lineH;
                 first = false;
             }
+            return panelH;
         }
 
         /// <summary>Render the Monitoring Dashboard — compact market health view.</summary>
-        private void RenderMonitoringDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <param name="stackOffset">Y offset applied to stack this panel below/above a same-corner panel.</param>
+        /// <returns>The rendered panel height so the caller can advance its stack cursor.</returns>
+        private float RenderMonitoringDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH, float stackOffset)
         {
             var rt = RenderTarget;
-            if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return;
+            if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return 0f;
 
             const float PadX              = 10f;
             const float PadY              = 8f;
@@ -4486,6 +4538,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float panelX, panelY;
             GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            // Apply stack offset: top positions stack downward, bottom positions stack upward
+            if (IsTopPosition(MonitoringDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
 
             // Clamp to keep panel within render area; capture clamped width before wrapping conflict text
             float clampedW;
@@ -4507,6 +4561,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Recompute height and position now that conflict lines are included
                 panelH = PadY * 2 + lines.Count * lineH + PanelHeightBuffer;
                 GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+                if (IsTopPosition(MonitoringDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
                 panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
             }
 
@@ -4544,6 +4599,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float barY   = volumeBarY + (lineH - BarHeight) / 2f;
                 DrawVolumeBar(rt, barX, barY, BarWidth, BarHeight, sessionBuyVol, sessionSellVol);
             }
+            return panelH;
         }
 
         /// <summary>Draw entry (white solid), stop (red dashed), target (green dashed) lines on chart.</summary>
@@ -4577,10 +4633,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Render the Main Dashboard — original IQMainGPU stats (buy/sell vol, delta, signals, ADR, session).</summary>
-        private void RenderMainDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <param name="stackOffset">Y offset applied to stack this panel below/above a same-corner panel.</param>
+        /// <returns>The rendered panel height so the caller can advance its stack cursor.</returns>
+        private float RenderMainDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH, float stackOffset)
         {
             var rt = RenderTarget;
-            if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return;
+            if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return 0f;
 
             const float PadX              = 8f;
             const float PadY              = 6f;
@@ -4623,6 +4681,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float panelX, panelY;
             GetDashboardPosition(MainDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            // Apply stack offset: top positions stack downward, bottom positions stack upward
+            if (IsTopPosition(MainDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
 
             // Clamp to keep panel within render area
             float clampedW;
@@ -4649,6 +4709,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ty += lineH;
                 first = false;
             }
+            return panelH;
         }
 
         /// <summary>Split a single text line into multiple display lines that each fit within
@@ -5471,6 +5532,32 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (isBid) { wallBidPrice = wallPrice; wallBidSize  = wallSize; }
             else       { wallAskPrice = wallPrice; wallAskSize  = wallSize; }
+        }
+
+        /// <summary>Evict levels farthest from current price when the book exceeds MaxBookLevels.
+        /// Sort is O(n log n) but only runs when the cap is breached — O(1) on normal depth updates.</summary>
+        private void PruneOrderBook(Dictionary<double, BookLevel> book, double currentPrice)
+        {
+            int excess = book.Count - MaxBookLevels;
+            if (excess <= 0) return;
+
+            // Collect keys and pre-compute distances to avoid redundant Math.Abs calls during sort
+            var keys  = new double[book.Count];
+            var dists = new double[book.Count];
+            int idx   = 0;
+            foreach (double k in book.Keys)
+            {
+                keys[idx]  = k;
+                dists[idx] = Math.Abs(k - currentPrice);
+                idx++;
+            }
+
+            // Sort by distance descending (farthest first), using the cached distances
+            System.Array.Sort(dists, keys);
+            System.Array.Reverse(keys, 0, keys.Length);
+
+            for (int i = 0; i < excess; i++)
+                book.Remove(keys[i]);
         }
 
         private void UpdateDashboardText(double barBuy, double barSell, double delta, double deltaPct,
