@@ -6026,7 +6026,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (Math.Abs(existing.Price - price) <= TickSize) return;
             }
             // Evict oldest entry before adding so the list never exceeds MaxNakedLevels
-            while (nakedTPOLevels.Count >= MaxNakedLevels)
+            if (nakedTPOLevels.Count >= MaxNakedLevels)
                 nakedTPOLevels.RemoveAt(0);
             nakedTPOLevels.Add(new NakedTPOLevel
             {
