@@ -5541,13 +5541,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             int excess = book.Count - MaxBookLevels;
             if (excess <= 0) return;
 
-            // Collect keys sorted by distance from current price (farthest first)
-            var keys = new double[book.Count];
-            int idx  = 0;
-            foreach (double k in book.Keys) keys[idx++] = k;
+            // Collect keys and pre-compute distances to avoid redundant Math.Abs calls during sort
+            var keys  = new double[book.Count];
+            var dists = new double[book.Count];
+            int idx   = 0;
+            foreach (double k in book.Keys)
+            {
+                keys[idx]  = k;
+                dists[idx] = Math.Abs(k - currentPrice);
+                idx++;
+            }
 
-            System.Array.Sort(keys, (a, b) =>
-                Math.Abs(b - currentPrice).CompareTo(Math.Abs(a - currentPrice)));
+            // Sort by distance descending (farthest first), using the cached distances
+            System.Array.Sort(dists, keys);
+            System.Array.Reverse(keys, 0, keys.Length);
 
             for (int i = 0; i < excess; i++)
                 book.Remove(keys[i]);
