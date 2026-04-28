@@ -5643,6 +5643,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case 3: // Hong Kong: no DST
                     start = day.AddHours(1).AddMinutes(30); end = day.AddHours(8); break;
                 case 4: // Sydney: 22:00–06:00 UTC (AU DST → 21:00–05:00), spans midnight
+                    // Sydney opens previous calendar day at 22:00 UTC; evaluate DST at that start instant.
                     offset = IsAuDst(day.AddDays(-1).AddHours(22)) ? -1 : 0;
                     start = day.AddDays(-1).AddHours(22 + offset); end = day.AddHours(6 + offset); break;
                 case 5: // EU Brinks: 08:00–09:00 UTC (UK DST → 07:00–08:00)

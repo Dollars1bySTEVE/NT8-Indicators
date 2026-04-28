@@ -245,7 +245,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool alertAdrHighFired, alertAdrLowFired;
         private bool alertAwrHighFired, alertAwrLowFired;
         private bool alertAmrHighFired, alertAmrLowFired;
-        private bool _tzDiagPrinted;   // Phase 1: one-shot TZ diagnostic (remove after user confirms output)
+        private bool _tzDiagPrinted;    // Phase 1: one-shot TZ diagnostic (remove after user confirms output)
         private bool _smokeCheckPrinted;
 
         #endregion
@@ -2334,7 +2334,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── Phase 1: One-shot TZ diagnostic (TEMPORARY — remove once user pastes output) ──
             // TODO: After user reports back printed values below, compare Time[0] vs Bars.GetTime()
             //       to confirm Phase 2 fix selection, then delete this block.
-            if (!_tzDiagPrinted && CurrentBar > 0)
+            if (!_tzDiagPrinted)
             {
                 _tzDiagPrinted = true;
                 try
@@ -5126,6 +5126,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case 3: // Hong Kong: no DST
                     start = day.AddHours(1).AddMinutes(30); end = day.AddHours(8); break;
                 case 4: // Sydney: 22:00–06:00 UTC (AU DST → 21:00–05:00), spans midnight
+                    // Sydney opens previous calendar day at 22:00 UTC; evaluate DST at that start instant.
                     offset = IsAuDst(day.AddDays(-1).AddHours(22)) ? -1 : 0;
                     start = day.AddDays(-1).AddHours(22 + offset); end = day.AddHours(6 + offset); break;
                 case 5: // EU Brinks: 08:00–09:00 UTC (UK DST → 07:00–08:00)
