@@ -2043,6 +2043,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Hard cap on TPO-derived target distance from price. When a TPO target level exceeds this, the indicator falls back to the ADR-based target. Increase for small-tick instruments.")]
         public int MaxTPOTargetTicks { get; set; }
 
+        [NinjaScriptProperty]
+        [Range(1, 10)]
+        [Display(Name = "TPO Bin Size Multiplier", Order = 13, GroupName = "17. TPO Settings",
+            Description = "Multiplier applied to TickSize when bucketing TPO price distribution. 1 = native tick resolution. Increase for small-tick instruments (CL, bonds) to reduce memory and speed up POC/VA computation. Higher values produce coarser profiles.")]
+        public int TPOBinSizeMultiplier { get; set; }
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -2410,6 +2416,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowProfileShape     = true;
                 MaxTPOStopTicks      = 200;
                 MaxTPOTargetTicks    = 400;
+                TPOBinSizeMultiplier = 1;
             }
             else if (State == State.Configure)
             {
@@ -3998,16 +4005,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                 (ShowEntryModeDashboard  && EntryModeDashboardPosition  != DashboardPositionType.Hidden);
             if (needMetrics) CalculateDashboardMetrics();
 
-            // Each dashboard renders independently based on its own Show flag and Position
+            // Per-corner stack cursors — track accumulated rendered height so panels sharing a corner
+            // stack vertically instead of overlapping.  Indexed by (int)DashboardPositionType:
+            //   0=Hidden (unused), 1=TopLeft, 2=TopRight, 3=BottomLeft, 4=BottomRight, 5=CenterTop, 6=CenterBottom
+            const float StackGutter = 8f;
+            var sc = new float[7]; // all 0f — each element accumulates (panelH + gutter) for that corner
+
+            // Render order: Main → Monitoring → Entry (deterministic; earlier panels claim cursor space)
             if (ShowMainDashboard && MainDashboardPosition != DashboardPositionType.Hidden)
-                RenderMainDashboard(cc, cs, rtW, rtH);
+            {
+                float h = RenderMainDashboard(cc, cs, rtW, rtH, sc[(int)MainDashboardPosition]);
+                sc[(int)MainDashboardPosition] += h + StackGutter;
+            }
 
             if (ShowMonitoringDashboard && MonitoringDashboardPosition != DashboardPositionType.Hidden)
-                RenderMonitoringDashboard(cc, cs, rtW, rtH);
+            {
+                float h = RenderMonitoringDashboard(cc, cs, rtW, rtH, sc[(int)MonitoringDashboardPosition]);
+                sc[(int)MonitoringDashboardPosition] += h + StackGutter;
+            }
 
             if (ShowEntryModeDashboard && EntryModeDashboardPosition != DashboardPositionType.Hidden)
             {
-                RenderEntryModeDashboard(cc, cs, rtW, rtH);
+                float h = RenderEntryModeDashboard(cc, cs, rtW, rtH, sc[(int)EntryModeDashboardPosition]);
+                sc[(int)EntryModeDashboardPosition] += h + StackGutter;
                 if (ShowStopTargetLines) DrawStopTargetLinesOnChart(cc, cs);
             }
         }
@@ -4714,6 +4734,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             return anyConflict;
         }
 
+        /// <summary>Returns true when the given position is at the top of the chart (stacks downward).
+        /// Top positions: TopLeft, TopRight, CenterTop. Bottom positions: BottomLeft, BottomRight, CenterBottom.</summary>
+        private static bool IsTopPosition(DashboardPositionType pos)
+        {
+            return pos == DashboardPositionType.TopLeft  ||
+                   pos == DashboardPositionType.TopRight ||
+                   pos == DashboardPositionType.CenterTop;
+        }
+
         /// <summary>Resolve a DashboardPositionType to pixel X/Y coordinates with boundary clamping.
         /// Handles all 7 positions (Hidden returns off-screen coords). Clamps result to stay within
         /// the render area with a 60px time-axis buffer at the bottom and 8px edge padding.</summary>
@@ -4755,10 +4784,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Render the Entry Mode dashboard — a focused trade setup view.</summary>
-        private void RenderEntryModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <param name="stackOffset">Y offset applied to stack this panel below/above a same-corner panel.</param>
+        /// <returns>The rendered panel height so the caller can advance its stack cursor.</returns>
+        private float RenderEntryModeDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH, float stackOffset)
         {
             var rt = RenderTarget;
-            if (rt == null || dxEnhDashBgBrush == null || dxEnhDashFormat == null) return;
+            if (rt == null || dxEnhDashBgBrush == null || dxEnhDashFormat == null) return 0f;
 
             const float PadX              = 10f;
             const float PadY              = 8f;
@@ -4890,6 +4921,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float panelX, panelY;
             GetDashboardPosition(EntryModeDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            // Apply stack offset: top positions stack downward, bottom positions stack upward
+            if (IsTopPosition(EntryModeDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
 
             // Clamp to keep panel within render area
             panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
@@ -4915,13 +4948,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ty += lineH;
                 first = false;
             }
+            return panelH;
         }
 
         /// <summary>Render the Monitoring Dashboard — compact market health view.</summary>
-        private void RenderMonitoringDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <param name="stackOffset">Y offset applied to stack this panel below/above a same-corner panel.</param>
+        /// <returns>The rendered panel height so the caller can advance its stack cursor.</returns>
+        private float RenderMonitoringDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH, float stackOffset)
         {
             var rt = RenderTarget;
-            if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return;
+            if (rt == null || dxEnhDashBgBrush == null || dxEnhMonFormat == null) return 0f;
 
             const float PadX              = 10f;
             const float PadY              = 8f;
@@ -5045,6 +5081,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float panelX, panelY;
             GetDashboardPosition(MonitoringDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            // Apply stack offset: top positions stack downward, bottom positions stack upward
+            if (IsTopPosition(MonitoringDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
 
             // Clamp to keep panel within render area
             panelY = ClampTableY(panelY, panelH, rtH, panelW, rtW, out clampedW);
@@ -5084,6 +5122,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float barY   = volumeBarY + (lineH - BarHeight) / 2f;
                 DrawVolumeBar(rt, barX, barY, BarWidth, BarHeight, sessionBuyVol, sessionSellVol);
             }
+            return panelH;
         }
 
         /// <summary>Draw entry (white solid), stop (red dashed), target (green dashed) lines on chart.</summary>
@@ -5117,10 +5156,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Render the Main Dashboard — original IQMainGPU stats (buy/sell vol, delta, signals, ADR, session).</summary>
-        private void RenderMainDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH)
+        /// <param name="stackOffset">Y offset applied to stack this panel below/above a same-corner panel.</param>
+        /// <returns>The rendered panel height so the caller can advance its stack cursor.</returns>
+        private float RenderMainDashboard(ChartControl cc, ChartScale cs, float rtW, float rtH, float stackOffset)
         {
             var rt = RenderTarget;
-            if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return;
+            if (rt == null || dxEnhDashBgBrush == null || dxMainDashFormat == null) return 0f;
 
             const float PadX              = 10f;
             const float PadY              = 8f;
@@ -5166,6 +5207,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float panelX, panelY;
             GetDashboardPosition(MainDashboardPosition, rtW, rtH, panelW, panelH, out panelX, out panelY);
+            // Apply stack offset: top positions stack downward, bottom positions stack upward
+            if (IsTopPosition(MainDashboardPosition)) panelY += stackOffset; else panelY -= stackOffset;
 
             // Clamp to keep panel within render area
             float clampedW;
@@ -5192,6 +5235,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ty += lineH;
                 first = false;
             }
+            return panelH;
         }
 
         /// <summary>Split a single text line into multiple display lines that each fit within
@@ -5656,12 +5700,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (tpoSessions == null) return;
 
-            double tickSz = TickSize;
-            if (tickSz <= 0) tickSz = 0.25;
+            double tickSz = TickSize > 0 ? TickSize : 0.25;
+            double binSz  = tickSz * Math.Max(1, TPOBinSizeMultiplier);
 
             double barVol = Volume[0];
             double tp     = (High[0] + Low[0] + Close[0]) / 3.0;  // typical price for volume bucketing
-            double roundedTp = Math.Round(tp / tickSz) * tickSz;
+            double roundedTp = Math.Round(tp / binSz) * binSz;
 
             // Track which session is most relevant for dashboard metrics
             // (prefer NY = id 1, then London = id 0, then others)
@@ -5702,7 +5746,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Accumulate volume at rounded typical price
                     if (barVol > 0)
                     {
-                        double bucket = Math.Round(roundedTp / tickSz) * tickSz;
+                        double bucket = Math.Round(roundedTp / binSz) * binSz;
                         if (sess.VolumeProfile.ContainsKey(bucket))
                             sess.VolumeProfile[bucket] += barVol;
                         else
@@ -5969,13 +6013,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Add VAL
             if (sess.ValueAreaLow > 0)
                 TryAddNakedLevel(sess.ValueAreaLow, "VAL", sessLabel, sessDate);
-
-            // Prune oldest levels if over max
-            while (nakedTPOLevels.Count > MaxNakedLevels)
-                nakedTPOLevels.RemoveAt(0);
         }
 
-        /// <summary>Helper: add a naked level if no duplicate price exists.</summary>
+        /// <summary>Helper: add a naked level if no duplicate price exists.
+        /// Evicts the oldest entry first when the list is already at MaxNakedLevels capacity,
+        /// ensuring the count never exceeds MaxNakedLevels at any observable point.</summary>
         private void TryAddNakedLevel(double price, string levelType, string sessLabel, DateTime sessDate)
         {
             // Check for duplicate price (within 1 tick)
@@ -5983,6 +6025,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (Math.Abs(existing.Price - price) <= TickSize) return;
             }
+            // Evict oldest entry before adding so the list never exceeds MaxNakedLevels
+            if (nakedTPOLevels.Count >= MaxNakedLevels)
+                nakedTPOLevels.RemoveAt(0);
             nakedTPOLevels.Add(new NakedTPOLevel
             {
                 Price        = price,
