@@ -319,6 +319,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string   lastTrackedSignal      = "";
         private bool     signalIsStale          = false;
 
+        // Per-bar caches — set once in OnBarUpdate, read during OnRender to avoid stale Close[0]
+        // reads on the render thread (mirrors the _latestClose / _cachedVwapValue / _cachedEma50Value
+        // pattern from IQMainUltimate.cs which is already free of this hazard).
+        private double _latestClose;
+        private double _cachedVwapValue;
+        private double _cachedEma50Value;
+
         // Sanity caps for AutoDetected stop/target distance (ticks)
         private const int MaxStopTicks   = 200;
         private const int MaxTargetTicks = 400;
@@ -2787,6 +2794,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                           NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10, Brushes.Gold, Brushes.Black);
             }
 
+            // ── Per-bar caches — read by CalculateDashboardMetrics during OnRender ───────
+            // Assigned here (data thread) to avoid stale-read hazards when Close[0] is
+            // accessed on the render thread.  Mirrors the pattern in IQMainUltimate.cs.
+            _latestClose      = Close[0];
+            _cachedEma50Value = (CurrentBar >= 50) ? ema50Ind[0] : 0;
+            if (vwapEthData != null && vwapEthData.Count > 0)
+            {
+                var vdCache = vwapEthData[vwapEthData.Count - 1];
+                if (vdCache != null) _cachedVwapValue = vdCache.Vwap;
+            }
+
             ForceRefresh();
         }
 
@@ -3744,11 +3762,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Compute all dashboard metrics once per render frame.</summary>
         private void CalculateDashboardMetrics()
         {
-            dashboardEntryPrice    = Close[0];
+            // Confidence score and primary signal label are always computed (used for display).
             dashboardConfidence    = CalculateEntryScore();
             dashboardPrimarySignal = GetPrimarySignal();
-            dashboardStopPrice     = CalculateDynamicStop();
-            dashboardTargetPrice   = CalculateDynamicTarget();
 
             // Track signal timestamp: record when an actionable signal first appears or changes.
             // DateTime.Now is intentional here — stale detection measures real wall-clock time
@@ -3765,6 +3781,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 lastTrackedSignal      = "";
             }
             signalIsStale = IsSignalStale();
+
+            // Fix 1: Refresh entry price every frame against the live cached close.
+            // Only set entry/stop/target when there is a non-expired, non-NEUTRAL signal AND
+            // the per-bar cache is populated (_latestClose > 0 means OnBarUpdate has fired).
+            // Zero out when NEUTRAL / No Data / expired so DrawStopTargetLinesOnChart correctly
+            // suppresses the on-chart lines (PR-A1 guard), and for the cold-start case.
+            if (_latestClose > 0 && isActionable && !HasSignalExpired())
+            {
+                dashboardEntryPrice  = _latestClose;
+                dashboardStopPrice   = CalculateDynamicStop();
+                dashboardTargetPrice = CalculateDynamicTarget();
+            }
+            else
+            {
+                dashboardEntryPrice  = 0;
+                dashboardStopPrice   = 0;
+                dashboardTargetPrice = 0;
+            }
 
             if (ShowConflictWarnings)
                 dashboardConflictDetected = DetectConflicts(out dashboardConflictText);
@@ -3837,15 +3871,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 var vd = vwapEthData[vwapEthData.Count - 1];
                 if (vd != null)
                 {
-                    if (Close[0] > vd.Vwap) score += 10;
-                    else                     score -= 10;
+                    if (_latestClose > _cachedVwapValue) score += 10;
+                    else                                  score -= 10;
                 }
             }
 
             if (CurrentBar >= 50)
             {
-                if (Close[0] > ema50Ind[0]) score += 5;
-                else                         score -= 5;
+                if (_latestClose > _cachedEma50Value) score += 5;
+                else                                   score -= 5;
             }
 
             return Math.Max(0, Math.Min(100, score));
@@ -3856,7 +3890,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// AutoDetected picks the nearest valid level on the correct side, with a MaxStopTicks sanity cap.</summary>
         private double CalculateDynamicStop()
         {
-            double close   = Close[0];
+            double close   = _latestClose;
             bool   bearish = IsBearishSignal();
             double maxDist = MaxStopTicks * TickSize;
 
@@ -3984,7 +4018,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// AutoDetected picks the nearest valid level on the correct side, with a MaxTargetTicks sanity cap.</summary>
         private double CalculateDynamicTarget()
         {
-            double close   = Close[0];
+            double close   = _latestClose;
             bool   bearish = IsBearishSignal();
             double maxDist = MaxTargetTicks * TickSize;
 
@@ -4206,19 +4240,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool DetectConflicts(out string description)
         {
             description = "";
-            if (snapshots == null || snapshots.Count == 0 ||
-                vwapEthData == null || vwapEthData.Count == 0)
+            if (snapshots == null || snapshots.Count == 0 || _cachedVwapValue <= 0)
                 return false;
 
-            var snap     = snapshots[snapshots.Count - 1];
-            var vwapData = vwapEthData[vwapEthData.Count - 1];
-            if (vwapData == null) return false;
+            var snap = snapshots[snapshots.Count - 1];
 
             var  parts     = new System.Text.StringBuilder();
             bool anyConflict = false;
 
             bool volumeBullish  = snap.Delta > 0;
-            bool priceAboveVwap = Close[0] > vwapData.Vwap;
+            bool priceAboveVwap = _latestClose > _cachedVwapValue;
 
             // Volume vs VWAP direction conflict
             if (volumeBullish && !priceAboveVwap)
@@ -4498,18 +4529,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             string session    = GetActiveSessionName();
 
             string vwapStatus = "VWAP: N/A";
-            if (vwapEthData != null && vwapEthData.Count > 0 && CurrentBar >= 50)
+            if (_cachedVwapValue > 0 && _cachedEma50Value > 0)
             {
-                var vd = vwapEthData[vwapEthData.Count - 1];
-                if (vd != null)
-                {
-                    bool aboveVwap  = Close[0] > vd.Vwap;
-                    bool aboveEma50 = Close[0] > ema50Ind[0];
-                    string vwapDir  = aboveVwap  ? "Price>VWAP"  : "Price<VWAP";
-                    string emaDir   = aboveEma50 ? "Price>EMA50" : "Price<EMA50";
-                    string align    = (aboveVwap == aboveEma50) ? "ALIGNED" : "DIVERGED";
-                    vwapStatus = string.Format("{0} | {1} [{2}]", vwapDir, emaDir, align);
-                }
+                bool aboveVwap  = _latestClose > _cachedVwapValue;
+                bool aboveEma50 = _latestClose > _cachedEma50Value;
+                string vwapDir  = aboveVwap  ? "Price>VWAP"  : "Price<VWAP";
+                string emaDir   = aboveEma50 ? "Price>EMA50" : "Price<EMA50";
+                string align    = (aboveVwap == aboveEma50) ? "ALIGNED" : "DIVERGED";
+                vwapStatus = string.Format("{0} | {1} [{2}]", vwapDir, emaDir, align);
             }
 
             string rangeInfo = adrValue > 0
@@ -5774,7 +5801,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     SharpDX.Direct2D1.SolidColorBrush labelBrush;
                     if (VwapDynamicColor)
                     {
-                        double c = Close[0];
+                        double c = _latestClose;
                         labelBrush = c > lastData.Vwap ? dxVwapAboveBrush
                                    : c < lastData.Vwap ? dxVwapBelowBrush
                                    : dxVwapNeutralBrush;
