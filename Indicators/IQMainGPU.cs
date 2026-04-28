@@ -250,6 +250,22 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SessionBox[]     activeSessions;
         private readonly object  _sessionLock = new object();
 
+        // ── ET time-zone helper (shared by all session/VWAP math) ─────────────
+        // "Eastern Standard Time" is the Windows TZ ID; it correctly handles EST↔EDT.
+        private static readonly TimeZoneInfo EtZone = SafeFindEtZone();
+        private static TimeZoneInfo SafeFindEtZone()
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
+            catch (Exception) { return TimeZoneInfo.CreateCustomTimeZone("ET-Fallback", TimeSpan.FromHours(-5), "ET-Fallback", "ET-Fallback"); }
+        }
+        /// <summary>Convert the current bar's time to Eastern Time, regardless of chart display TZ.</summary>
+        private DateTime BarTimeEt()
+        {
+            DateTime t = Bars.GetTime(CurrentBar);
+            DateTime tUnspec = DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
+            return TimeZoneInfo.ConvertTime(tUnspec, Bars.TradingHours.TimeZoneInfo, EtZone);
+        }
+
         private double psyWeekHigh, psyWeekLow;
         private int    psyWeekStartBar;
         private double psyDayHigh, psyDayLow;
@@ -2092,8 +2108,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Plots[4].Brush = Ema800Color; Plots[4].Width = Ema800Thickness;
 
                 labelFont = new NinjaTrader.Gui.Tools.SimpleFont("Consolas", 12);
-            }
-            else if (State == State.Terminated)
+
+                if (Bars != null)
+                {
+                    Print(string.Format("=== {0} session anchors (ET, year-round) ===", Name));
+                    Print("  ETH Daily Open:  18:00 ET (prev trading day)");
+                    Print("  Asia Open:       19:00 ET prev → 04:00 ET (Tokyo)");
+                    Print("  London Open:     03:00 ET → 11:30 ET");
+                    Print("  US Open:         09:30 ET → 16:00 ET");
+                    Print(string.Format("  TradingHours TZ: {0}", Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null ? Bars.TradingHours.TimeZoneInfo.Id : "(unknown)"));
+                    Print(string.Format("  ET zone resolved: {0}", EtZone != null ? EtZone.Id : "(null)"));
+                    Print("=== end session anchors ===");
+                }
             {
                 DisposeDXResources();
             }
@@ -2380,12 +2406,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── Session tracking ──────────────────────────────────────────────
             if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
             {
-                DateTime barUtc = TimeZoneInfo.ConvertTimeToUtc(
-                    DateTime.SpecifyKind(Time[0], DateTimeKind.Unspecified),
-                    Bars.TradingHours.TimeZoneInfo);
-                UpdateSessions(barUtc);
-                UpdateEthAndRthOpens(barUtc);
-                UpdateVwap(barUtc);
+                DateTime barEt = BarTimeEt();
+                UpdateSessions(barEt);
+                UpdateEthAndRthOpens(barEt);
+                UpdateVwap(barEt);
 
                 if (psyWeekStartBar > 0)
                 {
@@ -3605,73 +3629,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             };
         }
 
-        private static bool IsUkDst(DateTime utc)
+        private void GetSessionEtTimes(int sessionId, DateTime barEt, out DateTime start, out DateTime end)
         {
-            if (utc.Month < 3 || utc.Month > 10) return false;
-            if (utc.Month > 3 && utc.Month < 10) return true;
-            DateTime lastSunday = LastSundayOfMonth(utc.Year, utc.Month);
-            if (utc.Month == 3)  return utc >= lastSunday.AddHours(1);
-            if (utc.Month == 10) return utc <  lastSunday.AddHours(1);
-            return false;
-        }
-
-        private static bool IsUsDst(DateTime utc)
-        {
-            if (utc.Month < 3 || utc.Month > 11) return false;
-            if (utc.Month > 3 && utc.Month < 11) return true;
-            if (utc.Month == 3)
-            {
-                DateTime second = NthSundayOfMonth(utc.Year, 3, 2);
-                return utc >= second.AddHours(2);
-            }
-            DateTime first = NthSundayOfMonth(utc.Year, 11, 1);
-            return utc < first.AddHours(2);
-        }
-
-        private static bool IsAuDst(DateTime utc)
-        {
-            if (utc.Month >= 4 && utc.Month <= 9) return false;
-            if (utc.Month > 4  && utc.Month < 10) return false;
-            if (utc.Month == 4)
-            {
-                DateTime first = NthSundayOfMonth(utc.Year, 4, 1);
-                return utc < first.AddHours(2);
-            }
-            if (utc.Month == 10)
-            {
-                DateTime first = NthSundayOfMonth(utc.Year, 10, 1);
-                return utc >= first.AddHours(2);
-            }
-            return true;
-        }
-
-        private static DateTime LastSundayOfMonth(int year, int month)
-        {
-            DateTime last = new DateTime(year, month, DateTime.DaysInMonth(year, month));
-            int dow = (int)last.DayOfWeek;
-            return last.AddDays(-dow);
-        }
-
-        private static DateTime NthSundayOfMonth(int year, int month, int n)
-        {
-            DateTime first = new DateTime(year, month, 1);
-            int daysToSunday = ((7 - (int)first.DayOfWeek) % 7);
-            return first.AddDays(daysToSunday + (n - 1) * 7);
-        }
-
-        private void GetSessionUtcTimes(int sessionId, DateTime utcDate, out DateTime start, out DateTime end)
-        {
-            DateTime day = utcDate.Date;
+            DateTime today     = barEt.Date;
+            DateTime yesterday = today.AddDays(-1);
             switch (sessionId)
             {
-                case 0: { int offset = IsUkDst(day) ? -1 : 0; start = day.AddHours(8 + offset); end = day.AddHours(16 + offset).AddMinutes(30); break; }
-                case 1: { int offset = IsUsDst(day) ? -1 : 0; start = day.AddHours(14 + offset).AddMinutes(30); end = day.AddHours(21 + offset); break; }
-                case 2: start = day.AddHours(0);  end = day.AddHours(6); break;
-                case 3: start = day.AddHours(1).AddMinutes(30); end = day.AddHours(8); break;
-                case 4: { int offset = IsAuDst(day) ? -1 : 0; start = day.AddDays(-1).AddHours(22 + offset); end = day.AddHours(6 + offset); break; }
-                case 5: { int offset = IsUkDst(day) ? -1 : 0; start = day.AddHours(8 + offset); end = day.AddHours(9 + offset); break; }
-                case 6: { int offset = IsUsDst(day) ? -1 : 0; start = day.AddHours(14 + offset); end = day.AddHours(15 + offset); break; }
-                default: { int offset = IsUkDst(day) ? -1 : 0; start = day.AddHours(7 + offset); end = day.AddHours(16 + offset).AddMinutes(30); break; }
+                case 0: start = today.AddHours(3);                end = today.AddHours(11).AddMinutes(30); break; // London
+                case 1: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16);                break; // NY
+                case 2: start = yesterday.AddHours(19);           end = today.AddHours(4);                 break; // Tokyo
+                case 3: start = yesterday.AddHours(21);           end = today.AddHours(4);                 break; // Hong Kong
+                case 4: start = yesterday.AddHours(17);           end = today.AddHours(2);                 break; // Sydney
+                case 5: start = today.AddHours(3);                end = today.AddHours(4);                 break; // EU Brinks
+                case 6: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(10).AddMinutes(30); break; // US Brinks
+                case 7: start = today.AddHours(2);                end = today.AddHours(11);                break; // Frankfurt
+                default: start = today;                            end = today;                             break;
             }
         }
 
@@ -3739,15 +3711,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void UpdateSessions(DateTime barTimeUtc)
+        private void UpdateSessions(DateTime barEt)
         {
             for (int id = 0; id < 8; id++)
             {
                 if (!IsSessionEnabled(id)) continue;
 
                 DateTime sStart, sEnd;
-                GetSessionUtcTimes(id, barTimeUtc, out sStart, out sEnd);
-                bool inSession = barTimeUtc >= sStart && barTimeUtc < sEnd;
+                GetSessionEtTimes(id, barEt, out sStart, out sEnd);
+                bool inSession = barEt >= sStart && barEt < sEnd;
 
                 if (inSession)
                 {
@@ -3790,13 +3762,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void UpdateEthAndRthOpens(DateTime barUtc)
+        private void UpdateEthAndRthOpens(DateTime barEt)
         {
-            DateTime day = barUtc.Date;
+            DateTime today = barEt.Date;
 
-            // ── ETH Daily Open (6 PM ET) ──────────────────────────────────────
-            // 6 PM ET = 22:00 UTC during US DST (EDT), 23:00 UTC during US standard (EST)
-            DateTime ethStart = GetEthSessionStart(barUtc);
+            // ── ETH Daily Open — 18:00 ET (6 PM ET = CME Globex daily reset) ─
+            DateTime ethStart = GetEthSessionStartEt(barEt);
             DateTime ethEnd   = ethStart.AddHours(24);
             if (currentEthOpenEntry == null || currentEthOpenEntry.SessionStart != ethStart)
             {
@@ -3819,37 +3790,31 @@ namespace NinjaTrader.NinjaScript.Indicators
             else
                 currentEthOpenEntry.EndBarIndex = CurrentBar;
 
-            // ── Asia RTH Open (00:00 – 06:00 UTC, no DST) ────────────────────
-            DateTime asiaStart = day;
-            DateTime asiaEnd   = day.AddHours(6);
-            bool inAsia = barUtc >= asiaStart && barUtc < asiaEnd;
+            // ── Asia Open — 19:00 ET prev → 04:00 ET (Tokyo session anchor) ─
+            DateTime asiaStart = today.AddDays(-1).AddHours(19);
+            DateTime asiaEnd   = today.AddHours(4);
+            bool inAsia = barEt >= asiaStart && barEt < asiaEnd;
             UpdateRthEntry(inAsia, asiaStart, asiaEnd, ref currentRthAsiaEntry, rthAsiaOpenEntries);
 
-            // ── London RTH Open (07:00/08:00 – 16:00/17:00 UTC with UK DST) ──
-            int      lndOffset = IsUkDst(day) ? 0 : 1;
-            DateTime lndStart  = day.AddHours(7 + lndOffset);
-            DateTime lndEnd    = day.AddHours(16 + lndOffset);
-            bool inLondon = barUtc >= lndStart && barUtc < lndEnd;
+            // ── London Open — 03:00 ET → 11:30 ET ────────────────────────────
+            DateTime lndStart = today.AddHours(3);
+            DateTime lndEnd   = today.AddHours(11).AddMinutes(30);
+            bool inLondon = barEt >= lndStart && barEt < lndEnd;
             UpdateRthEntry(inLondon, lndStart, lndEnd, ref currentRthLondonEntry, rthLondonOpenEntries);
 
-            // ── US RTH Open (13:30/14:30 – 21:00/22:00 UTC with US DST) ──────
-            int      usOffset = IsUsDst(day) ? 0 : 1;
-            DateTime usStart  = day.AddHours(13 + usOffset).AddMinutes(30);
-            DateTime usEnd    = day.AddHours(21 + usOffset);
-            bool inUs = barUtc >= usStart && barUtc < usEnd;
+            // ── US Open — 09:30 ET → 16:00 ET ────────────────────────────────
+            DateTime usStart = today.AddHours(9).AddMinutes(30);
+            DateTime usEnd   = today.AddHours(16);
+            bool inUs = barEt >= usStart && barEt < usEnd;
             UpdateRthEntry(inUs, usStart, usEnd, ref currentRthUsEntry, rthUsOpenEntries);
         }
 
-        private static DateTime GetEthSessionStart(DateTime barUtc)
+        private static DateTime GetEthSessionStartEt(DateTime barEt)
         {
-            DateTime day     = barUtc.Date;
-            int      ethHour = IsUsDst(day) ? 22 : 23;
-            DateTime todayEth = day.AddHours(ethHour);
-            if (barUtc >= todayEth)
-                return todayEth;
-            DateTime prevDay     = day.AddDays(-1);
-            int      prevEthHour = IsUsDst(prevDay) ? 22 : 23;
-            return prevDay.AddHours(prevEthHour);
+            // ETH session = 18:00 ET (6 PM) to 18:00 ET next day (CME Globex daily reset)
+            DateTime today18 = barEt.Date.AddHours(18);
+            if (barEt >= today18) return today18;
+            return barEt.Date.AddDays(-1).AddHours(18);
         }
 
         private void UpdateRthEntry(bool inSession, DateTime sessionStart, DateTime sessionEnd,
@@ -3890,15 +3855,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Brushes.Yellow, Brushes.Black);
         }
 
-        private void UpdateVwap(DateTime barUtc)
+        private void UpdateVwap(DateTime barEt)
         {
             if (vwapEthData == null || vwapRthData == null) return;
 
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
             double vol = Volume[0];
 
-            // ── ETH-anchored VWAP (always computed) ──────────────────────────
-            DateTime ethStart = GetEthSessionStart(barUtc);
+            // ── ETH-anchored VWAP (resets at 18:00 ET = CME Globex daily open) ─
+            DateTime ethStart = GetEthSessionStartEt(barEt);
             if (vwapEthSessionStart != ethStart)
             {
                 vwapEthSessionStart      = ethStart;
@@ -3933,10 +3898,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Band3Lower = ethVwap - 3 * ethStdDev
             });
 
-            // ── RTH-anchored VWAP (resets at US RTH open 13:30 UTC with DST) ─
-            int      usOffset = IsUsDst(barUtc.Date) ? 0 : 1;
-            DateTime rthStart = barUtc.Date.AddHours(13 + usOffset).AddMinutes(30);
-            bool     inRth    = barUtc >= rthStart;
+            // ── RTH-anchored VWAP (resets at 09:30 ET = US cash open) ────────
+            DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
+            bool     inRth    = barEt >= rthStart;
 
             if (inRth)
             {
