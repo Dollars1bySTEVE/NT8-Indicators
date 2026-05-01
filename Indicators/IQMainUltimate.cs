@@ -305,9 +305,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private double yesterdayHigh, yesterdayLow;
         private double lastWeekHigh, lastWeekLow;
-        private int    currentDayOfWeek;
-        private double weekHigh, weekLow;
-        private bool   weekDataLoaded;
+        private int      currentDayOfWeek;
+        private DateTime _currentWeekStart;
+        private double   weekHigh, weekLow;
+        private bool     weekDataLoaded;
+        private int      _awrDbgCounter;
         private int    currentMonth;
         private double monthHigh, monthLow;
         private bool   monthDataLoaded;
@@ -2492,10 +2494,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sessionBoxes   = new List<SessionBox>(200);
                 activeSessions = new SessionBox[8];
 
-                prevDayLoaded    = false;
-                weekDataLoaded   = false;
-                currentDayOfWeek = -1;
-                monthDataLoaded  = false;
+                prevDayLoaded     = false;
+                weekDataLoaded    = false;
+                currentDayOfWeek  = -1;
+                _currentWeekStart = DateTime.MinValue;
+                _awrDbgCounter    = 0;
+                monthDataLoaded   = false;
                 currentMonth     = -1;
                 dailyOpenSet     = false;
 
@@ -2677,6 +2681,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (IsFirstTickOfBar || Calculate == Calculate.OnBarClose)
             {
                 DateTime barTime = Time[0];
+                _awrDbgCounter++;
+                if (_awrDbgCounter <= 20 || _awrDbgCounter % 500 == 0)
+                    Print(string.Format("[AWR-DBG] #{0} CurrentBar={1} Time={2:MM/dd/yy HH:mm} Dow={3} weekDataLoaded={4} wkCount={5} currentDayOfWeek={6}",
+                        _awrDbgCounter, CurrentBar, barTime, (int)barTime.DayOfWeek, weekDataLoaded, weeklyRanges == null ? -1 : weeklyRanges.Count, currentDayOfWeek));
                 DateTime prevDate = CurrentBar > 0 ? Time[1].Date : barTime.Date;
                 bool newDay = barTime.Date != prevDate;
 
@@ -2763,11 +2771,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (currentDailyOpenEntry != null)
                     currentDailyOpenEntry.EndBarIndex = CurrentBar;
 
-                int dow = (int)barTime.DayOfWeek;
-                if (dow != currentDayOfWeek)
+                // ── Weekly range tracking — mirrors AMR month-boundary approach ──────
+                // Compute the Sunday-anchored week start (NQ futures week begins Sunday
+                // 6 PM ET).  Comparing a calendar Sunday date instead of relying on
+                // (dow < currentDayOfWeek) prevents the fragile "day number must decrease"
+                // edge case that caused AWR N/A on all intraday timeframes.
+                int      dowLocal  = (int)barTime.DayOfWeek;          // Sun=0 … Sat=6
+                DateTime weekStart = barTime.Date.AddDays(-dowLocal);  // most-recent Sunday
+                currentDayOfWeek   = dowLocal;                         // keep legacy field in sync
+
+                if (weekStart != _currentWeekStart)
                 {
-                    bool newWeek = (dow < currentDayOfWeek) || (currentDayOfWeek == -1);
-                    if (newWeek && weekDataLoaded)
+                    if (weekDataLoaded && weekHigh > 0 && weekLow > 0)
                     {
                         lastWeekHigh = weekHigh;
                         lastWeekLow  = weekLow;
@@ -2775,32 +2790,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                         double wRange = weekHigh - weekLow;
                         if (weeklyRanges.Count >= AwrLength) weeklyRanges.Dequeue();
                         weeklyRanges.Enqueue(wRange);
+                        Print(string.Format("[AWR-DBG] ENQUEUE wRange={0:F2} weeklyRanges.Count={1} CurrentBar={2} Time={3:MM/dd/yy HH:mm} dow={4} weekStart={5:MM/dd/yy}",
+                            wRange, weeklyRanges.Count, CurrentBar, Time[0], (int)Time[0].DayOfWeek, weekStart));
                         if (rwRanges.Count >= RwLength) rwRanges.Dequeue();
                         rwRanges.Enqueue(wRange);
 
                         alertAwrHighFired = alertAwrLowFired = false;
-
-                        weekHigh = High[0];
-                        weekLow  = Low[0];
-
-                        psyWeekHigh     = High[0];
-                        psyWeekLow      = Low[0];
-                        psyWeekStartBar = CurrentBar;
-                    }
-                    else if (!weekDataLoaded)
-                    {
-                        weekHigh = High[0];
-                        weekLow  = Low[0];
-                        psyWeekHigh     = High[0];
-                        psyWeekLow      = Low[0];
-                        psyWeekStartBar = CurrentBar;
                     }
 
-                    currentDayOfWeek = dow;
-                    weekDataLoaded   = true;
+                    weekHigh = High[0];
+                    weekLow  = Low[0];
+
+                    psyWeekHigh     = High[0];
+                    psyWeekLow      = Low[0];
+                    psyWeekStartBar = CurrentBar;
+
+                    _currentWeekStart = weekStart;
+                    weekDataLoaded    = true;
                 }
-
-                if (weekDataLoaded)
+                else if (weekDataLoaded)
                 {
                     if (High[0] > weekHigh) weekHigh = High[0];
                     if (Low[0]  < weekLow)  weekLow  = Low[0];
@@ -2849,9 +2857,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (weeklyRanges.Count > 0)
             {
                 awrValue = weeklyRanges.Average();
+                Print(string.Format("[AWR-DBG] AWR computed: weeklyRanges.Count={0} awrValue={1:F2} CurrentBar={2}",
+                    weeklyRanges.Count, awrValue, CurrentBar));
                 double wSlack = (awrValue - (weekHigh - weekLow)) / 2.0;
                 awrHigh = weekHigh + wSlack;
                 awrLow  = weekLow  - wSlack;
+            }
+            else if (IsFirstTickOfBar)
+            {
+                Print(string.Format("[AWR-DBG] AWR-SKIP: weeklyRanges.Count=0 awrValue={0:F2} weekDataLoaded={1} currentDayOfWeek={2} _currentWeekStart={3:MM/dd/yy}",
+                    awrValue, weekDataLoaded, currentDayOfWeek, _currentWeekStart));
             }
 
             if (monthlyRanges.Count > 0)
@@ -5499,6 +5514,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             string adrStr    = adrValue > 0 ? string.Format("ADR {0:F0}p", adrValue / TickSize) : "ADR N/A";
             string awrStr    = awrValue > 0 ? string.Format("AWR {0:F0}p", awrValue / TickSize) : "AWR N/A";
             string amrStr    = amrValue > 0 ? string.Format("AMR {0:F0}p", amrValue / TickSize) : "AMR N/A";
+            Print(string.Format("[AWR-DBG] DASHBOARD awrValue={0:F2} awrStr={1} weeklyRanges.Count={2} TickSize={3}",
+                awrValue, awrStr, weeklyRanges == null ? -1 : weeklyRanges.Count, TickSize));
             string rangeLine = string.Format("{0}  {1}  {2}", adrStr, awrStr, amrStr);
             string[] lines = {
                 string.Format("IQMainUltimate [{0}]  Session: {1}", assetTag, activeSessName),
