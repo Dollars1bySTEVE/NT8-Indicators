@@ -305,9 +305,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private double yesterdayHigh, yesterdayLow;
         private double lastWeekHigh, lastWeekLow;
-        private int    currentDayOfWeek;
-        private double weekHigh, weekLow;
-        private bool   weekDataLoaded;
+        private int      currentDayOfWeek;
+        private DateTime _currentWeekStart;
+        private double   weekHigh, weekLow;
+        private bool     weekDataLoaded;
         private int    currentMonth;
         private double monthHigh, monthLow;
         private bool   monthDataLoaded;
@@ -385,9 +386,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool _ibTargetBearishFallbackLogged;
         private bool _ibTargetBullishFallbackLogged;
 
-        // weeklyRanges and monthlyRanges are populated directly from the primary series
-        // week/month boundary detection so AWR and AMR compute correctly on all timeframes
-        // when MaximumBarsLookBack.Infinite ensures sufficient historical bars are loaded.
+        // weeklyRanges and monthlyRanges are populated directly from the primary series.
+        // AWR uses Sunday-anchored week-start date comparison (_currentWeekStart) to
+        // detect week boundaries — mirrors AMR's barTime.Month approach and avoids the
+        // fragile "day number must decrease" logic that caused AWR N/A on all timeframes.
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -2492,10 +2494,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sessionBoxes   = new List<SessionBox>(200);
                 activeSessions = new SessionBox[8];
 
-                prevDayLoaded    = false;
-                weekDataLoaded   = false;
-                currentDayOfWeek = -1;
-                monthDataLoaded  = false;
+                prevDayLoaded     = false;
+                weekDataLoaded    = false;
+                currentDayOfWeek  = -1;
+                _currentWeekStart = DateTime.MinValue;
+                monthDataLoaded   = false;
                 currentMonth     = -1;
                 dailyOpenSet     = false;
 
@@ -2763,11 +2766,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (currentDailyOpenEntry != null)
                     currentDailyOpenEntry.EndBarIndex = CurrentBar;
 
-                int dow = (int)barTime.DayOfWeek;
-                if (dow != currentDayOfWeek)
+                // ── Weekly range tracking — mirrors AMR month-boundary approach ──────
+                // Compute the Sunday-anchored week start (NQ futures week begins Sunday
+                // 6 PM ET).  Comparing a calendar Sunday date instead of relying on
+                // (dow < currentDayOfWeek) prevents the fragile "day number must decrease"
+                // edge case that caused AWR N/A on all intraday timeframes.
+                currentDayOfWeek   = (int)barTime.DayOfWeek;              // Sun=0 … Sat=6
+                DateTime weekStart = barTime.Date.AddDays(-currentDayOfWeek); // most-recent Sunday
+
+                if (weekStart != _currentWeekStart)
                 {
-                    bool newWeek = (dow < currentDayOfWeek) || (currentDayOfWeek == -1);
-                    if (newWeek && weekDataLoaded)
+                    if (weekDataLoaded)
                     {
                         lastWeekHigh = weekHigh;
                         lastWeekLow  = weekLow;
@@ -2779,28 +2788,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                         rwRanges.Enqueue(wRange);
 
                         alertAwrHighFired = alertAwrLowFired = false;
-
-                        weekHigh = High[0];
-                        weekLow  = Low[0];
-
-                        psyWeekHigh     = High[0];
-                        psyWeekLow      = Low[0];
-                        psyWeekStartBar = CurrentBar;
-                    }
-                    else if (!weekDataLoaded)
-                    {
-                        weekHigh = High[0];
-                        weekLow  = Low[0];
-                        psyWeekHigh     = High[0];
-                        psyWeekLow      = Low[0];
-                        psyWeekStartBar = CurrentBar;
                     }
 
-                    currentDayOfWeek = dow;
-                    weekDataLoaded   = true;
+                    weekHigh = High[0];
+                    weekLow  = Low[0];
+
+                    psyWeekHigh     = High[0];
+                    psyWeekLow      = Low[0];
+                    psyWeekStartBar = CurrentBar;
+
+                    _currentWeekStart = weekStart;
+                    weekDataLoaded    = true;
                 }
-
-                if (weekDataLoaded)
+                else if (weekDataLoaded)
                 {
                     if (High[0] > weekHigh) weekHigh = High[0];
                     if (Low[0]  < weekLow)  weekLow  = Low[0];
