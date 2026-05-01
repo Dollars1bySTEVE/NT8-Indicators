@@ -5661,7 +5661,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case 3: GetCrossMidnightWindow(barEt, 21, 4, out start, out end); break;                         // HK      21:00–04:00+1
                 case 4: GetCrossMidnightWindow(barEt, 18, 3, out start, out end); break;                         // Sydney  18:00–03:00+1
                 case 5: start = today.AddHours(3);                end = today.AddHours(4);                 break; // EU Brinks 03:00–04:00
-                case 6: start = today.AddHours(7);                end = today.AddHours(9).AddMinutes(30);  break; // US Brinks 07:00–09:30
+                case 6: start = today.AddHours(7);                end = today.AddHours(9).AddMinutes(30);  break; // US Brinks (US Premarket: 07:00–09:30 ET, leads into NY cash open)
                 case 7: start = today.AddHours(2);                end = today.AddHours(11);                break; // Frankfurt 02:00–11:00
                 default: start = today;                            end = today;                             break;
             }
