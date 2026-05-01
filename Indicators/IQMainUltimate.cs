@@ -2505,6 +2505,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.DataLoaded)
             {
+                // NinjaTrader 8 fires State.DataLoaded once per data series when AddDataSeries
+                // is used.  Guard here so all collections and indicator references are created
+                // against the primary series only (BarsInProgress == 0).  Without this guard,
+                // the second firing (BarsInProgress == 1, daily series) would re-create
+                // ema50Ind/stdDev100Ind/vwapEthData etc. against the daily series, breaking the
+                // VWAP monitoring panel (B18 regression).
+                if (BarsInProgress != 0) return;
+
                 // Sessions / pivot / range collections
                 dailyRanges   = new Queue<double>(32);
                 weeklyRanges  = new Queue<double>(56);
@@ -2648,25 +2656,44 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DateTime dsDate = Time[0];
 
                 // ── Week tracking ─────────────────────────────────────────────
+                // Week boundary: Monday-start (ISO convention).  CME Globex daily bars are
+                // labeled Mon–Fri with no Sat/Sun bars, so a day-number decrease
+                // (e.g. Friday=5 → Monday=1) unambiguously signals a new ISO week.
                 int dsDay = (int)dsDate.DayOfWeek;
                 if (dsDay != _dsCurrentDayOfWeek)
                 {
                     bool dsNewWeek = (dsDay < _dsCurrentDayOfWeek) || (_dsCurrentDayOfWeek == -1);
                     if (dsNewWeek && _dsWeekDataLoaded)
                     {
+                        // Completed prior week: enqueue its full high-minus-low range.
                         double wRange = _dsWeekHigh - _dsWeekLow;
                         if (weeklyRanges.Count >= AwrLength) weeklyRanges.Dequeue();
                         weeklyRanges.Enqueue(wRange);
                         if (rwRanges.Count >= RwLength) rwRanges.Dequeue();
                         rwRanges.Enqueue(wRange);
+                        // Start fresh accumulators for the new week.
+                        _dsWeekHigh = High[0];
+                        _dsWeekLow  = Low[0];
                     }
-                    _dsWeekHigh         = High[0];
-                    _dsWeekLow          = Low[0];
+                    else if (_dsWeekDataLoaded)
+                    {
+                        // Same week, new calendar day: extend the running weekly high/low.
+                        // (Prior code incorrectly reset here — this was the AWR N/A bug: B6.)
+                        if (High[0] > _dsWeekHigh) _dsWeekHigh = High[0];
+                        if (Low[0]  < _dsWeekLow)  _dsWeekLow  = Low[0];
+                    }
+                    else
+                    {
+                        // Very first daily bar: initialize accumulators.
+                        _dsWeekHigh = High[0];
+                        _dsWeekLow  = Low[0];
+                    }
                     _dsCurrentDayOfWeek = dsDay;
                     _dsWeekDataLoaded   = true;
                 }
                 else if (_dsWeekDataLoaded)
                 {
+                    // Same day re-fire (should not occur for a true daily series, but handled safely).
                     if (High[0] > _dsWeekHigh) _dsWeekHigh = High[0];
                     if (Low[0]  < _dsWeekLow)  _dsWeekLow  = Low[0];
                 }
