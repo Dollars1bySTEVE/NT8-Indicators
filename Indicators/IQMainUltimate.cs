@@ -4838,6 +4838,41 @@ namespace NinjaTrader.NinjaScript.Indicators
             return "Off-Hours";
         }
 
+        /// <summary>
+        /// B2/B13 fix: Returns the current session name and participation level using wall-clock
+        /// time (DateTime.UtcNow → ET) rather than the bar's open time. This guarantees that
+        /// large-interval bars (30m, 60m) whose open time precedes a session-window boundary
+        /// still display the correct session, and that the main-dashboard header and monitoring
+        /// panel always agree by construction (both call this single method).
+        /// Falls back to BarTimeEt() only if the UTC clock conversion fails.
+        /// </summary>
+        private string GetCurrentSessionInfo(out bool isHighParticipation)
+        {
+            DateTime nowEt;
+            try
+            {
+                nowEt = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone);
+            }
+            catch
+            {
+                nowEt = BarTimeEt();
+            }
+
+            for (int id = 0; id < 8; id++)
+            {
+                if (!IsSessionEnabled(id)) continue;
+                DateTime sStart, sEnd;
+                GetSessionEtTimes(id, nowEt, out sStart, out sEnd);
+                if (nowEt >= sStart && nowEt < sEnd)
+                {
+                    isHighParticipation = System.Array.IndexOf(HighParticipationSessionIds, id) >= 0;
+                    return GetSessionLabel(id);
+                }
+            }
+            isHighParticipation = false;
+            return "Off-Hours";
+        }
+
         /// <summary>Draw a graphical volume bar representing the buy/sell ratio.</summary>
         private void DrawVolumeBar(SharpDX.Direct2D1.RenderTarget rt,
             float x, float y, float width, float height,
@@ -4920,7 +4955,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool anyConflict  = false;
             var  addedLines   = new HashSet<string>();   // Bug 1: deduplicate identical conflict lines
 
-            bool volumeBullish  = snap.Delta > 0;
+            // B1 fix: derive volumeBullish from the same session-scoped buy/sell totals
+            // used by the graphical volume bar (DrawVolumeBar) so both widgets always agree.
+            // snap.Delta is per-bar and can diverge from the session ratio shown in the bar.
+            bool volumeBullish  = sessionBuyVol > sessionSellVol;
             bool priceAboveVwap = _cachedVwapValue > 0 && _latestClose > _cachedVwapValue;
 
             // Volume vs VWAP direction conflict
@@ -4978,8 +5016,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!string.IsNullOrEmpty(line2) && addedLines.Add(line2)) parts.AppendLine(line2);
             }
 
-            // Low participation session
-            if (ShowLowParticipationWarning && !IsHighParticipationSession())
+            // Low participation session — use wall-clock session (B2/B13 fix) so this warning
+            // matches the session displayed in both dashboard panels.
+            bool sessionHighParticipation;
+            GetCurrentSessionInfo(out sessionHighParticipation);
+            if (ShowLowParticipationWarning && !sessionHighParticipation)
             {
                 anyConflict = true;
                 string line1 = "", line2 = "";
@@ -5248,7 +5289,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             ClampTableY(0f, 0f, rtH, panelW, rtW, out clampedW);
             float usableW = (clampedW > 0 && clampedW < panelW ? clampedW : panelW) - PadX * 2;
 
-            string session    = GetActiveSessionName();
+            // B2/B13 fix: use wall-clock-based session so header and monitoring panel always agree.
+            bool   monSessionHighParticipation;
+            string session = GetCurrentSessionInfo(out monSessionHighParticipation);
 
             string vwapStatus = "VWAP: N/A";
             if (_cachedVwapValue > 0 && CurrentBar >= 50)
@@ -5275,7 +5318,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 string.Format("IQMainUltimate [{0}]  Monitoring", AssetClass.ToString().ToUpper()),
                 string.Format("Session: {0}  ({1})", session,
-                    IsHighParticipationSession() ? "High Participation" : "Low Participation"),
+                    monSessionHighParticipation ? "High Participation" : "Low Participation"),
                 rangeInfo,
                 "Volume:",
                 vwapStatus,
@@ -5448,18 +5491,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             float       lineH  = MainDashboardFontSize * LineHeightMult;
             float       panelW = 480f;
 
-            string activeSessName = "—";
-            if (activeSessions != null)
-            {
-                for (int id = 0; id < 8; id++)
-                {
-                    if (activeSessions[id] != null && !activeSessions[id].IsComplete)
-                    {
-                        activeSessName = GetSessionLabel(id);
-                        break;
-                    }
-                }
-            }
+            // B2/B13 fix: use wall-clock session so the header never shows "—" on 30m/60m
+            // bars whose open time precedes the session window, and so header always matches
+            // the monitoring panel (both call the same GetCurrentSessionInfo).
+            bool   mainDashHighParticipation;
+            string activeSessName = GetCurrentSessionInfo(out mainDashHighParticipation);
 
             string assetTag = AssetClass.ToString().ToUpper();
             string adrStr    = adrValue > 0 ? string.Format("ADR {0:F0}p", adrValue / TickSize) : "ADR N/A";
