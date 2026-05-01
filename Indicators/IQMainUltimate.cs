@@ -2593,7 +2593,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     Print(string.Format("=== {0} session anchors (ET, year-round) ===", Name));
                     Print("  ETH Daily Open:  18:00 ET (prev trading day)");
-                    Print("  Asia Open:       19:00 ET prev → 04:00 ET (Tokyo)");
+                    Print("  Asia Open:       19:00 ET → 04:00 ET next day (Tokyo anchor, crosses midnight)");
                     Print("  London Open:     03:00 ET → 11:30 ET");
                     Print("  US Open:         09:30 ET → 16:00 ET");
                     Print(string.Format("  TradingHours TZ: {0}", Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null ? Bars.TradingHours.TimeZoneInfo.Id : "(unknown)"));
@@ -4863,9 +4863,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int id = 0; id < 8; id++)
             {
                 if (!IsSessionEnabled(id)) continue;
-                DateTime sStart, sEnd;
-                GetSessionEtTimes(id, nowEt, out sStart, out sEnd);
-                if (nowEt >= sStart && nowEt < sEnd)
+                if (IsSessionActiveNow(id, nowEt))
                 {
                     isHighParticipation = System.Array.IndexOf(HighParticipationSessionIds, id) >= 0;
                     return GetSessionLabel(id);
@@ -5018,11 +5016,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!string.IsNullOrEmpty(line2) && addedLines.Add(line2)) parts.AppendLine(line2);
             }
 
-            // Low participation session — use wall-clock session (B2/B13 fix) so this warning
-            // matches the session displayed in both dashboard panels.
+            // Low participation / off-hours warning — use wall-clock session (B2/B13 fix) so this
+            // warning matches the session displayed in both dashboard panels.
+            // Fire "Thin Market" only when NO recognised session window is active (true off-hours gap).
+            // Asia sessions (Tokyo, HK, Sydney) are lower participation than London/NY but they are
+            // real sessions; the thin-market warning must not fire during Asia hours.
             bool sessionHighParticipation;
-            GetCurrentSessionInfo(out sessionHighParticipation);
-            if (ShowLowParticipationWarning && !sessionHighParticipation)
+            string sessionInfoName = GetCurrentSessionInfo(out sessionHighParticipation);
+            bool inOffHours = string.Equals(sessionInfoName, "Off-Hours", StringComparison.Ordinal);
+            if (ShowLowParticipationWarning && inOffHours)
             {
                 anyConflict = true;
                 string line1 = "", line2 = "";
@@ -5622,22 +5624,60 @@ namespace NinjaTrader.NinjaScript.Indicators
             };
         }
 
+        /// <summary>
+        /// Return the ET start/end DateTimes for the session window that <paramref name="barEt"/>
+        /// belongs to (or the window closest in time for the same session ID).
+        /// For sessions that cross midnight (Tokyo 19→04, Hong Kong 21→04, Sydney 18→03) the
+        /// correct epoch is selected based on barEt's time-of-day so that the window returned
+        /// always contains barEt when the session is active:
+        ///   • evening side  (barEt.Hour >= sessionStartHour): today.start  → tomorrow.end
+        ///   • morning side  (barEt.Hour &lt; sessionEndHour):   yesterday.start → today.end
+        /// This replaces the old fixed "yesterday.start → today.end" pattern which broke for bars
+        /// whose open time is in the evening (the majority of Asia session bars).
+        /// </summary>
         private void GetSessionEtTimes(int sessionId, DateTime barEt, out DateTime start, out DateTime end)
         {
-            DateTime today     = barEt.Date;
-            DateTime yesterday = today.AddDays(-1);
+            DateTime today = barEt.Date;
             switch (sessionId)
             {
-                case 0: start = today.AddHours(3);                end = today.AddHours(11).AddMinutes(30); break; // London
-                case 1: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16);                break; // NY
-                case 2: start = yesterday.AddHours(19);           end = today.AddHours(4);                 break; // Tokyo
-                case 3: start = yesterday.AddHours(21);           end = today.AddHours(4);                 break; // Hong Kong
-                case 4: start = yesterday.AddHours(17);           end = today.AddHours(2);                 break; // Sydney
-                case 5: start = today.AddHours(3);                end = today.AddHours(4);                 break; // EU Brinks
-                case 6: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(10).AddMinutes(30); break; // US Brinks
-                case 7: start = today.AddHours(2);                end = today.AddHours(11);                break; // Frankfurt
+                case 0: start = today.AddHours(3);                end = today.AddHours(11).AddMinutes(30); break; // London  03:00–11:30
+                case 1: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16);                break; // NY      09:30–16:00
+                case 2: GetCrossMidnightWindow(barEt, 19, 4, out start, out end); break;                         // Tokyo   19:00–04:00+1
+                case 3: GetCrossMidnightWindow(barEt, 21, 4, out start, out end); break;                         // HK      21:00–04:00+1
+                case 4: GetCrossMidnightWindow(barEt, 18, 3, out start, out end); break;                         // Sydney  18:00–03:00+1
+                case 5: start = today.AddHours(3);                end = today.AddHours(4);                 break; // EU Brinks 03:00–04:00
+                case 6: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(10).AddMinutes(30); break; // US Brinks 09:30–10:30
+                case 7: start = today.AddHours(2);                end = today.AddHours(11);                break; // Frankfurt 02:00–11:00
                 default: start = today;                            end = today;                             break;
             }
+        }
+
+        /// <summary>
+        /// Compute the start/end ET DateTimes for a session that crosses midnight, e.g. Tokyo 19:00→04:00.
+        /// Selects the correct epoch based on barEt's time-of-day:
+        ///   evening side (barEt.Hour >= startHour): today+startHour → tomorrow+endHour
+        ///   morning side (barEt.Hour &lt;  endHour):   yesterday+startHour → today+endHour
+        /// </summary>
+        private static void GetCrossMidnightWindow(DateTime barEt, int startHour, int endHour,
+            out DateTime start, out DateTime end)
+        {
+            DateTime today = barEt.Date;
+            if (barEt.TimeOfDay >= TimeSpan.FromHours(startHour))
+            { start = today.AddHours(startHour);              end = today.AddDays(1).AddHours(endHour); }
+            else
+            { start = today.AddDays(-1).AddHours(startHour);  end = today.AddHours(endHour); }
+        }
+
+        /// <summary>
+        /// Returns true when <paramref name="barEt"/> falls inside the active window for session
+        /// <paramref name="id"/>. Handles cross-midnight windows correctly via
+        /// <see cref="GetSessionEtTimes"/>.
+        /// </summary>
+        private bool IsSessionActiveNow(int id, DateTime barEt)
+        {
+            DateTime sStart, sEnd;
+            GetSessionEtTimes(id, barEt, out sStart, out sEnd);
+            return barEt >= sStart && barEt < sEnd;
         }
 
         private bool IsSessionEnabled(int id)
@@ -5712,7 +5752,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 DateTime sStart, sEnd;
                 GetSessionEtTimes(id, barEt, out sStart, out sEnd);
-                bool inSession = barEt >= sStart && barEt < sEnd;
+                bool inSession = IsSessionActiveNow(id, barEt);
 
                 if (inSession)
                 {
@@ -5783,9 +5823,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             else
                 currentEthOpenEntry.EndBarIndex = CurrentBar;
 
-            // ── Asia Open — 19:00 ET prev → 04:00 ET (Tokyo session anchor) ─
-            DateTime asiaStart = today.AddDays(-1).AddHours(19);
-            DateTime asiaEnd   = today.AddHours(4);
+            // ── Asia Open — 19:00 ET → 04:00 ET next day (Tokyo session anchor, crosses midnight) ─
+            // Use time-of-day epoch selection so both the evening and overnight sides map to the
+            // same session window (Thu 19:00 → Fri 04:00) rather than the wrong previous-night window.
+            DateTime asiaStart, asiaEnd;
+            if (barEt.TimeOfDay >= TimeSpan.FromHours(19))
+            {
+                asiaStart = today.AddHours(19);
+                asiaEnd   = today.AddDays(1).AddHours(4);
+            }
+            else
+            {
+                asiaStart = today.AddDays(-1).AddHours(19);
+                asiaEnd   = today.AddHours(4);
+            }
             bool inAsia = barEt >= asiaStart && barEt < asiaEnd;
             UpdateRthEntry(inAsia, asiaStart, asiaEnd, ref currentRthAsiaEntry, rthAsiaOpenEntries);
 
@@ -5817,8 +5868,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (currentEntry == null || currentEntry.SessionStart != sessionStart)
             {
-                if (currentEntry != null)
-                    currentEntry.EndBarIndex = CurrentBar - 1;
+                // Do NOT retroactively extend the previous entry's EndBarIndex here.
+                // Its EndBarIndex was correctly frozen at the last bar inside the session window.
+                // Setting it to CurrentBar−1 would push the rendered line far past the session
+                // close (the "Asia Open never terminates" bug for cross-midnight sessions).
                 currentEntry = new SessionOpenEntry
                 {
                     OpenPrice     = Open[0],
@@ -5975,7 +6028,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 DateTime sStart, sEnd;
                 GetSessionEtTimes(id, barEt, out sStart, out sEnd);
-                bool inSession = barEt >= sStart && barEt < sEnd;
+                bool inSession = IsSessionActiveNow(id, barEt);
 
                 if (inSession)
                 {
