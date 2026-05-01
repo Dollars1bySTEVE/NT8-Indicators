@@ -5018,9 +5018,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Low participation session — use wall-clock session (B2/B13 fix) so this warning
             // matches the session displayed in both dashboard panels.
-            bool _sessionHighParticipation;
-            GetCurrentSessionInfo(out _sessionHighParticipation);
-            if (ShowLowParticipationWarning && !_sessionHighParticipation)
+            bool sessionHighParticipation;
+            GetCurrentSessionInfo(out sessionHighParticipation);
+            if (ShowLowParticipationWarning && !sessionHighParticipation)
             {
                 anyConflict = true;
                 string line1 = "", line2 = "";
@@ -5494,8 +5494,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             // B2/B13 fix: use wall-clock session so the header never shows "—" on 30m/60m
             // bars whose open time precedes the session window, and so header always matches
             // the monitoring panel (both call the same GetCurrentSessionInfo).
-            bool   _mainDashHighParticipation;
-            string activeSessName = GetCurrentSessionInfo(out _mainDashHighParticipation);
+            bool   mainDashHighParticipation;
+            string activeSessName = GetCurrentSessionInfo(out mainDashHighParticipation);
 
             string assetTag = AssetClass.ToString().ToUpper();
             string adrStr    = adrValue > 0 ? string.Format("ADR {0:F0}p", adrValue / TickSize) : "ADR N/A";
