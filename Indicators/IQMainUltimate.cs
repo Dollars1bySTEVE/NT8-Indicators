@@ -4238,27 +4238,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case UltimateStopMode.TPOBased:
                     if (bearish)
                     {
-                        // Bearish: stop above price — use VAH
+                        // Bearish: stop above price — use VAH (or prev-VAH).
+                        // maxDist is a cap, not a gate: if VAH is farther than MaxTPOStopTicks,
+                        // clamp the stop to close+maxDist rather than falling back to ADR.
                         if (tpoCurrentVAH > 0 && tpoCurrentVAH > close)
                         {
+                            _lastStopSource = StopSource.VAH;
                             if (Math.Abs(close - tpoCurrentVAH) <= maxDist)
-                            {
-                                _lastStopSource = StopSource.VAH;
                                 return tpoCurrentVAH;
-                            }
-                            Print(string.Format("IQMainUltimate: TPOBased bearish stop — VAH {0} skipped ({1:F0}t beyond cap {2}t)",
-                                tpoCurrentVAH, Math.Abs(close - tpoCurrentVAH) / TickSize, MaxTPOStopTicks));
+                            _lastStopSourceDetail = "clamped";
+                            Print(string.Format("IQMainUltimate: TPOBased bearish stop — VAH {0} clamped to cap {1}t",
+                                tpoCurrentVAH, MaxTPOStopTicks));
+                            return close + maxDist;
                         }
                         if (previousDayTPO != null && previousDayTPO.ValueAreaHigh > 0 && previousDayTPO.ValueAreaHigh > close)
                         {
+                            _lastStopSource = StopSource.PrevVAH;
                             if (Math.Abs(close - previousDayTPO.ValueAreaHigh) <= maxDist)
-                            {
-                                _lastStopSource = StopSource.PrevVAH;
-                                _lastStopWasFallback = true;
                                 return previousDayTPO.ValueAreaHigh;
-                            }
-                            Print(string.Format("IQMainUltimate: TPOBased bearish stop — prev VAH {0} skipped ({1:F0}t beyond cap {2}t)",
-                                previousDayTPO.ValueAreaHigh, Math.Abs(close - previousDayTPO.ValueAreaHigh) / TickSize, MaxTPOStopTicks));
+                            _lastStopSourceDetail = "clamped";
+                            Print(string.Format("IQMainUltimate: TPOBased bearish stop — prev VAH {0} clamped to cap {1}t",
+                                previousDayTPO.ValueAreaHigh, MaxTPOStopTicks));
+                            return close + maxDist;
                         }
                         _lastStopSource = StopSource.ADR;
                         _lastStopWasFallback = true;
@@ -4269,27 +4270,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                         }
                         return close + GetAdrBasedStopDistance();
                     }
-                    // Bullish: stop below price — use VAL
+                    // Bullish: stop below price — use VAL (or prev-VAL).
+                    // maxDist is a cap, not a gate: if VAL is farther than MaxTPOStopTicks,
+                    // clamp the stop to close-maxDist rather than falling back to ADR.
                     if (tpoCurrentVAL > 0 && tpoCurrentVAL < close)
                     {
+                        _lastStopSource = StopSource.VAL;
                         if (Math.Abs(close - tpoCurrentVAL) <= maxDist)
-                        {
-                            _lastStopSource = StopSource.VAL;
                             return tpoCurrentVAL;
-                        }
-                        Print(string.Format("IQMainUltimate: TPOBased bullish stop — VAL {0} skipped ({1:F0}t beyond cap {2}t)",
-                            tpoCurrentVAL, Math.Abs(close - tpoCurrentVAL) / TickSize, MaxTPOStopTicks));
+                        _lastStopSourceDetail = "clamped";
+                        Print(string.Format("IQMainUltimate: TPOBased bullish stop — VAL {0} clamped to cap {1}t",
+                            tpoCurrentVAL, MaxTPOStopTicks));
+                        return close - maxDist;
                     }
                     if (previousDayTPO != null && previousDayTPO.ValueAreaLow > 0 && previousDayTPO.ValueAreaLow < close)
                     {
+                        _lastStopSource = StopSource.PrevVAL;
                         if (Math.Abs(close - previousDayTPO.ValueAreaLow) <= maxDist)
-                        {
-                            _lastStopSource = StopSource.PrevVAL;
-                            _lastStopWasFallback = true;
                             return previousDayTPO.ValueAreaLow;
-                        }
-                        Print(string.Format("IQMainUltimate: TPOBased bullish stop — prev VAL {0} skipped ({1:F0}t beyond cap {2}t)",
-                            previousDayTPO.ValueAreaLow, Math.Abs(close - previousDayTPO.ValueAreaLow) / TickSize, MaxTPOStopTicks));
+                        _lastStopSourceDetail = "clamped";
+                        Print(string.Format("IQMainUltimate: TPOBased bullish stop — prev VAL {0} clamped to cap {1}t",
+                            previousDayTPO.ValueAreaLow, MaxTPOStopTicks));
+                        return close - maxDist;
                     }
                     _lastStopSource = StopSource.ADR;
                     _lastStopWasFallback = true;
@@ -6361,10 +6363,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             switch (src)
             {
-                case StopSource.VAH:           return "VAH";
-                case StopSource.VAL:           return "VAL";
-                case StopSource.PrevVAH:       return "prev VAH";
-                case StopSource.PrevVAL:       return "prev VAL";
+                case StopSource.VAH:           return string.IsNullOrEmpty(detail) ? "VAH"      : "VAH "      + detail;
+                case StopSource.VAL:           return string.IsNullOrEmpty(detail) ? "VAL"      : "VAL "      + detail;
+                case StopSource.PrevVAH:       return string.IsNullOrEmpty(detail) ? "prev VAH" : "prev VAH " + detail;
+                case StopSource.PrevVAL:       return string.IsNullOrEmpty(detail) ? "prev VAL" : "prev VAL " + detail;
                 case StopSource.PivotS1:       return "S1";
                 case StopSource.PivotR1:       return "R1";
                 case StopSource.LiquidityZone: return "Liq Zone";
