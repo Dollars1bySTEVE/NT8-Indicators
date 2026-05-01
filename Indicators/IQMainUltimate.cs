@@ -2848,10 +2848,31 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (weeklyRanges.Count > 0)
             {
+                // Preferred path: at least one completed Sunday-Sunday week is in history.
                 awrValue = weeklyRanges.Average();
                 double wSlack = (awrValue - (weekHigh - weekLow)) / 2.0;
                 awrHigh = weekHigh + wSlack;
                 awrLow  = weekLow  - wSlack;
+            }
+            else if (dailyRanges.Count > 0)
+            {
+                // Fallback: chart history does not span a completed Sunday-to-Sunday boundary
+                // (typical when "Days to load" is small or chart loaded mid-week).
+                // Estimate weekly range as 5 × ADR — a standard proxy used by retail
+                // platforms when full weekly data is unavailable.
+                awrValue = dailyRanges.Average() * 5.0;
+                if (weekDataLoaded)
+                {
+                    double wSlack = (awrValue - (weekHigh - weekLow)) / 2.0;
+                    awrHigh = weekHigh + wSlack;
+                    awrLow  = weekLow  - wSlack;
+                }
+                else
+                {
+                    // Centre the band on dailyOpen as a last resort.
+                    awrHigh = dailyOpen + awrValue / 2.0;
+                    awrLow  = dailyOpen - awrValue / 2.0;
+                }
             }
 
             if (monthlyRanges.Count > 0)
