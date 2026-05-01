@@ -385,6 +385,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool _ibTargetBearishFallbackLogged;
         private bool _ibTargetBullishFallbackLogged;
 
+        // ── Daily secondary series tracking (AWR / AMR / RW) ─────────────────
+        // weeklyRanges and monthlyRanges are populated from the daily secondary series
+        // (BarsInProgress == 1) so AWR and AMR are independent of the primary chart
+        // bar interval and work correctly on 1m / 5m / 15m / 30m / 60m / daily charts.
+        private double _dsWeekHigh, _dsWeekLow;
+        private bool   _dsWeekDataLoaded;
+        private int    _dsCurrentDayOfWeek = -1;
+        private double _dsMonthHigh, _dsMonthLow;
+        private bool   _dsMonthDataLoaded;
+        private int    _dsCurrentMonth     = -1;
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — Candles / Microstructure
@@ -2485,6 +2496,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 if (!ShowLondon && !ShowNewYork)
                     Print("[IQMainUltimate] Both London and New York sessions are disabled — TPO previous-day reference levels will not update. Enable at least one to use TPO-based stops/targets.");
+
+                // Add a daily-bar secondary series so AWR and AMR read true daily highs/lows
+                // independent of the primary chart's bar interval.  This series is always
+                // BarsInProgress == 1 and is processed in its own handler block at the top of
+                // OnBarUpdate.  ADR continues to aggregate from the primary series as before.
+                AddDataSeries(BarsPeriodType.Day, 1);
             }
             else if (State == State.DataLoaded)
             {
@@ -2494,6 +2511,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 monthlyRanges = new Queue<double>(26);
                 rdRanges      = new Queue<double>(32);
                 rwRanges      = new Queue<double>(56);
+
+                // Daily secondary series tracking state
+                _dsWeekHigh         = 0;
+                _dsWeekLow          = 0;
+                _dsWeekDataLoaded   = false;
+                _dsCurrentDayOfWeek = -1;
+                _dsMonthHigh        = 0;
+                _dsMonthLow         = 0;
+                _dsMonthDataLoaded  = false;
+                _dsCurrentMonth     = -1;
 
                 sessionBoxes   = new List<SessionBox>(200);
                 activeSessions = new SessionBox[8];
@@ -2609,6 +2636,65 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
+            // ── Daily secondary series handler (BarsInProgress == 1) ─────────────
+            // Populates weeklyRanges and monthlyRanges (AWR/AMR/RW sources) from the
+            // daily bar series so values are timeframe-independent.
+            if (BarsInProgress == 1)
+            {
+                // When BarsInProgress == 1, Time[0] is the daily secondary series bar time
+                // (equivalent to Times[1][0]).  Daily bars for CME Globex futures are labeled
+                // Monday–Friday; no Saturday/Sunday bars exist, so the week boundary fires
+                // correctly on the Friday→Monday DayOfWeek transition (5→1, i.e. 1 < 5).
+                DateTime dsDate = Time[0];
+
+                // ── Week tracking ─────────────────────────────────────────────
+                int dsDay = (int)dsDate.DayOfWeek;
+                if (dsDay != _dsCurrentDayOfWeek)
+                {
+                    bool dsNewWeek = (dsDay < _dsCurrentDayOfWeek) || (_dsCurrentDayOfWeek == -1);
+                    if (dsNewWeek && _dsWeekDataLoaded)
+                    {
+                        double wRange = _dsWeekHigh - _dsWeekLow;
+                        if (weeklyRanges.Count >= AwrLength) weeklyRanges.Dequeue();
+                        weeklyRanges.Enqueue(wRange);
+                        if (rwRanges.Count >= RwLength) rwRanges.Dequeue();
+                        rwRanges.Enqueue(wRange);
+                    }
+                    _dsWeekHigh         = High[0];
+                    _dsWeekLow          = Low[0];
+                    _dsCurrentDayOfWeek = dsDay;
+                    _dsWeekDataLoaded   = true;
+                }
+                else if (_dsWeekDataLoaded)
+                {
+                    if (High[0] > _dsWeekHigh) _dsWeekHigh = High[0];
+                    if (Low[0]  < _dsWeekLow)  _dsWeekLow  = Low[0];
+                }
+
+                // ── Month tracking ────────────────────────────────────────────
+                int dsMon = dsDate.Month;
+                if (dsMon != _dsCurrentMonth)
+                {
+                    if (_dsMonthDataLoaded)
+                    {
+                        double mRange = _dsMonthHigh - _dsMonthLow;
+                        if (monthlyRanges.Count >= AmrLength) monthlyRanges.Dequeue();
+                        monthlyRanges.Enqueue(mRange);
+                    }
+                    _dsMonthHigh       = High[0];
+                    _dsMonthLow        = Low[0];
+                    _dsCurrentMonth    = dsMon;
+                    _dsMonthDataLoaded = true;
+                }
+                else if (_dsMonthDataLoaded)
+                {
+                    if (High[0] > _dsMonthHigh) _dsMonthHigh = High[0];
+                    if (Low[0]  < _dsMonthLow)  _dsMonthLow  = Low[0];
+                }
+
+                return;
+            }
+
             if (CurrentBar < 1)
                 return;
 
@@ -2778,11 +2864,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         lastWeekHigh = weekHigh;
                         lastWeekLow  = weekLow;
 
-                        double wRange = weekHigh - weekLow;
-                        if (weeklyRanges.Count >= AwrLength) weeklyRanges.Dequeue();
-                        weeklyRanges.Enqueue(wRange);
-                        if (rwRanges.Count >= RwLength) rwRanges.Dequeue();
-                        rwRanges.Enqueue(wRange);
+                        // weeklyRanges and rwRanges are populated by the daily secondary series
+                        // handler (BarsInProgress == 1) — do not enqueue here to avoid duplicates.
 
                         alertAwrHighFired = alertAwrLowFired = false;
 
@@ -2817,9 +2900,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     if (monthDataLoaded && monthHigh > 0 && monthLow > 0)
                     {
-                        double mRange = monthHigh - monthLow;
-                        if (monthlyRanges.Count >= AmrLength) monthlyRanges.Dequeue();
-                        monthlyRanges.Enqueue(mRange);
+                        // monthlyRanges is populated by the daily secondary series handler
+                        // (BarsInProgress == 1) — do not enqueue here to avoid duplicates.
                         alertAmrHighFired = alertAmrLowFired = false;
                     }
                     monthHigh       = High[0];
