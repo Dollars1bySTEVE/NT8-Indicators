@@ -58,6 +58,43 @@ public enum UltimateStopMode { AutoDetected, PivotBased, HVNBased, ManualInput, 
 /// Extends the base TargetPlacementMode with TPO-aware options.</summary>
 public enum UltimateTargetMode { AutoDetected, PivotR1, PivotR2, ManualInput, VAH, IBExtension }
 
+// ── Profile Shape Engine (group 18) enums ────────────────────────────────────
+
+/// <summary>Market Profile day type classification used by the Profile Shape Engine.
+/// Aligned with commonly taught Market Profile concepts:
+///   Unknown = not yet determined (insufficient data or engine disabled);
+///   Normal  = rotational/balanced, limited range extension, close near mid;
+///   D       = single distribution, directional close near one extreme, moderate extension;
+///   P       = value/volume in upper portion, close at or near upper extreme (P-shape / short-covering day);
+///   b       = value/volume in lower portion, close at or near lower extreme (b-shape / buying tail day);
+///   I       = strong trend day, one-sided range extension well beyond IB, price near extreme.</summary>
+public enum ProfileDayType { Unknown, Normal, D, P, b, I }
+
+/// <summary>Session window used by the Profile Shape Engine to determine the profile accumulation window.</summary>
+public enum ProfileWindowMode
+{
+    /// <summary>New York RTH session 09:30–16:00 ET. Default for US equity index futures.</summary>
+    RTH_US,
+    /// <summary>Full 24-hour ETH session 18:00 ET previous day → 18:00 ET today (crosses midnight).</summary>
+    ETH_18to18,
+    /// <summary>User-defined start and end times in ET (hour/minute properties).</summary>
+    CustomEtTimes
+}
+
+/// <summary>Preset checkpoint times for developing day-type classification.
+/// Checkpoints define the intra-day moments where the classification is re-evaluated.</summary>
+public enum CheckpointPreset
+{
+    /// <summary>US equity index futures defaults: 10:30, 12:00, 14:00, 15:30 ET.</summary>
+    Indexes_Default,
+    /// <summary>Energy futures (CL, NG) defaults: 10:00, 11:30, 13:00, 14:00 ET.</summary>
+    Energy_Default,
+    /// <summary>Metals futures (GC, SI) defaults: 09:30, 11:00, 12:30, 13:20 ET.</summary>
+    Metals_Default,
+    /// <summary>User-defined checkpoint times via the four Checkpoint*Hour/Min properties.</summary>
+    Custom
+}
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
@@ -253,6 +290,25 @@ namespace NinjaTrader.NinjaScript.Indicators
             /// <summary>Classified profile shape for this session.</summary>
             public TPOProfileShape ProfileShape;
 
+            // ── Profile Shape Engine (PSE) per-session fields ─────────────────
+            /// <summary>Developing (intra-session) ProfileDayType as classified by the PSE.
+            /// Updated on each bar; requires ConfirmPersistenceMinutes to promote to PseConfirmed.</summary>
+            public ProfileDayType PseDeveloping;
+            /// <summary>Confirmed ProfileDayType — only updated when PseDeveloping has been stable
+            /// for at least ConfirmPersistenceMinutes.</summary>
+            public ProfileDayType PseConfirmed;
+            /// <summary>Final confirmed ProfileDayType set when the session closes.</summary>
+            public ProfileDayType PseFinal;
+            /// <summary>The UTC time when PseDeveloping last changed to its current value.
+            /// Used to enforce the ConfirmPersistenceMinutes hysteresis window.</summary>
+            public DateTime PseDevelopingChangedAt;
+            /// <summary>Confidence score (0-100) for the current developing classification.</summary>
+            public int PseConfidence;
+            /// <summary>Session-range high tracked by the PSE for IB-extension logic.</summary>
+            public double PseSessionHigh;
+            /// <summary>Session-range low tracked by the PSE for IB-extension logic.</summary>
+            public double PseSessionLow;
+
             /// <summary>Initialise an empty TPOSession for a given session window.</summary>
             public TPOSession(int sessionId, DateTime start, DateTime end, int startBar)
             {
@@ -268,6 +324,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 IBComplete   = false;
                 IBEndBarIndex = startBar;
                 ValueAreaPct = 70.0;
+
+                // PSE initial state
+                PseDeveloping         = ProfileDayType.Unknown;
+                PseConfirmed          = ProfileDayType.Unknown;
+                PseFinal              = ProfileDayType.Unknown;
+                PseDevelopingChangedAt = DateTime.MinValue;
+                PseConfidence         = 0;
+                PseSessionHigh        = double.MinValue;
+                PseSessionLow         = double.MaxValue;
             }
         }
 
@@ -538,6 +603,25 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // ── Nearest naked level (for dashboards) ─────────────────────────────
         private NakedTPOLevel tpoNearestNakedLevel;
+
+        // ── Profile Shape Engine (PSE) — state fields ─────────────────────────
+        /// <summary>The dedicated PSE TPOSession accumulating the configured profile window.
+        /// This is separate from the main session tracking so the PSE window (e.g. RTH) can
+        /// differ from the sessions displayed in the chart.</summary>
+        private TPOSession pseSession;
+        /// <summary>The start DateTime (ET) of the current PSE window being accumulated.</summary>
+        private DateTime pseWindowStart;
+        /// <summary>The end DateTime (ET) of the current PSE window being accumulated.</summary>
+        private DateTime pseWindowEnd;
+        /// <summary>Cached developing ProfileDayType for the current PSE window (dashboard display).</summary>
+        private ProfileDayType pseDeveloping = ProfileDayType.Unknown;
+        /// <summary>Cached confirmed ProfileDayType (persisted for ConfirmPersistenceMinutes).</summary>
+        private ProfileDayType pseConfirmed  = ProfileDayType.Unknown;
+        /// <summary>Cached confidence score (0–100) for the developing classification.</summary>
+        private int pseConfidence;
+        /// <summary>ET timestamp of the last bar processed by UpdateProfileEngine; used to compute
+        /// how many minutes the developing type has been stable.</summary>
+        private DateTime pseLastBarEt = DateTime.MinValue;
 
         // ── Label Y-position de-collision tracking (cleared at start of RenderTPOLevels) ──
         private HashSet<int> _usedLabelYPositions = new HashSet<int>();
@@ -2100,6 +2184,129 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Multiplier applied to TickSize when bucketing TPO price distribution. 1 = native tick resolution. Increase for small-tick instruments (CL, bonds) to reduce memory and speed up POC/VA computation. Higher values produce coarser profiles.")]
         public int TPOBinSizeMultiplier { get; set; }
 
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 18. Profile Shape Engine
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Profile Engine", Order = 1, GroupName = "18. Profile Shape Engine",
+            Description = "Enable the Profile Shape Engine (PSE). When true, classifies the developing and confirmed Market Profile day type (Unknown / Normal / D / P / b / I) using IB extension, value-area placement, bimodal detection, and configurable persistence. Existing TPOProfileShape classification is unchanged; this runs alongside it.")]
+        public bool EnableProfileEngine { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Profile Window", Order = 2, GroupName = "18. Profile Shape Engine",
+            Description = "Session window the PSE accumulates the volume profile for. RTH_US = 09:30–16:00 ET (default, US index futures). ETH_18to18 = 18:00 ET prior day → 18:00 ET today. CustomEtTimes = user-defined start/end via the Custom Start/End Hour/Min properties.")]
+        public ProfileWindowMode PseWindowMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Custom Window Start Hour (ET)", Order = 3, GroupName = "18. Profile Shape Engine",
+            Description = "Hour (0-23) for the custom profile window start when PseWindowMode = CustomEtTimes.")]
+        public int ProfileCustomStartHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Custom Window Start Min (ET)", Order = 4, GroupName = "18. Profile Shape Engine",
+            Description = "Minute (0-59) for the custom profile window start when PseWindowMode = CustomEtTimes.")]
+        public int ProfileCustomStartMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Custom Window End Hour (ET)", Order = 5, GroupName = "18. Profile Shape Engine",
+            Description = "Hour (0-23) for the custom profile window end when PseWindowMode = CustomEtTimes.")]
+        public int ProfileCustomEndHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Custom Window End Min (ET)", Order = 6, GroupName = "18. Profile Shape Engine",
+            Description = "Minute (0-59) for the custom profile window end when PseWindowMode = CustomEtTimes.")]
+        public int ProfileCustomEndMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Checkpoint Preset", Order = 7, GroupName = "18. Profile Shape Engine",
+            Description = "Preset for the four intra-day classification checkpoints. Indexes_Default = 10:30/12:00/14:00/15:30 ET. Energy_Default = 10:00/11:30/13:00/14:00 ET. Metals_Default = 09:30/11:00/12:30/13:20 ET. Custom = user-defined via the Checkpoint*Hour/Min properties.")]
+        public CheckpointPreset PseCheckpointPreset { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Checkpoint 1 Hour (ET)", Order = 8, GroupName = "18. Profile Shape Engine",
+            Description = "Hour for custom checkpoint 1 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp1Hour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Checkpoint 1 Min (ET)", Order = 9, GroupName = "18. Profile Shape Engine",
+            Description = "Minute for custom checkpoint 1 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp1Min { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Checkpoint 2 Hour (ET)", Order = 10, GroupName = "18. Profile Shape Engine",
+            Description = "Hour for custom checkpoint 2 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp2Hour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Checkpoint 2 Min (ET)", Order = 11, GroupName = "18. Profile Shape Engine",
+            Description = "Minute for custom checkpoint 2 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp2Min { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Checkpoint 3 Hour (ET)", Order = 12, GroupName = "18. Profile Shape Engine",
+            Description = "Hour for custom checkpoint 3 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp3Hour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Checkpoint 3 Min (ET)", Order = 13, GroupName = "18. Profile Shape Engine",
+            Description = "Minute for custom checkpoint 3 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp3Min { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Checkpoint 4 Hour (ET)", Order = 14, GroupName = "18. Profile Shape Engine",
+            Description = "Hour for custom checkpoint 4 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp4Hour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Checkpoint 4 Min (ET)", Order = 15, GroupName = "18. Profile Shape Engine",
+            Description = "Minute for custom checkpoint 4 (active only when PseCheckpointPreset = Custom).")]
+        public int Cp4Min { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(30, 360)]
+        [Display(Name = "Min Minutes Before Double-Dist", Order = 16, GroupName = "18. Profile Shape Engine",
+            Description = "Minimum elapsed minutes from session open before a b (Double-Distribution) classification can be assigned. Prevents premature b labels early in the session. Default 120.")]
+        public int MinMinutesBeforeAllowDoubleDist { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 120)]
+        [Display(Name = "Confirm Persistence (minutes)", Order = 17, GroupName = "18. Profile Shape Engine",
+            Description = "The developing classification must remain unchanged for this many minutes before it promotes to the confirmed classification. Default 45.")]
+        public int ConfirmPersistenceMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 5.0)]
+        [Display(Name = "Trend RE Multiple of IB", Order = 18, GroupName = "18. Profile Shape Engine",
+            Description = "Minimum range-extension / IB-range ratio required to classify a day as I (strong trend). RE is measured as (session high - IB high) or (IB low - session low) whichever is larger. Default 1.2.")]
+        public double TrendRE_MultipleOfIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 40)]
+        [Display(Name = "Close Near Extreme %", Order = 19, GroupName = "18. Profile Shape Engine",
+            Description = "Close is considered 'near an extreme' when it is within this percentage of the session range from the high or low. Used for D, P, b, and I classifications. Default 20.")]
+        public int CloseNearExtremePct { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 70)]
+        [Display(Name = "Double-Dist Valley % of Peak", Order = 20, GroupName = "18. Profile Shape Engine",
+            Description = "The LVN valley between two bimodal peaks must have volume below this percentage of the smaller peak's volume to confirm a Double-Distribution / b shape. Default 45.")]
+        public int DoubleDistValleyPctOfPeak { get; set; }
+
+        #endregion
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -2470,6 +2677,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 MaxTPOStopTicks      = 200;
                 MaxTPOTargetTicks    = 400;
                 TPOBinSizeMultiplier = 1;
+
+                // 18. Profile Shape Engine
+                EnableProfileEngine              = false;
+                PseWindowMode                    = ProfileWindowMode.RTH_US;
+                ProfileCustomStartHour           = 9;
+                ProfileCustomStartMin            = 30;
+                ProfileCustomEndHour             = 16;
+                ProfileCustomEndMin              = 0;
+                PseCheckpointPreset              = CheckpointPreset.Indexes_Default;
+                Cp1Hour = 10; Cp1Min = 30;
+                Cp2Hour = 12; Cp2Min = 0;
+                Cp3Hour = 14; Cp3Min = 0;
+                Cp4Hour = 15; Cp4Min = 30;
+                MinMinutesBeforeAllowDoubleDist  = 120;
+                ConfirmPersistenceMinutes        = 45;
+                TrendRE_MultipleOfIB             = 1.2;
+                CloseNearExtremePct              = 20;
+                DoubleDistValleyPctOfPeak        = 45;
             }
             else if (State == State.Configure)
             {
@@ -2557,6 +2782,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 tpoCurrentShape = TPOProfileShape.Normal;
                 tpoCurrentSessionLabel = "";
                 tpoNearestNakedLevel   = null;
+
+                // PSE — Profile Shape Engine state
+                pseSession       = null;
+                pseWindowStart   = DateTime.MinValue;
+                pseWindowEnd     = DateTime.MinValue;
+                pseDeveloping    = ProfileDayType.Unknown;
+                pseConfirmed     = ProfileDayType.Unknown;
+                pseConfidence    = 0;
+                pseLastBarEt     = DateTime.MinValue;
 
                 cumDelta       = 0;
                 sessionBuyVol  = 0;
@@ -5390,6 +5624,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                     lines.Add("\u25ba Profile: " + shapeDesc);
                 }
 
+                // Profile Shape Engine (PSE) display — shown when EnableProfileEngine is true
+                if (EnableProfileEngine)
+                {
+                    string devStr  = pseDeveloping == ProfileDayType.Unknown ? "?" : pseDeveloping.ToString();
+                    string confStr = pseConfirmed  == ProfileDayType.Unknown ? "?"  : pseConfirmed.ToString();
+                    string confPct = pseConfidence > 0 ? string.Format(" ({0}%)", pseConfidence) : "";
+                    lines.Add(string.Format("\u25ba Profile (dev/confirmed): {0}/{1}{2}", devStr, confStr, confPct));
+
+                    // Show "as of <time>" when we have a last processed bar time
+                    if (pseLastBarEt > DateTime.MinValue)
+                        lines.Add(string.Format("  as of {0:HH:mm} ET | window: {1}",
+                            pseLastBarEt, PseWindowMode.ToString()));
+                }
+
                 // Nearest naked POC above or below price
                 if (ShowNakedLevels && tpoNearestNakedLevel != null && !tpoNearestNakedLevel.IsClosed)
                 {
@@ -6139,6 +6387,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Update nearest naked level above price for dashboard
             UpdateNearestNakedLevel();
+
+            // Profile Shape Engine — run on each bar when enabled
+            if (EnableProfileEngine)
+                UpdateProfileEngine(barEt);
         }
 
         /// <summary>
@@ -6313,6 +6565,435 @@ namespace NinjaTrader.NinjaScript.Indicators
             return TPOProfileShape.Normal;
         }
 
+        // ════════════════════════════════════════════════════════════════════════
+        #region Profile Shape Engine (PSE) — methods
+
+        /// <summary>
+        /// Compute the ET start and end DateTimes for the PSE profile accumulation window
+        /// based on the ProfileWindowMode setting.
+        /// Handles cross-midnight ETH window using GetCrossMidnightWindow.
+        /// </summary>
+        private void GetProfileEngineWindow(DateTime barEt, out DateTime start, out DateTime end)
+        {
+            DateTime today = barEt.Date;
+            switch (PseWindowMode)
+            {
+                case ProfileWindowMode.RTH_US:
+                    start = today.AddHours(9).AddMinutes(30);
+                    end   = today.AddHours(16);
+                    break;
+
+                case ProfileWindowMode.ETH_18to18:
+                    // ETH: 18:00 ET previous day → 18:00 ET today (crosses midnight)
+                    GetCrossMidnightWindow(barEt, 18, 18, out start, out end);
+                    break;
+
+                case ProfileWindowMode.CustomEtTimes:
+                default:
+                    int startTotalMin = ProfileCustomStartHour * 60 + ProfileCustomStartMin;
+                    int endTotalMin   = ProfileCustomEndHour   * 60 + ProfileCustomEndMin;
+                    start = today.AddMinutes(startTotalMin);
+                    end   = today.AddMinutes(endTotalMin);
+                    // Cross-midnight: if end <= start, shift end to next day
+                    if (endTotalMin <= startTotalMin)
+                    {
+                        // Use cross-midnight logic: pick start relative to barEt
+                        TimeSpan barTod = barEt.TimeOfDay;
+                        TimeSpan startTod = TimeSpan.FromMinutes(startTotalMin);
+                        if (barTod >= startTod)
+                        {
+                            start = today.AddMinutes(startTotalMin);
+                            end   = today.AddDays(1).AddMinutes(endTotalMin);
+                        }
+                        else
+                        {
+                            start = today.AddDays(-1).AddMinutes(startTotalMin);
+                            end   = today.AddMinutes(endTotalMin);
+                        }
+                    }
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Return the four checkpoint TimeSpan values (time-of-day, ET) for the selected preset.
+        /// Returns checkpoints as an array of 4 TimeSpan values.
+        /// </summary>
+        private TimeSpan[] GetCheckpointTimes()
+        {
+            switch (PseCheckpointPreset)
+            {
+                case CheckpointPreset.Indexes_Default:
+                    return new[]
+                    {
+                        new TimeSpan(10, 30, 0),
+                        new TimeSpan(12,  0, 0),
+                        new TimeSpan(14,  0, 0),
+                        new TimeSpan(15, 30, 0)
+                    };
+
+                case CheckpointPreset.Energy_Default:
+                    return new[]
+                    {
+                        new TimeSpan(10,  0, 0),
+                        new TimeSpan(11, 30, 0),
+                        new TimeSpan(13,  0, 0),
+                        new TimeSpan(14,  0, 0)
+                    };
+
+                case CheckpointPreset.Metals_Default:
+                    return new[]
+                    {
+                        new TimeSpan( 9, 30, 0),
+                        new TimeSpan(11,  0, 0),
+                        new TimeSpan(12, 30, 0),
+                        new TimeSpan(13, 20, 0)
+                    };
+
+                case CheckpointPreset.Custom:
+                default:
+                    return new[]
+                    {
+                        new TimeSpan(Cp1Hour, Cp1Min, 0),
+                        new TimeSpan(Cp2Hour, Cp2Min, 0),
+                        new TimeSpan(Cp3Hour, Cp3Min, 0),
+                        new TimeSpan(Cp4Hour, Cp4Min, 0)
+                    };
+            }
+        }
+
+        /// <summary>
+        /// Classify the developing Market Profile day type using:
+        ///   - IB range extension (how far price has moved beyond the IB)
+        ///   - Close / last price location relative to session range
+        ///   - Value area placement (upper vs lower half of range)
+        ///   - Bimodal valley test for Double-Distribution / b shape
+        ///
+        /// Returns a confidence score (0-100) via the out parameter.
+        /// Classification priority order: I → P → b → D → Normal → Unknown.
+        /// </summary>
+        private ProfileDayType ClassifyProfileDayType(TPOSession sess, DateTime barEt, out int confidence)
+        {
+            confidence = 0;
+
+            if (sess == null || sess.VolumeProfile == null || sess.VolumeProfile.Count < 3)
+                return ProfileDayType.Unknown;
+
+            // ── Gather fundamentals ───────────────────────────────────────────
+            double ibHigh  = sess.IBHigh  > double.MinValue ? sess.IBHigh  : 0;
+            double ibLow   = sess.IBLow   < double.MaxValue ? sess.IBLow   : 0;
+            double ibRange = (ibHigh > 0 && ibLow > 0) ? ibHigh - ibLow : 0;
+
+            double sessHigh = sess.PseSessionHigh > double.MinValue ? sess.PseSessionHigh : 0;
+            double sessLow  = sess.PseSessionLow  < double.MaxValue ? sess.PseSessionLow  : 0;
+            double sessRange = (sessHigh > 0 && sessLow > 0) ? sessHigh - sessLow : 0;
+
+            double close = _latestClose;
+            if (close <= 0) return ProfileDayType.Unknown;
+
+            // Need at least a minimal range to classify
+            if (sessRange <= 0) return ProfileDayType.Unknown;
+
+            // ── IB extension metrics ──────────────────────────────────────────
+            double reHigh = 0, reLow = 0, reMax = 0;
+            if (ibRange > 0 && ibHigh > 0 && ibLow > 0)
+            {
+                reHigh = sessHigh > ibHigh ? sessHigh - ibHigh : 0;
+                reLow  = sessLow  < ibLow  ? ibLow  - sessLow  : 0;
+                reMax  = Math.Max(reHigh, reLow);
+            }
+
+            // ── Close location within session range ───────────────────────────
+            // closePct: 0 = at session low, 100 = at session high
+            double closePct = sessRange > 0
+                ? Math.Min(100.0, Math.Max(0.0, (close - sessLow) / sessRange * 100.0))
+                : 50.0;
+
+            bool closeNearHigh = closePct >= (100.0 - CloseNearExtremePct);
+            bool closeNearLow  = closePct <= CloseNearExtremePct;
+            bool closeNearMid  = closePct > CloseNearExtremePct && closePct < (100.0 - CloseNearExtremePct);
+
+            // ── Value area placement ───────────────────────────────────────────
+            double vah = sess.ValueAreaHigh;
+            double val = sess.ValueAreaLow;
+            double vaMid = (vah > 0 && val > 0) ? (vah + val) / 2.0 : 0;
+            // VAMidPct: 0 = at session low, 100 = at session high
+            double vaMidPct = (vaMid > 0 && sessRange > 0)
+                ? Math.Min(100.0, Math.Max(0.0, (vaMid - sessLow) / sessRange * 100.0))
+                : 50.0;
+
+            bool valueInUpperHalf = vaMidPct >= 55.0;
+            bool valueInLowerHalf = vaMidPct <= 45.0;
+
+            // ── Minutes elapsed since session start ───────────────────────────
+            double minutesElapsed = sess.StartTime > DateTime.MinValue
+                ? (barEt - sess.StartTime).TotalMinutes
+                : 0;
+
+            // ── Bimodal (Double-Distribution) test ────────────────────────────
+            bool isBimodal = false;
+            if (minutesElapsed >= MinMinutesBeforeAllowDoubleDist && sess.VolumeProfile.Count >= 8)
+                isBimodal = IsBimodalProfile(sess);
+
+            // ── Classification logic ──────────────────────────────────────────
+            double trendThreshold = ibRange > 0 ? TrendRE_MultipleOfIB * ibRange : 0;
+
+            // I — Strong one-directional trend day
+            // Condition: strong RE (reMax > TrendRE_MultipleOfIB × ibRange) AND close near extreme in same direction
+            if (trendThreshold > 0 && reMax > trendThreshold)
+            {
+                bool isBullTrend = reHigh > reLow && closeNearHigh;
+                bool isBearTrend = reLow > reHigh && closeNearLow;
+                if (isBullTrend || isBearTrend)
+                {
+                    confidence = Math.Min(100, 50 + (int)((reMax / (ibRange > 0 ? ibRange : 1)) * 15));
+                    return ProfileDayType.I;
+                }
+                // RE is present but close is not at extreme → could still be D
+            }
+
+            // b — Double Distribution (volume lower half + bimodal)
+            // Condition: bimodal AND value area mid in lower half OR close near low
+            if (isBimodal && (valueInLowerHalf || closeNearLow))
+            {
+                confidence = 65 + (closeNearLow ? 15 : 0);
+                return ProfileDayType.b;
+            }
+
+            // P — Rotational day with upper skew
+            // Condition: value area in upper half + close near high OR upper RE dominant
+            if (valueInUpperHalf && (closeNearHigh || reHigh > reLow))
+            {
+                confidence = 60 + (closeNearHigh ? 20 : 0);
+                return ProfileDayType.P;
+            }
+
+            // b — Rotational day with lower skew (no bimodal required here, but value lower)
+            if (valueInLowerHalf && (closeNearLow || reLow > reHigh))
+            {
+                confidence = 60 + (closeNearLow ? 20 : 0);
+                return ProfileDayType.b;
+            }
+
+            // D — Single distribution, directional close, moderate extension
+            // Condition: close not near mid AND some extension (RE > 0)
+            if (!closeNearMid && reMax > 0)
+            {
+                confidence = 50 + (closeNearHigh || closeNearLow ? 15 : 0);
+                return ProfileDayType.D;
+            }
+
+            // Normal — rotational / balanced: limited extension, close near mid
+            if (closeNearMid && (trendThreshold == 0 || reMax <= trendThreshold * 0.5))
+            {
+                confidence = 55;
+                return ProfileDayType.Normal;
+            }
+
+            // Fallback: if we have any data but can't be more specific
+            if (minutesElapsed >= 30)
+            {
+                confidence = 30;
+                return ProfileDayType.Normal;
+            }
+
+            confidence = 10;
+            return ProfileDayType.Unknown;
+        }
+
+        /// <summary>
+        /// Test whether the session volume profile shows two distinct peaks separated by a
+        /// low-volume-node (LVN) valley. The valley must have volume below
+        /// DoubleDistValleyPctOfPeak % of the smaller peak to confirm bimodality.
+        ///
+        /// Algorithm:
+        ///  1. Smooth the volume profile with a 3-level rolling average to reduce noise.
+        ///  2. Find the two highest volume levels that are separated by at least 1/4 of the range.
+        ///  3. Find the minimum-volume level between them (the LVN valley).
+        ///  4. Accept bimodal if valley ≤ DoubleDistValleyPctOfPeak % of the smaller peak.
+        /// </summary>
+        private bool IsBimodalProfile(TPOSession sess)
+        {
+            if (sess.VolumeProfile == null || sess.VolumeProfile.Count < 8) return false;
+
+            var sorted = sess.VolumeProfile.OrderBy(kv => kv.Key).ToList();
+            int n = sorted.Count;
+            if (n < 8) return false;
+
+            // Smooth: 3-level rolling average
+            var smoothed = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                double sum = sorted[i].Value;
+                int cnt = 1;
+                if (i > 0)   { sum += sorted[i - 1].Value; cnt++; }
+                if (i < n-1) { sum += sorted[i + 1].Value; cnt++; }
+                smoothed[i] = sum / cnt;
+            }
+
+            // Find the overall maximum
+            int peak1Idx = 0;
+            for (int i = 1; i < n; i++)
+                if (smoothed[i] > smoothed[peak1Idx]) peak1Idx = i;
+
+            // Minimum separation: 25% of profile range
+            int minSep = Math.Max(2, n / 4);
+
+            // Find the second peak separated by at least minSep from peak1
+            int peak2Idx = -1;
+            double peak2Vol = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (Math.Abs(i - peak1Idx) < minSep) continue;
+                if (smoothed[i] > peak2Vol)
+                {
+                    peak2Vol = smoothed[i];
+                    peak2Idx = i;
+                }
+            }
+
+            if (peak2Idx < 0) return false;
+
+            // Ensure peaks are ordered: lo < hi
+            int loIdx = Math.Min(peak1Idx, peak2Idx);
+            int hiIdx = Math.Max(peak1Idx, peak2Idx);
+
+            // Find minimum volume between the two peaks (the valley / LVN)
+            double valleyVol = double.MaxValue;
+            for (int i = loIdx + 1; i < hiIdx; i++)
+                if (smoothed[i] < valleyVol) valleyVol = smoothed[i];
+
+            if (valleyVol >= double.MaxValue) return false;
+
+            // Smaller of the two peaks
+            double smallerPeak = Math.Min(smoothed[peak1Idx], smoothed[peak2Idx]);
+            if (smallerPeak <= 0) return false;
+
+            double valleyPct = valleyVol / smallerPeak * 100.0;
+            return valleyPct <= DoubleDistValleyPctOfPeak;
+        }
+
+        /// <summary>
+        /// Main Profile Shape Engine update method. Called per bar when EnableProfileEngine is true.
+        ///
+        /// Responsibilities:
+        ///  1. Determine the active PSE window for barEt (RTH/ETH/Custom).
+        ///  2. Create or continue a dedicated pseSession, accumulating volume-at-price.
+        ///  3. Update the session high/low for RE calculations.
+        ///  4. Compute developing day type and confidence via ClassifyProfileDayType.
+        ///  5. Apply hysteresis: only promote developing to confirmed after ConfirmPersistenceMinutes.
+        ///  6. On session close: finalize PseFinal, reset for next session.
+        ///  7. Refresh pseDeveloping / pseConfirmed / pseConfidence for dashboard display.
+        /// </summary>
+        private void UpdateProfileEngine(DateTime barEt)
+        {
+            if (!EnableProfileEngine) return;
+
+            DateTime winStart, winEnd;
+            GetProfileEngineWindow(barEt, out winStart, out winEnd);
+
+            bool inWindow = barEt >= winStart && barEt < winEnd;
+
+            // ── Session boundary: close previous window if we've moved past it ──
+            if (pseSession != null && !pseSession.IsComplete)
+            {
+                // Check if barEt has moved into a new window (new day / new ETH epoch)
+                if (winStart != pseWindowStart)
+                {
+                    // Finalize the old session
+                    if (pseSession.VolumeProfile.Count > 0)
+                    {
+                        CalculatePOC(pseSession);
+                        CalculateValueArea(pseSession);
+                        int finalConf;
+                        pseSession.PseFinal = ClassifyProfileDayType(pseSession, barEt, out finalConf);
+                        pseSession.PseConfirmed = pseSession.PseFinal;
+                        pseSession.PseConfidence = finalConf;
+                    }
+                    pseSession.IsComplete = true;
+                    pseSession = null;
+                }
+            }
+
+            if (inWindow)
+            {
+                double tickSz = TickSize > 0 ? TickSize : 0.25;
+                double binSz  = tickSz * Math.Max(1, TPOBinSizeMultiplier);
+
+                // ── Create a new session if needed ────────────────────────────
+                if (pseSession == null || pseSession.IsComplete || pseSession.StartTime != winStart)
+                {
+                    pseSession     = new TPOSession(-1, winStart, winEnd, CurrentBar);
+                    pseWindowStart = winStart;
+                    pseWindowEnd   = winEnd;
+                }
+
+                // ── Accumulate volume at typical price ────────────────────────
+                double barVol = Volume[0];
+                if (barVol > 0)
+                {
+                    double tp        = (High[0] + Low[0] + Close[0]) / 3.0;
+                    double bucket    = Math.Round(tp / binSz) * binSz;
+                    if (pseSession.VolumeProfile.ContainsKey(bucket))
+                        pseSession.VolumeProfile[bucket] += barVol;
+                    else
+                        pseSession.VolumeProfile[bucket]  = barVol;
+                }
+
+                // ── Track session high/low ────────────────────────────────────
+                if (High[0] > pseSession.PseSessionHigh || pseSession.PseSessionHigh == double.MinValue)
+                    pseSession.PseSessionHigh = High[0];
+                if (Low[0]  < pseSession.PseSessionLow  || pseSession.PseSessionLow  == double.MaxValue)
+                    pseSession.PseSessionLow  = Low[0];
+
+                // ── Update IB ─────────────────────────────────────────────────
+                UpdateInitialBalance(pseSession, barEt);
+
+                // ── Classify developing day type ──────────────────────────────
+                if (pseSession.VolumeProfile.Count >= 3)
+                {
+                    CalculatePOC(pseSession);
+                    CalculateValueArea(pseSession);
+
+                    int devConf;
+                    ProfileDayType devType = ClassifyProfileDayType(pseSession, barEt, out devConf);
+
+                    // Detect change in developing type → reset persistence timer
+                    if (devType != pseSession.PseDeveloping)
+                    {
+                        pseSession.PseDeveloping          = devType;
+                        pseSession.PseDevelopingChangedAt = barEt;
+                        pseSession.PseConfidence          = devConf;
+                    }
+                    else
+                    {
+                        // Same developing type — update confidence only (it may refine)
+                        pseSession.PseConfidence = devConf;
+                    }
+
+                    // ── Hysteresis: promote to confirmed after persistence window ──
+                    if (pseSession.PseDevelopingChangedAt > DateTime.MinValue)
+                    {
+                        double stableMins = (barEt - pseSession.PseDevelopingChangedAt).TotalMinutes;
+                        if (stableMins >= ConfirmPersistenceMinutes)
+                            pseSession.PseConfirmed = pseSession.PseDeveloping;
+                    }
+                }
+
+                // ── Refresh dashboard-facing cached fields ─────────────────────
+                pseDeveloping = pseSession.PseDeveloping;
+                pseConfirmed  = pseSession.PseConfirmed;
+                pseConfidence = pseSession.PseConfidence;
+                pseLastBarEt  = barEt;
+            }
+            else
+            {
+                // Outside the PSE window — retain last values until next window opens
+                // (dashboard will show "as of <time>" context using pseLastBarEt)
+            }
+        }
+
+        #endregion
         /// <summary>
         /// Create naked TPO levels from a completed session.
         /// Adds POC, VAH, VAL as naked levels if they are valid and list isn't full.
