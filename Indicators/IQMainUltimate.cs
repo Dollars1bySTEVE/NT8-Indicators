@@ -6859,8 +6859,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (smoothed[i] > smoothed[peak1Idx]) peak1Idx = i;
 
             // Minimum separation between the two peaks: scaled to 1/8 of total levels
-            // (25% was too aggressive for coarse profiles; 1/8 gives a gentler floor
-            // while still requiring meaningful spatial separation between the peaks).
+            // (~12.5% of the profile range). This gives a gentler separation floor than
+            // the previous 1/4 (25%) while still requiring meaningful spatial separation
+            // between the two peaks.
             int minSep = Math.Max(1, n / 8);
 
             // Find the second peak separated by at least minSep from peak1
@@ -6924,13 +6925,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Check if barEt has moved into a new window (new day / new ETH epoch)
                 if (winStart != pseWindowStart)
                 {
-                    // Finalize the old session
+                    // Finalize the old session.
+                    // Use pseLastBarEt (the last bar processed while inside the window) as the
+                    // time context for classification, rather than the current barEt which may be
+                    // outside the session window and would misrepresent session-elapsed time.
+                    DateTime finalTimeRef = pseLastBarEt > DateTime.MinValue ? pseLastBarEt : pseWindowEnd;
                     if (pseSession.VolumeProfile.Count > 0)
                     {
                         CalculatePOC(pseSession);
                         CalculateValueArea(pseSession);
                         int finalConf;
-                        pseSession.PseFinal = ClassifyProfileDayType(pseSession, barEt, out finalConf);
+                        pseSession.PseFinal = ClassifyProfileDayType(pseSession, finalTimeRef, out finalConf);
                         pseSession.PseConfirmed = pseSession.PseFinal;
                         pseSession.PseConfidence = finalConf;
                     }
