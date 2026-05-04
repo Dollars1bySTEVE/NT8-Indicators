@@ -3362,7 +3362,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             ForceRefresh();
         }
 
-        #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region OnMarketDepth — Level 2 order book
 
