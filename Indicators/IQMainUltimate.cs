@@ -2278,7 +2278,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Range(30, 360)]
         [Display(Name = "Min Minutes Before Double-Dist", Order = 16, GroupName = "18. Profile Shape Engine",
-            Description = "Minimum elapsed minutes from session open before a b (Double-Distribution) classification can be assigned. Prevents premature b labels early in the session. Default 120.")]
+            Description = "Minimum elapsed minutes from session open before the bimodal double-distribution form of 'b' can be assigned. The two-peak bimodal test (valley between peaks) is skipped until this time has elapsed. The rotational lower-skew form of 'b' is not affected by this guard. Default 120.")]
         public int MinMinutesBeforeAllowDoubleDist { get; set; }
 
         [NinjaScriptProperty]
@@ -6688,8 +6688,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             double sessLow  = sess.PseSessionLow  < double.MaxValue ? sess.PseSessionLow  : 0;
             double sessRange = (sessHigh > 0 && sessLow > 0) ? sessHigh - sessLow : 0;
 
-            double close = _latestClose;
-            if (close <= 0) return ProfileDayType.Unknown;
+            // Use 'latestClose' to make clear this is the most recent (developing) price,
+            // not a finalized session close.
+            double latestClose = _latestClose;
+            if (latestClose <= 0) return ProfileDayType.Unknown;
 
             // Need at least a minimal range to classify
             if (sessRange <= 0) return ProfileDayType.Unknown;
@@ -6706,7 +6708,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── Close location within session range ───────────────────────────
             // closePct: 0 = at session low, 100 = at session high
             double closePct = sessRange > 0
-                ? Math.Min(100.0, Math.Max(0.0, (close - sessLow) / sessRange * 100.0))
+                ? Math.Min(100.0, Math.Max(0.0, (latestClose - sessLow) / sessRange * 100.0))
                 : 50.0;
 
             bool closeNearHigh = closePct >= (100.0 - CloseNearExtremePct);
@@ -6736,55 +6738,75 @@ namespace NinjaTrader.NinjaScript.Indicators
                 isBimodal = IsBimodalProfile(sess);
 
             // ── Classification logic ──────────────────────────────────────────
+            // trendThreshold: minimum RE to qualify for I classification.
+            // When ibRange == 0 (IB not yet complete), trendThreshold = 0 and I is deferred.
             double trendThreshold = ibRange > 0 ? TrendRE_MultipleOfIB * ibRange : 0;
 
+            // D classification minimum extension: at least 15% of IB range required to qualify.
+            // This prevents trivially small extensions from triggering a D classification.
+            double dMinExtension  = ibRange > 0 ? ibRange * 0.15 : 0;
+
             // I — Strong one-directional trend day
-            // Condition: strong RE (reMax > TrendRE_MultipleOfIB × ibRange) AND close near extreme in same direction
+            // Condition: strong RE (reMax > TrendRE_MultipleOfIB × ibRange) AND close near
+            // the extreme in the same direction as the dominant range extension.
             if (trendThreshold > 0 && reMax > trendThreshold)
             {
                 bool isBullTrend = reHigh > reLow && closeNearHigh;
                 bool isBearTrend = reLow > reHigh && closeNearLow;
                 if (isBullTrend || isBearTrend)
                 {
-                    confidence = Math.Min(100, 50 + (int)((reMax / (ibRange > 0 ? ibRange : 1)) * 15));
+                    // Confidence scales with how far RE exceeds the threshold.
+                    // Each additional 1× IB-multiple beyond the threshold adds ~15 pts
+                    // (empirically calibrated; maximum is clamped at 100).
+                    double ibMultiple = ibRange > 0 ? reMax / ibRange : 0;
+                    confidence = Math.Min(100, 50 + (int)(ibMultiple * 15));
                     return ProfileDayType.I;
                 }
-                // RE is present but close is not at extreme → could still be D
+                // RE is present but close is not at extreme → may still qualify as D or P/b
             }
 
-            // b — Double Distribution (volume lower half + bimodal)
-            // Condition: bimodal AND value area mid in lower half OR close near low
+            // b (bimodal) — Double Distribution: two significant acceptance areas separated
+            // by a low-volume node. Value/volume typically in lower portion.
+            // This is the strict bimodal form of 'b'; the rotational lower-skew form follows.
             if (isBimodal && (valueInLowerHalf || closeNearLow))
             {
+                // Higher confidence for bimodal b than rotational b (stronger structural signal).
                 confidence = 65 + (closeNearLow ? 15 : 0);
                 return ProfileDayType.b;
             }
 
-            // P — Rotational day with upper skew
-            // Condition: value area in upper half + close near high OR upper RE dominant
+            // P — Rotational day with upper skew: value area built in upper portion.
+            // Close near high OR bullish RE dominant.
             if (valueInUpperHalf && (closeNearHigh || reHigh > reLow))
             {
                 confidence = 60 + (closeNearHigh ? 20 : 0);
                 return ProfileDayType.P;
             }
 
-            // b — Rotational day with lower skew (no bimodal required here, but value lower)
+            // b (rotational) — Rotational day with lower skew: value area built in lower portion.
+            // Distinct from bimodal b above: no bimodal requirement, just lower value placement.
+            // Both forms display as 'b' per Market Profile convention; bimodal form ranks higher
+            // (checked first) and generally carries higher confidence when confirmed.
             if (valueInLowerHalf && (closeNearLow || reLow > reHigh))
             {
                 confidence = 60 + (closeNearLow ? 20 : 0);
                 return ProfileDayType.b;
             }
 
-            // D — Single distribution, directional close, moderate extension
-            // Condition: close not near mid AND some extension (RE > 0)
-            if (!closeNearMid && reMax > 0)
+            // D — Single distribution with directional close and meaningful IB extension.
+            // Requires at least dMinExtension (15% of IB) to distinguish from Normal.
+            if (!closeNearMid && reMax >= dMinExtension)
             {
                 confidence = 50 + (closeNearHigh || closeNearLow ? 15 : 0);
                 return ProfileDayType.D;
             }
 
-            // Normal — rotational / balanced: limited extension, close near mid
-            if (closeNearMid && (trendThreshold == 0 || reMax <= trendThreshold * 0.5))
+            // Normal — rotational / balanced: close near mid, limited extension.
+            // Explicitly handle zero-ibRange case to avoid division/comparison with zero.
+            bool limitedExtension = ibRange > 0
+                ? reMax <= trendThreshold * 0.5
+                : sessRange > 0 && reMax <= sessRange * 0.15;
+            if (closeNearMid && limitedExtension)
             {
                 confidence = 55;
                 return ProfileDayType.Normal;
@@ -6836,8 +6858,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 1; i < n; i++)
                 if (smoothed[i] > smoothed[peak1Idx]) peak1Idx = i;
 
-            // Minimum separation: 25% of profile range
-            int minSep = Math.Max(2, n / 4);
+            // Minimum separation between the two peaks: scaled to 1/8 of total levels
+            // (25% was too aggressive for coarse profiles; 1/8 gives a gentler floor
+            // while still requiring meaningful spatial separation between the peaks).
+            int minSep = Math.Max(1, n / 8);
 
             // Find the second peak separated by at least minSep from peak1
             int peak2Idx = -1;
