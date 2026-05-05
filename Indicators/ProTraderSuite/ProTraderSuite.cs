@@ -90,7 +90,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // DX state
         private bool dxReady;
-        private SharpDX.Direct2D1.Factory  d2dFactory;
         private SharpDX.DirectWrite.Factory dWriteFactory;
         private SharpDX.DirectWrite.TextFormat tfTag;
 
@@ -391,14 +390,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 vpTickSize    = Math.Max(TickSize, VpTickBucketSize * TickSize);
                 dWriteFactory = new SharpDX.DirectWrite.Factory();
-                d2dFactory    = new SharpDX.Direct2D1.Factory();
             }
             else if (State == State.Terminated)
             {
                 DisposeDXResources();
                 if (tfTag         != null) { tfTag.Dispose();         tfTag         = null; }
                 if (dWriteFactory != null) { dWriteFactory.Dispose(); dWriteFactory = null; }
-                if (d2dFactory    != null) { d2dFactory.Dispose();    d2dFactory    = null; }
             }
         }
 
@@ -639,8 +636,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             long   size  = e.Volume;
             var    key   = (isBid, e.Position);
 
-            if (size == 0) depthSnap.Remove(key);
-            else           depthSnap[key] = (price, size);
+            if (e.Operation == Operation.Remove || size == 0)
+                depthSnap.Remove(key);
+            else
+                depthSnap[key] = (price, size);
 
             // Throttled history sampling
             DateTime now = DateTime.Now;
@@ -661,7 +660,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (WallThreshold > 0)
             {
                 string wallKey = (isBid ? "Bid" : "Ask") + "_" + price.ToString("F4");
-                if (size >= WallThreshold)
+                bool   isRemove = (e.Operation == Operation.Remove || size == 0);
+
+                if (!isRemove && size >= WallThreshold)
                 {
                     if (!activeWalls.Contains(wallKey))
                     {
@@ -671,15 +672,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                             AlertWallAddedSound, AlertWallAddedRearm);
                     }
                 }
-                else
+                else if (activeWalls.Contains(wallKey))
                 {
-                    if (activeWalls.Contains(wallKey))
-                    {
-                        activeWalls.Remove(wallKey);
-                        FireAlert("WallPulled_" + wallKey, AlertWallPulledEnable, AlertWallPulledPriority,
-                            (isBid ? "Bid" : "Ask") + " wall pulled @ " + price.ToString("F2"),
-                            AlertWallPulledSound, AlertWallPulledRearm);
-                    }
+                    activeWalls.Remove(wallKey);
+                    FireAlert("WallPulled_" + wallKey, AlertWallPulledEnable, AlertWallPulledPriority,
+                        (isBid ? "Bid" : "Ask") + " wall pulled @ " + price.ToString("F2"),
+                        AlertWallPulledSound, AlertWallPulledRearm);
                 }
             }
         }
@@ -691,7 +689,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
-            if (!dxReady || RenderTarget == null) return;
+            base.OnRender(chartControl, chartScale);
+
+            if (RenderTarget == null) return;
+
+            if (!dxReady)
+            {
+                try { CreateDXResources(); }
+                catch (Exception ex) { Print("ProTraderSuite CreateDXResources: " + ex.Message); return; }
+            }
+
+            if (!dxReady) return;
 
             try
             {
@@ -707,9 +715,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowHeatmap)   RenderHeatmap(chartControl, chartScale);
                 if (ShowCdPanel)   RenderCdPanel(chartControl, chartScale);
             }
+            catch (SharpDX.SharpDXException sdxEx)
+            {
+                Print("ProTraderSuite SharpDX error: " + sdxEx.Message);
+                dxReady = false;
+                DisposeDXResources();
+            }
             catch (Exception ex)
             {
-                Log("ProTraderSuite OnRender: " + ex.Message, LogLevel.Error);
+                Print("ProTraderSuite OnRender: " + ex.Message);
             }
         }
 
@@ -1597,10 +1611,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void FillBand(List<Vector2> topLine, List<Vector2> botLine,
             SharpDX.Direct2D1.SolidColorBrush brush)
         {
-            if (topLine.Count < 2 || d2dFactory == null || brush == null) return;
+            if (topLine.Count < 2 || RenderTarget == null || brush == null) return;
             try
             {
-                using (var geo  = new PathGeometry(d2dFactory))
+                using (var geo  = new PathGeometry(RenderTarget.Factory))
                 using (var sink = geo.Open())
                 {
                     sink.BeginFigure(topLine[0], FigureBegin.Filled);
@@ -1620,10 +1634,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                               float x2, float y2Top, float y2Bot,
                               SharpDX.Direct2D1.SolidColorBrush brush)
         {
-            if (d2dFactory == null || brush == null) return;
+            if (RenderTarget == null || brush == null) return;
             try
             {
-                using (var geo  = new PathGeometry(d2dFactory))
+                using (var geo  = new PathGeometry(RenderTarget.Factory))
                 using (var sink = geo.Open())
                 {
                     sink.BeginFigure(new Vector2(x1, y1Top), FigureBegin.Filled);
@@ -1671,18 +1685,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // ─── 01. Bands ────────────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Bands", Order = 1, GroupName = "01. Bands")]
         public bool ShowBands { get; set; }
 
         [Range(1, 200)]
+        [NinjaScriptProperty]
         [Display(Name = "ATR Period", Order = 2, GroupName = "01. Bands")]
         public int AtrPeriod { get; set; }
 
         [Range(0.1, 10.0)]
+        [NinjaScriptProperty]
         [Display(Name = "Band Multiplier", Order = 3, GroupName = "01. Bands")]
         public double BandMultiplier { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Upper Fill Color", Order = 4, GroupName = "01. Bands")]
         public Brush BandUpperFillColor { get; set; }
 
@@ -1694,10 +1712,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Upper Fill Opacity %", Order = 5, GroupName = "01. Bands")]
         public int BandUpperFillOpacity { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Lower Fill Color", Order = 6, GroupName = "01. Bands")]
         public Brush BandLowerFillColor { get; set; }
 
@@ -1709,10 +1729,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Lower Fill Opacity %", Order = 7, GroupName = "01. Bands")]
         public int BandLowerFillOpacity { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Upper Line Color", Order = 8, GroupName = "01. Bands")]
         public Brush BandUpperLineColor { get; set; }
 
@@ -1724,10 +1746,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Upper Line Opacity %", Order = 9, GroupName = "01. Bands")]
         public int BandUpperLineOpacity { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Lower Line Color", Order = 10, GroupName = "01. Bands")]
         public Brush BandLowerLineColor { get; set; }
 
@@ -1739,15 +1763,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Lower Line Opacity %", Order = 11, GroupName = "01. Bands")]
         public int BandLowerLineOpacity { get; set; }
 
         // ─── 02. Baseline ─────────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Baseline", Order = 1, GroupName = "02. Baseline")]
         public bool ShowBaseline { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Baseline Color", Order = 2, GroupName = "02. Baseline")]
         public Brush BaselineColor { get; set; }
 
@@ -1759,15 +1786,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Baseline Opacity %", Order = 3, GroupName = "02. Baseline")]
         public int BaselineOpacity { get; set; }
 
         // ─── 03. VWAP ─────────────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show VWAP", Order = 1, GroupName = "03. VWAP")]
         public bool ShowVwap { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "VWAP Color", Order = 2, GroupName = "03. VWAP")]
         public Brush VwapColor { get; set; }
 
@@ -1779,19 +1809,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "VWAP Opacity %", Order = 3, GroupName = "03. VWAP")]
         public int VwapOpacity { get; set; }
 
         // ─── 04. Structure ────────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Structure", Order = 1, GroupName = "04. Structure")]
         public bool ShowStructure { get; set; }
 
         [Range(1, 20)]
+        [NinjaScriptProperty]
         [Display(Name = "Structure Strength", Order = 2, GroupName = "04. Structure")]
         public int StructureStrength { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "HH Color", Order = 3, GroupName = "04. Structure")]
         public Brush HhColor { get; set; }
 
@@ -1803,6 +1837,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "HL Color", Order = 4, GroupName = "04. Structure")]
         public Brush HlColor { get; set; }
 
@@ -1814,6 +1849,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "LH Color", Order = 5, GroupName = "04. Structure")]
         public Brush LhColor { get; set; }
 
@@ -1825,6 +1861,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "LL Color", Order = 6, GroupName = "04. Structure")]
         public Brush LlColor { get; set; }
 
@@ -1836,6 +1873,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "BOS Color", Order = 7, GroupName = "04. Structure")]
         public Brush BosColor { get; set; }
 
@@ -1847,6 +1885,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "CHoCH Color", Order = 8, GroupName = "04. Structure")]
         public Brush ChochColor { get; set; }
 
@@ -1858,33 +1897,41 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Tag Opacity %", Order = 9, GroupName = "04. Structure")]
         public int TagOpacity { get; set; }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "BOS/CHoCH Opacity %", Order = 10, GroupName = "04. Structure")]
         public int BosChochOpacity { get; set; }
 
         // ─── 05. FVG ──────────────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show FVG", Order = 1, GroupName = "05. FVG")]
         public bool ShowFvg { get; set; }
 
         [Range(0, 50)]
+        [NinjaScriptProperty]
         [Display(Name = "FVG Min Ticks", Order = 2, GroupName = "05. FVG")]
         public int FvgMinTicks { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Require Displacement", Order = 3, GroupName = "05. FVG")]
         public bool RequireDisplacement { get; set; }
 
         [Range(0.1, 5.0)]
+        [NinjaScriptProperty]
         [Display(Name = "Displacement Multiplier", Order = 4, GroupName = "05. FVG")]
         public double DisplacementMultiplier { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Show iFVG (Inverted)", Order = 5, GroupName = "05. FVG")]
         public bool ShowIFvg { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Bull FVG Color", Order = 6, GroupName = "05. FVG")]
         public Brush FvgBullColor { get; set; }
 
@@ -1896,6 +1943,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Bear FVG Color", Order = 7, GroupName = "05. FVG")]
         public Brush FvgBearColor { get; set; }
 
@@ -1907,6 +1955,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "iFVG Color", Order = 8, GroupName = "05. FVG")]
         public Brush FvgIColor { get; set; }
 
@@ -1918,15 +1967,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "FVG Opacity %", Order = 9, GroupName = "05. FVG")]
         public int FvgOpacity { get; set; }
 
         // ─── 06. Key Levels ───────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Key Levels", Order = 1, GroupName = "06. Key Levels")]
         public bool ShowKeyLevels { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Key Level Color", Order = 2, GroupName = "06. Key Levels")]
         public Brush KeyLevelColor { get; set; }
 
@@ -1938,19 +1990,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Key Level Opacity %", Order = 3, GroupName = "06. Key Levels")]
         public int KeyLevelOpacity { get; set; }
 
         // ─── 07. ATR Projections ──────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show ATR Projections", Order = 1, GroupName = "07. ATR Projections")]
         public bool ShowAtrProj { get; set; }
 
         [Range(1, 52)]
+        [NinjaScriptProperty]
         [Display(Name = "Weekly ATR Period", Order = 2, GroupName = "07. ATR Projections")]
         public int WeeklyAtrPeriod { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Daily Proj Color", Order = 3, GroupName = "07. ATR Projections")]
         public Brush DailyProjColor { get; set; }
 
@@ -1962,10 +2018,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Daily Proj Opacity %", Order = 4, GroupName = "07. ATR Projections")]
         public int DailyProjOpacity { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Weekly Proj Color", Order = 5, GroupName = "07. ATR Projections")]
         public Brush WeeklyProjColor { get; set; }
 
@@ -1977,22 +2035,27 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Weekly Proj Opacity %", Order = 6, GroupName = "07. ATR Projections")]
         public int WeeklyProjOpacity { get; set; }
 
         // ─── 08. Order Flow ───────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Bubbles", Order = 1, GroupName = "08. Order Flow")]
         public bool ShowBubbles { get; set; }
 
         [Range(5, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Bubble Max Px", Order = 2, GroupName = "08. Order Flow")]
         public int BubbleMaxPx { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Delta Mode", Order = 3, GroupName = "08. Order Flow")]
         public PtsDeltaMode DeltaMode { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Buy Bubble Color", Order = 4, GroupName = "08. Order Flow")]
         public Brush BubbleBuyColor { get; set; }
 
@@ -2004,6 +2067,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Sell Bubble Color", Order = 5, GroupName = "08. Order Flow")]
         public Brush BubbleSellColor { get; set; }
 
@@ -2015,39 +2079,48 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Bubble Opacity %", Order = 6, GroupName = "08. Order Flow")]
         public int BubbleOpacity { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Volume Text", Order = 7, GroupName = "08. Order Flow")]
         public bool ShowVolumeText { get; set; }
 
         // ─── 09. Text ─────────────────────────────────────────────────────────────
 
         [Range(6f, 24f)]
+        [NinjaScriptProperty]
         [Display(Name = "Tag Font Size", Order = 1, GroupName = "09. Text")]
         public float TagFontSize { get; set; }
 
         // ─── 10. Volume Profile ───────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Volume Profile", Order = 1, GroupName = "10. Volume Profile")]
         public bool ShowVp { get; set; }
 
         [Range(10, 300)]
+        [NinjaScriptProperty]
         [Display(Name = "VP Width Px", Order = 2, GroupName = "10. Volume Profile")]
         public int VpWidthPx { get; set; }
 
         [Range(1, 50)]
+        [NinjaScriptProperty]
         [Display(Name = "VP Tick Bucket Size", Order = 3, GroupName = "10. Volume Profile")]
         public int VpTickBucketSize { get; set; }
 
         [Range(50, 95)]
+        [NinjaScriptProperty]
         [Display(Name = "Value Area %", Order = 4, GroupName = "10. Volume Profile")]
         public int VpValueAreaPct { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Split Buy/Sell", Order = 5, GroupName = "10. Volume Profile")]
         public bool VpSplitBuySell { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Buy Color", Order = 6, GroupName = "10. Volume Profile")]
         public Brush VpBuyColor { get; set; }
 
@@ -2059,6 +2132,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Sell Color", Order = 7, GroupName = "10. Volume Profile")]
         public Brush VpSellColor { get; set; }
 
@@ -2070,6 +2144,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Total Color", Order = 8, GroupName = "10. Volume Profile")]
         public Brush VpTotalColor { get; set; }
 
@@ -2081,6 +2156,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "POC Color", Order = 9, GroupName = "10. Volume Profile")]
         public Brush VpPocColor { get; set; }
 
@@ -2092,6 +2168,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Value Area Color", Order = 10, GroupName = "10. Volume Profile")]
         public Brush VpVaColor { get; set; }
 
@@ -2103,41 +2180,51 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Histogram Opacity %", Order = 11, GroupName = "10. Volume Profile")]
         public int VpHistoOpacity { get; set; }
 
         // ─── 11. DOM Heatmap ──────────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Heatmap", Order = 1, GroupName = "11. DOM Heatmap")]
         public bool ShowHeatmap { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Heatmap Mode", Order = 2, GroupName = "11. DOM Heatmap")]
         public PtsHeatmapMode HeatmapMode { get; set; }
 
         [Range(20, 200)]
+        [NinjaScriptProperty]
         [Display(Name = "Strip Width Px", Order = 3, GroupName = "11. DOM Heatmap")]
         public int HeatmapStripWidthPx { get; set; }
 
         [Range(5, 50)]
+        [NinjaScriptProperty]
         [Display(Name = "Depth Levels", Order = 4, GroupName = "11. DOM Heatmap")]
         public int HeatmapDepthLevels { get; set; }
 
         [Range(30, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "History Seconds", Order = 5, GroupName = "11. DOM Heatmap")]
         public int HeatmapHistorySeconds { get; set; }
 
         [Range(1, 20)]
+        [NinjaScriptProperty]
         [Display(Name = "Sample Rate Hz", Order = 6, GroupName = "11. DOM Heatmap")]
         public int HeatmapSampleRateHz { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Size Labels", Order = 7, GroupName = "11. DOM Heatmap")]
         public bool ShowSizeLabels { get; set; }
 
         [Range(0L, 100000L)]
+        [NinjaScriptProperty]
         [Display(Name = "Wall Threshold (lots)", Order = 8, GroupName = "11. DOM Heatmap")]
         public long WallThreshold { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Bid Color", Order = 9, GroupName = "11. DOM Heatmap")]
         public Brush HeatmapBidColor { get; set; }
 
@@ -2149,6 +2236,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Ask Color", Order = 10, GroupName = "11. DOM Heatmap")]
         public Brush HeatmapAskColor { get; set; }
 
@@ -2160,28 +2248,35 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(10, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Max Opacity %", Order = 11, GroupName = "11. DOM Heatmap")]
         public int HeatmapMaxOpacity { get; set; }
 
         // ─── 12. Cumulative Delta ─────────────────────────────────────────────────
 
+        [NinjaScriptProperty]
         [Display(Name = "Show CD Panel", Order = 1, GroupName = "12. Cumulative Delta")]
         public bool ShowCdPanel { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Panel Position", Order = 2, GroupName = "12. Cumulative Delta")]
         public PtsCdPanelPos CdPanelPos { get; set; }
 
         [Range(40, 400)]
+        [NinjaScriptProperty]
         [Display(Name = "Panel Height Px", Order = 3, GroupName = "12. Cumulative Delta")]
         public int CdPanelHeightPx { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Session Reset", Order = 4, GroupName = "12. Cumulative Delta")]
         public bool CdSessionReset { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Show Divergence", Order = 5, GroupName = "12. Cumulative Delta")]
         public bool ShowCdDivergence { get; set; }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Up Color", Order = 6, GroupName = "12. Cumulative Delta")]
         public Brush CdUpColor { get; set; }
 
@@ -2193,6 +2288,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Down Color", Order = 7, GroupName = "12. Cumulative Delta")]
         public Brush CdDownColor { get; set; }
 
@@ -2204,6 +2300,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Background Color", Order = 8, GroupName = "12. Cumulative Delta")]
         public Brush CdBgColor { get; set; }
 
@@ -2215,6 +2312,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Zero Line Color", Order = 9, GroupName = "12. Cumulative Delta")]
         public Brush CdZeroLineColor { get; set; }
 
@@ -2226,6 +2324,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [NinjaScriptProperty]
         [Display(Name = "Divergence Dot Color", Order = 10, GroupName = "12. Cumulative Delta")]
         public Brush CdDivColor { get; set; }
 
@@ -2237,134 +2336,171 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [Range(0, 100)]
+        [NinjaScriptProperty]
         [Display(Name = "Panel Opacity %", Order = 11, GroupName = "12. Cumulative Delta")]
         public int CdOpacity { get; set; }
 
         // ─── 13. Alerts ───────────────────────────────────────────────────────────
 
         // FVG Fill
+        [NinjaScriptProperty]
         [Display(Name = "FVG Fill — Enable", Order = 1, GroupName = "13. Alerts")]
         public bool AlertFvgFillEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "FVG Fill — Sound", Order = 2, GroupName = "13. Alerts")]
         public string AlertFvgFillSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "FVG Fill — Priority", Order = 3, GroupName = "13. Alerts")]
         public Priority AlertFvgFillPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "FVG Fill — Rearm Sec", Order = 4, GroupName = "13. Alerts")]
         public int AlertFvgFillRearm { get; set; }
 
         // iFVG Created
+        [NinjaScriptProperty]
         [Display(Name = "iFVG Created — Enable", Order = 5, GroupName = "13. Alerts")]
         public bool AlertIFvgCreatedEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "iFVG Created — Sound", Order = 6, GroupName = "13. Alerts")]
         public string AlertIFvgCreatedSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "iFVG Created — Priority", Order = 7, GroupName = "13. Alerts")]
         public Priority AlertIFvgCreatedPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "iFVG Created — Rearm Sec", Order = 8, GroupName = "13. Alerts")]
         public int AlertIFvgCreatedRearm { get; set; }
 
         // BOS
+        [NinjaScriptProperty]
         [Display(Name = "BOS — Enable", Order = 9, GroupName = "13. Alerts")]
         public bool AlertBosEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "BOS — Sound", Order = 10, GroupName = "13. Alerts")]
         public string AlertBosSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "BOS — Priority", Order = 11, GroupName = "13. Alerts")]
         public Priority AlertBosPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "BOS — Rearm Sec", Order = 12, GroupName = "13. Alerts")]
         public int AlertBosRearm { get; set; }
 
         // CHoCH
+        [NinjaScriptProperty]
         [Display(Name = "CHoCH — Enable", Order = 13, GroupName = "13. Alerts")]
         public bool AlertChochEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "CHoCH — Sound", Order = 14, GroupName = "13. Alerts")]
         public string AlertChochSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "CHoCH — Priority", Order = 15, GroupName = "13. Alerts")]
         public Priority AlertChochPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "CHoCH — Rearm Sec", Order = 16, GroupName = "13. Alerts")]
         public int AlertChochRearm { get; set; }
 
         // ATR Target Hit
+        [NinjaScriptProperty]
         [Display(Name = "ATR Target Hit — Enable", Order = 17, GroupName = "13. Alerts")]
         public bool AlertAtrTargetHitEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "ATR Target Hit — Sound", Order = 18, GroupName = "13. Alerts")]
         public string AlertAtrTargetHitSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "ATR Target Hit — Priority", Order = 19, GroupName = "13. Alerts")]
         public Priority AlertAtrTargetHitPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "ATR Target Hit — Rearm Sec", Order = 20, GroupName = "13. Alerts")]
         public int AlertAtrTargetHitRearm { get; set; }
 
         // CD Divergence
+        [NinjaScriptProperty]
         [Display(Name = "CD Divergence — Enable", Order = 21, GroupName = "13. Alerts")]
         public bool AlertCdDivergenceEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "CD Divergence — Sound", Order = 22, GroupName = "13. Alerts")]
         public string AlertCdDivergenceSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "CD Divergence — Priority", Order = 23, GroupName = "13. Alerts")]
         public Priority AlertCdDivergencePriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "CD Divergence — Rearm Sec", Order = 24, GroupName = "13. Alerts")]
         public int AlertCdDivergenceRearm { get; set; }
 
         // VWAP Cross
+        [NinjaScriptProperty]
         [Display(Name = "VWAP Cross — Enable", Order = 25, GroupName = "13. Alerts")]
         public bool AlertVwapCrossEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "VWAP Cross — Sound", Order = 26, GroupName = "13. Alerts")]
         public string AlertVwapCrossSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "VWAP Cross — Priority", Order = 27, GroupName = "13. Alerts")]
         public Priority AlertVwapCrossPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "VWAP Cross — Rearm Sec", Order = 28, GroupName = "13. Alerts")]
         public int AlertVwapCrossRearm { get; set; }
 
         // Wall Added
+        [NinjaScriptProperty]
         [Display(Name = "Wall Added — Enable", Order = 29, GroupName = "13. Alerts")]
         public bool AlertWallAddedEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Wall Added — Sound", Order = 30, GroupName = "13. Alerts")]
         public string AlertWallAddedSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Wall Added — Priority", Order = 31, GroupName = "13. Alerts")]
         public Priority AlertWallAddedPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "Wall Added — Rearm Sec", Order = 32, GroupName = "13. Alerts")]
         public int AlertWallAddedRearm { get; set; }
 
         // Wall Pulled
+        [NinjaScriptProperty]
         [Display(Name = "Wall Pulled — Enable", Order = 33, GroupName = "13. Alerts")]
         public bool AlertWallPulledEnable { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Wall Pulled — Sound", Order = 34, GroupName = "13. Alerts")]
         public string AlertWallPulledSound { get; set; }
 
+        [NinjaScriptProperty]
         [Display(Name = "Wall Pulled — Priority", Order = 35, GroupName = "13. Alerts")]
         public Priority AlertWallPulledPriority { get; set; }
 
         [Range(1, 3600)]
+        [NinjaScriptProperty]
         [Display(Name = "Wall Pulled — Rearm Sec", Order = 36, GroupName = "13. Alerts")]
         public int AlertWallPulledRearm { get; set; }
 
