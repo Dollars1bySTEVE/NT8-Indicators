@@ -417,8 +417,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Finalise previous bar's order-flow data when a new bar starts
                 if (CurrentBar != lastBubbleBar && lastBubbleBar >= 0 && ShowBubbles)
                 {
-                    double netVol = barBuyVol + barSellVol;
-                    if (netVol > 0)
+                    double totalVol = barBuyVol + barSellVol;
+                    if (totalVol > 0)
                     {
                         bool isBuy = barBuyVol >= barSellVol;
                         int  off   = CurrentBar - lastBubbleBar;
@@ -429,7 +429,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         {
                             BarIndex = lastBubbleBar,
                             Price    = bblPrice,
-                            Volume   = netVol,
+                            Volume   = totalVol,
                             IsBuy    = isBuy
                         });
                         if (bubbles.Count > 500)
@@ -924,10 +924,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 (sessionLow  + dailyAtr,        "LOD+1D",  false),
                 (sessionHigh - dailyAtr,        "HOD-1D",  false),
-                (sessionLow  + dailyAtr  * 0.5, "LOD+½D",  false),
-                (sessionHigh - dailyAtr  * 0.5, "HOD-½D",  false),
-                (sessionLow  + weeklyAtr * 0.5, "LOD+½W",  true),
-                (sessionHigh - weeklyAtr * 0.5, "HOD-½W",  true),
+                (sessionLow  + dailyAtr  * 0.5, "LOD+.5D", false),
+                (sessionHigh - dailyAtr  * 0.5, "HOD-.5D", false),
+                (sessionLow  + weeklyAtr * 0.5, "LOD+.5W", true),
+                (sessionHigh - weeklyAtr * 0.5, "HOD-.5W", true),
             };
 
             float totalH = RenderTarget.Size.Height;
@@ -1035,10 +1035,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     float buyW  = (float)(VpWidthPx * kv.Value.BuyVol  / maxBucketVol);
                     float sellW = (float)(VpWidthPx * kv.Value.SellVol / maxBucketVol);
-                    float mid0  = vpLeft + (float)(VpWidthPx * kv.Value.Total / maxBucketVol / 2f);
+                    float splitMidpoint = vpLeft + (float)(VpWidthPx * kv.Value.Total / maxBucketVol / 2f);
 
                     RenderTarget.FillRectangle(
-                        new SharpDX.RectangleF(mid0, yTop, buyW / 2f, rowH),
+                        new SharpDX.RectangleF(splitMidpoint, yTop, buyW / 2f, rowH),
                         isPoc ? dxVpPoc : (isVa ? dxVpVa : dxVpBuy));
                     RenderTarget.FillRectangle(
                         new SharpDX.RectangleF(vpLeft, yTop, sellW / 2f, rowH),
@@ -1298,7 +1298,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             dxHeatAsk = ToDx(HeatmapAskColor, HeatmapMaxOpacity);
 
             // CD panel
-            dxCdUp   = ToDx(CdUpColor,      CdOpacity);
+            dxCdUp   = ToDx(CdUpColor,       CdOpacity);
             dxCdDown = ToDx(CdDownColor,     CdOpacity);
             dxCdBg   = ToDx(CdBgColor,       80);
             dxCdZero = ToDx(CdZeroLineColor, 80);
