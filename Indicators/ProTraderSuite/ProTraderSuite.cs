@@ -18,10 +18,20 @@ using NinjaTrader.Gui.Tools;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.Core.FloatingPoint;
-using NinjaTrader.NinjaScript.DrawingTools;
 using SharpDX;
 using SharpDX.Direct2D1;
 using SharpDX.DirectWrite;
+
+// Unambiguous type aliases — resolve SharpDX vs System.Windows.Media conflicts
+using DxBrush        = SharpDX.Direct2D1.Brush;
+using DxSolidBrush   = SharpDX.Direct2D1.SolidColorBrush;
+using DxEllipse      = SharpDX.Direct2D1.Ellipse;
+using DxPathGeometry = SharpDX.Direct2D1.PathGeometry;
+using DxFactory      = SharpDX.DirectWrite.Factory;
+using MediaBrush     = System.Windows.Media.Brush;
+using MediaBrushes   = System.Windows.Media.Brushes;
+using MediaColor     = System.Windows.Media.Color;
+using MediaSCB       = System.Windows.Media.SolidColorBrush;
 #endregion
 
 public enum PtsDeltaMode   { ProxyByClose, TrueBidAskDelta }
@@ -783,7 +793,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float x = (float)chartControl.GetXByBarIndex(ChartBars, i);
                 float y = (float)chartScale.GetYByValue(mid[offset]);
                 RenderTarget.DrawEllipse(
-                    new Ellipse(new Vector2(x, y), 2f, 2f),
+                    new DxEllipse(new Vector2(x, y), 2f, 2f),
                     dxBaseline, 1.5f);
             }
         }
@@ -982,7 +992,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float r = Math.Max(3f, (float)(BubbleMaxPx * Math.Sqrt(b.Volume / maxVol)));
 
                 var brush = b.IsBuy ? dxBubbleBuy : dxBubbleSell;
-                RenderTarget.FillEllipse(new Ellipse(new Vector2(x, y), r, r), brush);
+                RenderTarget.FillEllipse(new DxEllipse(new Vector2(x, y), r, r), brush);
 
                 if (ShowVolumeText && r > 10f && tfTag != null)
                 {
@@ -1223,7 +1233,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 float x = (float)chartControl.GetXByBarIndex(ChartBars, barIdx);
                 float y = isBull ? panelBot - 6f : panelTop + 6f;
-                RenderTarget.FillEllipse(new Ellipse(new Vector2(x, y), 4f, 4f), dxCdDiv);
+                RenderTarget.FillEllipse(new DxEllipse(new Vector2(x, y), 4f, 4f), dxCdDiv);
             }
 
             // Panel label
@@ -1239,7 +1249,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ═══════════════════════════════════════════════════════════════════════════
         #region DX Resource management
 
-        protected override void OnRenderTargetChanged()
+        public override void OnRenderTargetChanged()
         {
             DisposeDXResources();
             if (RenderTarget != null)
@@ -1618,7 +1628,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (topLine.Count < 2 || RenderTarget == null || brush == null) return;
             try
             {
-                using (var geo  = new PathGeometry(RenderTarget.Factory))
+                using (var geo  = new DxPathGeometry(RenderTarget.Factory))
                 using (var sink = geo.Open())
                 {
                     sink.BeginFigure(topLine[0], FigureBegin.Filled);
@@ -1641,7 +1651,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (RenderTarget == null || brush == null) return;
             try
             {
-                using (var geo  = new PathGeometry(RenderTarget.Factory))
+                using (var geo  = new DxPathGeometry(RenderTarget.Factory))
                 using (var sink = geo.Open())
                 {
                     sink.BeginFigure(new Vector2(x1, y1Top), FigureBegin.Filled);
@@ -1706,7 +1716,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Upper Fill Color", Order = 4, GroupName = "01. Bands")]
-        public Brush BandUpperFillColor { get; set; }
+        public MediaBrush BandUpperFillColor { get; set; }
 
         [Browsable(false)]
         public string BandUpperFillColorSerializable
@@ -1723,7 +1733,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Lower Fill Color", Order = 6, GroupName = "01. Bands")]
-        public Brush BandLowerFillColor { get; set; }
+        public MediaBrush BandLowerFillColor { get; set; }
 
         [Browsable(false)]
         public string BandLowerFillColorSerializable
@@ -1740,7 +1750,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Upper Line Color", Order = 8, GroupName = "01. Bands")]
-        public Brush BandUpperLineColor { get; set; }
+        public MediaBrush BandUpperLineColor { get; set; }
 
         [Browsable(false)]
         public string BandUpperLineColorSerializable
@@ -1757,7 +1767,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Lower Line Color", Order = 10, GroupName = "01. Bands")]
-        public Brush BandLowerLineColor { get; set; }
+        public MediaBrush BandLowerLineColor { get; set; }
 
         [Browsable(false)]
         public string BandLowerLineColorSerializable
@@ -1780,7 +1790,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Baseline Color", Order = 2, GroupName = "02. Baseline")]
-        public Brush BaselineColor { get; set; }
+        public MediaBrush BaselineColor { get; set; }
 
         [Browsable(false)]
         public string BaselineColorSerializable
@@ -1803,7 +1813,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "VWAP Color", Order = 2, GroupName = "03. VWAP")]
-        public Brush VwapColor { get; set; }
+        public MediaBrush VwapColor { get; set; }
 
         [Browsable(false)]
         public string VwapColorSerializable
@@ -1831,7 +1841,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "HH Color", Order = 3, GroupName = "04. Structure")]
-        public Brush HhColor { get; set; }
+        public MediaBrush HhColor { get; set; }
 
         [Browsable(false)]
         public string HhColorSerializable
@@ -1843,7 +1853,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "HL Color", Order = 4, GroupName = "04. Structure")]
-        public Brush HlColor { get; set; }
+        public MediaBrush HlColor { get; set; }
 
         [Browsable(false)]
         public string HlColorSerializable
@@ -1855,7 +1865,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "LH Color", Order = 5, GroupName = "04. Structure")]
-        public Brush LhColor { get; set; }
+        public MediaBrush LhColor { get; set; }
 
         [Browsable(false)]
         public string LhColorSerializable
@@ -1867,7 +1877,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "LL Color", Order = 6, GroupName = "04. Structure")]
-        public Brush LlColor { get; set; }
+        public MediaBrush LlColor { get; set; }
 
         [Browsable(false)]
         public string LlColorSerializable
@@ -1879,7 +1889,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "BOS Color", Order = 7, GroupName = "04. Structure")]
-        public Brush BosColor { get; set; }
+        public MediaBrush BosColor { get; set; }
 
         [Browsable(false)]
         public string BosColorSerializable
@@ -1891,7 +1901,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "CHoCH Color", Order = 8, GroupName = "04. Structure")]
-        public Brush ChochColor { get; set; }
+        public MediaBrush ChochColor { get; set; }
 
         [Browsable(false)]
         public string ChochColorSerializable
@@ -1937,7 +1947,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bull FVG Color", Order = 6, GroupName = "05. FVG")]
-        public Brush FvgBullColor { get; set; }
+        public MediaBrush FvgBullColor { get; set; }
 
         [Browsable(false)]
         public string FvgBullColorSerializable
@@ -1949,7 +1959,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bear FVG Color", Order = 7, GroupName = "05. FVG")]
-        public Brush FvgBearColor { get; set; }
+        public MediaBrush FvgBearColor { get; set; }
 
         [Browsable(false)]
         public string FvgBearColorSerializable
@@ -1961,7 +1971,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "iFVG Color", Order = 8, GroupName = "05. FVG")]
-        public Brush FvgIColor { get; set; }
+        public MediaBrush FvgIColor { get; set; }
 
         [Browsable(false)]
         public string FvgIColorSerializable
@@ -1984,7 +1994,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Key Level Color", Order = 2, GroupName = "06. Key Levels")]
-        public Brush KeyLevelColor { get; set; }
+        public MediaBrush KeyLevelColor { get; set; }
 
         [Browsable(false)]
         public string KeyLevelColorSerializable
@@ -2012,7 +2022,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Daily Proj Color", Order = 3, GroupName = "07. ATR Projections")]
-        public Brush DailyProjColor { get; set; }
+        public MediaBrush DailyProjColor { get; set; }
 
         [Browsable(false)]
         public string DailyProjColorSerializable
@@ -2029,7 +2039,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Weekly Proj Color", Order = 5, GroupName = "07. ATR Projections")]
-        public Brush WeeklyProjColor { get; set; }
+        public MediaBrush WeeklyProjColor { get; set; }
 
         [Browsable(false)]
         public string WeeklyProjColorSerializable
@@ -2061,7 +2071,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Buy Bubble Color", Order = 4, GroupName = "08. Order Flow")]
-        public Brush BubbleBuyColor { get; set; }
+        public MediaBrush BubbleBuyColor { get; set; }
 
         [Browsable(false)]
         public string BubbleBuyColorSerializable
@@ -2073,7 +2083,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Sell Bubble Color", Order = 5, GroupName = "08. Order Flow")]
-        public Brush BubbleSellColor { get; set; }
+        public MediaBrush BubbleSellColor { get; set; }
 
         [Browsable(false)]
         public string BubbleSellColorSerializable
@@ -2126,7 +2136,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Buy Color", Order = 6, GroupName = "10. Volume Profile")]
-        public Brush VpBuyColor { get; set; }
+        public MediaBrush VpBuyColor { get; set; }
 
         [Browsable(false)]
         public string VpBuyColorSerializable
@@ -2138,7 +2148,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Sell Color", Order = 7, GroupName = "10. Volume Profile")]
-        public Brush VpSellColor { get; set; }
+        public MediaBrush VpSellColor { get; set; }
 
         [Browsable(false)]
         public string VpSellColorSerializable
@@ -2150,7 +2160,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Total Color", Order = 8, GroupName = "10. Volume Profile")]
-        public Brush VpTotalColor { get; set; }
+        public MediaBrush VpTotalColor { get; set; }
 
         [Browsable(false)]
         public string VpTotalColorSerializable
@@ -2162,7 +2172,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "POC Color", Order = 9, GroupName = "10. Volume Profile")]
-        public Brush VpPocColor { get; set; }
+        public MediaBrush VpPocColor { get; set; }
 
         [Browsable(false)]
         public string VpPocColorSerializable
@@ -2174,7 +2184,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Value Area Color", Order = 10, GroupName = "10. Volume Profile")]
-        public Brush VpVaColor { get; set; }
+        public MediaBrush VpVaColor { get; set; }
 
         [Browsable(false)]
         public string VpVaColorSerializable
@@ -2230,7 +2240,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bid Color", Order = 9, GroupName = "11. DOM Heatmap")]
-        public Brush HeatmapBidColor { get; set; }
+        public MediaBrush HeatmapBidColor { get; set; }
 
         [Browsable(false)]
         public string HeatmapBidColorSerializable
@@ -2242,7 +2252,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Ask Color", Order = 10, GroupName = "11. DOM Heatmap")]
-        public Brush HeatmapAskColor { get; set; }
+        public MediaBrush HeatmapAskColor { get; set; }
 
         [Browsable(false)]
         public string HeatmapAskColorSerializable
@@ -2282,7 +2292,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Up Color", Order = 6, GroupName = "12. Cumulative Delta")]
-        public Brush CdUpColor { get; set; }
+        public MediaBrush CdUpColor { get; set; }
 
         [Browsable(false)]
         public string CdUpColorSerializable
@@ -2294,7 +2304,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Down Color", Order = 7, GroupName = "12. Cumulative Delta")]
-        public Brush CdDownColor { get; set; }
+        public MediaBrush CdDownColor { get; set; }
 
         [Browsable(false)]
         public string CdDownColorSerializable
@@ -2306,7 +2316,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Background Color", Order = 8, GroupName = "12. Cumulative Delta")]
-        public Brush CdBgColor { get; set; }
+        public MediaBrush CdBgColor { get; set; }
 
         [Browsable(false)]
         public string CdBgColorSerializable
@@ -2318,7 +2328,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Zero Line Color", Order = 9, GroupName = "12. Cumulative Delta")]
-        public Brush CdZeroLineColor { get; set; }
+        public MediaBrush CdZeroLineColor { get; set; }
 
         [Browsable(false)]
         public string CdZeroLineColorSerializable
@@ -2330,7 +2340,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Divergence Dot Color", Order = 10, GroupName = "12. Cumulative Delta")]
-        public Brush CdDivColor { get; set; }
+        public MediaBrush CdDivColor { get; set; }
 
         [Browsable(false)]
         public string CdDivColorSerializable
