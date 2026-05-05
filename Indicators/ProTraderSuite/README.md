@@ -221,12 +221,6 @@ Each of the 9 alert events has four independent settings:
 
 ---
 
-## Screenshots
-
-*← Add chart screenshots here after attaching the indicator to an NQ/ES 5-minute chart.*
-
----
-
 ## License
 
 MIT — see the root [`README.md`](../../README.md) or repository license file.

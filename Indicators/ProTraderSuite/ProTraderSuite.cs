@@ -539,7 +539,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         double h  = BarsArray[1].GetHigh(i);
                         double l  = BarsArray[1].GetLow(i);
-                        int    pi = (i + 1 < BarsArray[1].Count) ? i + 1 : i;
+                        // Clamp to last valid index so the oldest bar uses H-L as its true range
+                        int    pi = Math.Min(i + 1, BarsArray[1].Count - 1);
                         double pc = BarsArray[1].GetClose(pi);
                         double tr = Math.Max(h - l,
                                     Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
@@ -558,7 +559,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     double h  = BarsArray[2].GetHigh(i);
                     double l  = BarsArray[2].GetLow(i);
-                    int    pi = (i + 1 < BarsArray[2].Count) ? i + 1 : i;
+                    // Clamp to last valid index so the oldest bar uses H-L as its true range
+                    int    pi = Math.Min(i + 1, BarsArray[2].Count - 1);
                     double pc = BarsArray[2].GetClose(pi);
                     double tr = Math.Max(h - l,
                                 Math.Max(Math.Abs(h - pc), Math.Abs(l - pc)));
@@ -1406,10 +1408,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < s * 2 + 1) return;
 
             bool isSHigh = true, isSLow = true;
+            // Pivot high at High[s]: must be greater than the s bars to the right (newer: i = 0..s-1)
+            // and the s bars to the left (older: i = s+1..2s, accessed as High[s+1+i] for i=0..s-1).
             for (int i = 0; i < s; i++)
             {
-                if (High[s] <= High[i]       || High[s] <= High[s + 1 + i]) isSHigh = false;
-                if (Low[s]  >= Low[i]        || Low[s]  >= Low[s  + 1 + i]) isSLow  = false;
+                if (High[s] <= High[i]    || High[s] <= High[s + 1 + i]) isSHigh = false;
+                if (Low[s]  >= Low[i]     || Low[s]  >= Low[s  + 1 + i]) isSLow  = false;
             }
 
             int pivotBar = CurrentBar - s;
