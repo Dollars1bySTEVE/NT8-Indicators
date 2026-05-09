@@ -103,6 +103,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.StrokeStyle dxSolidStyle, dxDashStyle, dxDotStyle;
         // Text formats
         private SharpDX.DirectWrite.TextFormat dxLabelFmt, dxDashFmt, dxDashHdrFmt, dxWatermarkFmt;
+        private SharpDX.DirectWrite.Factory dxWriteFactory;
         #endregion
 
         #region OnStateChange
@@ -718,7 +719,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool hasEql    = activeEql != null && activeEql.Active;
             dashLiquidity  = (hasEqh && hasEql) ? "EQH+EQL" : hasEqh ? "EQH" : hasEql ? "EQL" : "—";
             double p618    = GetFibPrice(0.618);
-            int tickDecimals = Instrument.MasterInstrument.TickSize.ToString().Length;
+            int tickDecimals = Instrument.MasterInstrument.Digits;
             dashFib618     = p618 > 0 ? p618.ToString("F" + tickDecimals.ToString()) : "—";
             dashATR        = atr.ToString("F" + tickDecimals.ToString());
             dashNearFib    = nearestFibLevel != 0 ? (nearestFibLevel * 100).ToString("F1") + "%" : "—";
@@ -846,12 +847,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxDotStyle   = new SharpDX.Direct2D1.StrokeStyle(rt.Factory, dotProps);
 
                 // Text formats
-                var dwf = new SharpDX.DirectWrite.Factory();
-                dxLabelFmt    = new SharpDX.DirectWrite.TextFormat(dwf, "Arial", DashboardFontSize);
-                dxDashFmt     = new SharpDX.DirectWrite.TextFormat(dwf, "Arial", DashboardFontSize);
-                dxDashHdrFmt  = new SharpDX.DirectWrite.TextFormat(dwf, "Arial", DashboardFontSize + 1f) { FontWeight = SharpDX.DirectWrite.FontWeight.Bold };
-                dxWatermarkFmt= new SharpDX.DirectWrite.TextFormat(dwf, "Arial", 22f);
-                dwf.Dispose();
+                dxWriteFactory = new SharpDX.DirectWrite.Factory();
+                dxLabelFmt    = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
+                dxDashFmt     = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
+                dxDashHdrFmt  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize + 1f) { FontWeight = SharpDX.DirectWrite.FontWeight.Bold };
+                dxWatermarkFmt= new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", 22f);
 
                 dxReady = true;
             }
@@ -872,6 +872,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxDotStyle);
             DisposeRef(ref dxLabelFmt);        DisposeRef(ref dxDashFmt);
             DisposeRef(ref dxDashHdrFmt);      DisposeRef(ref dxWatermarkFmt);
+            DisposeRef(ref dxWriteFactory);
         }
 
         private static void DisposeRef<T>(ref T r) where T : class, IDisposable
@@ -994,7 +995,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool[]   shown  = { ShowFib0236, ShowFib0382, ShowFib0500, ShowFib0618, ShowFib0786, ShowTargetN050, ShowTargetN0618 };
             string[] labels = { "0.236", "0.382", "0.500", "0.618", "0.786", "-0.5", "-0.618" };
 
-            var strokeStyle = GetStrokeStyle(FibStructLineStyle.Dashed);
+            var strokeStyle = GetStrokeStyle(StructureLineStyle);
             for (int i = 0; i < ratios.Length; i++)
             {
                 if (!shown[i]) continue;
