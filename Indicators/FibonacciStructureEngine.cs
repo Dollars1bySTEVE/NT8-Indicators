@@ -719,9 +719,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool hasEql    = activeEql != null && activeEql.Active;
             dashLiquidity  = (hasEqh && hasEql) ? "EQH+EQL" : hasEqh ? "EQH" : hasEql ? "EQL" : "—";
             double p618    = GetFibPrice(0.618);
-            int tickDecimals = Instrument.MasterInstrument.Digits;
-            dashFib618     = p618 > 0 ? p618.ToString("F" + tickDecimals.ToString()) : "—";
-            dashATR        = atr.ToString("F" + tickDecimals.ToString());
+            int priceDecimals = Instrument.MasterInstrument.Digits;
+            dashFib618     = p618 > 0 ? p618.ToString("F" + priceDecimals.ToString()) : "—";
+            dashATR        = atr.ToString("F" + priceDecimals.ToString());
             dashNearFib    = nearestFibLevel != 0 ? (nearestFibLevel * 100).ToString("F1") + "%" : "—";
             dashTF         = BarsPeriod.Value + " " + BarsPeriod.BarsPeriodType.ToString();
         }
@@ -847,7 +847,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxDotStyle   = new SharpDX.Direct2D1.StrokeStyle(rt.Factory, dotProps);
 
                 // Text formats
-                dxWriteFactory = new SharpDX.DirectWrite.Factory();
+                dxWriteFactory = new SharpDX.DirectWrite.Factory(SharpDX.DirectWrite.FactoryType.Shared);
                 dxLabelFmt    = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
                 dxDashFmt     = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
                 dxDashHdrFmt  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize + 1f) { FontWeight = SharpDX.DirectWrite.FontWeight.Bold };
