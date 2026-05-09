@@ -322,7 +322,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // 7. Engulf/sweep/CHoCH signals evaluated with current confluence/zone values.
                 // dashSignal is reset to "—" here; it retains its value during the forming bar
                 // that follows, which is intentional (signal stays visible for one bar after
-                // confirmation, matching Pine's bar-persistent plotting).  It resets again at
+                // confirmation, matching Pine's bar-persistent plotting). It resets again at
                 // the start of the next confirmed-bar cycle.
                 dashSignal = "—";
                 DetectSignals(atr, co);
