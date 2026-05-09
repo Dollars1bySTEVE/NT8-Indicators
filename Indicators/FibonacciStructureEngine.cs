@@ -196,12 +196,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 WebhookJsonFormat  = false;
 
                 // 08. Colors
-                BullColor       = (System.Windows.Media.Brush)new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xE6, 0x76));
-                BearColor       = (System.Windows.Media.Brush)new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x52, 0x52));
-                FibLineColor    = (System.Windows.Media.Brush)new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x42, 0xA5, 0xF5));
-                ConfluenceColor = (System.Windows.Media.Brush)new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD6, 0x00));
-                EqColor         = (System.Windows.Media.Brush)new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB3, 0x88, 0xFF));
-                SweepColor      = (System.Windows.Media.Brush)new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x91, 0x00));
+                BullColor       = CreateFrozenBrush(0x00, 0xE6, 0x76);
+                BearColor       = CreateFrozenBrush(0xFF, 0x52, 0x52);
+                FibLineColor    = CreateFrozenBrush(0x42, 0xA5, 0xF5);
+                ConfluenceColor = CreateFrozenBrush(0xFF, 0xD6, 0x00);
+                EqColor         = CreateFrozenBrush(0xB3, 0x88, 0xFF);
+                SweepColor      = CreateFrozenBrush(0xFF, 0x91, 0x00);
 
                 // 09. Visual / Rendering
                 Theme          = FibStructTheme.Auto;
@@ -1543,6 +1543,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             catch { return new SharpDX.Color4(0.5f, 0.5f, 0.5f, alpha); }
         }
+
+        private static System.Windows.Media.Brush CreateFrozenBrush(byte r, byte g, byte b)
+        {
+            var brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(r, g, b));
+            if (brush.CanFreeze)
+                brush.Freeze();
+            return brush;
+        }
+
+        private static System.Windows.Media.Brush FreezeBrush(System.Windows.Media.Brush brush)
+        {
+            if (brush != null && brush.CanFreeze && !brush.IsFrozen)
+                brush.Freeze();
+            return brush;
+        }
         #endregion
 
         #region Properties — 01. Main Settings
@@ -1761,7 +1776,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string BullColorSerializable
         {
             get { return Serialize.BrushToString(BullColor); }
-            set { BullColor = Serialize.StringToBrush(value); }
+            set { BullColor = FreezeBrush(Serialize.StringToBrush(value)); }
         }
 
         [NinjaScriptProperty]
@@ -1773,7 +1788,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string BearColorSerializable
         {
             get { return Serialize.BrushToString(BearColor); }
-            set { BearColor = Serialize.StringToBrush(value); }
+            set { BearColor = FreezeBrush(Serialize.StringToBrush(value)); }
         }
 
         [NinjaScriptProperty]
@@ -1785,7 +1800,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string FibLineColorSerializable
         {
             get { return Serialize.BrushToString(FibLineColor); }
-            set { FibLineColor = Serialize.StringToBrush(value); }
+            set { FibLineColor = FreezeBrush(Serialize.StringToBrush(value)); }
         }
 
         [NinjaScriptProperty]
@@ -1797,7 +1812,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string ConfluenceColorSerializable
         {
             get { return Serialize.BrushToString(ConfluenceColor); }
-            set { ConfluenceColor = Serialize.StringToBrush(value); }
+            set { ConfluenceColor = FreezeBrush(Serialize.StringToBrush(value)); }
         }
 
         [NinjaScriptProperty]
@@ -1809,7 +1824,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string EqColorSerializable
         {
             get { return Serialize.BrushToString(EqColor); }
-            set { EqColor = Serialize.StringToBrush(value); }
+            set { EqColor = FreezeBrush(Serialize.StringToBrush(value)); }
         }
 
         [NinjaScriptProperty]
@@ -1821,7 +1836,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string SweepColorSerializable
         {
             get { return Serialize.BrushToString(SweepColor); }
-            set { SweepColor = Serialize.StringToBrush(value); }
+            set { SweepColor = FreezeBrush(Serialize.StringToBrush(value)); }
         }
         #endregion
 
