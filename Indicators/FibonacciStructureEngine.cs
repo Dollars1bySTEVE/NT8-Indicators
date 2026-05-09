@@ -294,7 +294,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Update body EMA for engulfing on confirmed bar
                 double body = Math.Abs(Close[co] - Open[co]);
                 prevBodyEma = bodyEma;
-                double alpha = 2.0 / 15.0; // EMA(14)
+                // EMA(14): alpha = 2 / (period + 1) = 2 / (14 + 1) = 2/15 ≈ 0.1333
+                double alpha = 2.0 / 15.0;
                 bodyEma = (bodyEma <= 0) ? body : alpha * body + (1.0 - alpha) * bodyEma;
 
                 // 3. Liquidity sweeps (confirmed bar, independent of visual toggle)
@@ -303,7 +304,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // 4. BOS/CHoCH structure (confirmed bar)
                 DetectStructureBreaks(co);
 
-                // Reset signal display each confirmed bar
+                // Reset signal display to "—" before signal detection so the row shows "—"
+                // if no signal fires this bar, or the actual signal if one is detected below.
                 dashSignal = "—";
 
                 // 5. Engulfing patterns + signals (confirmed bar)
@@ -586,7 +588,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 fibSwingLowIdx = swLow1Idx;
                                 fibLowIsLive   = false;
                             }
-                            // Live high starts at the break bar's high
+                            // Live high starts at the break bar's high.
+                            // EndBarIdx is always <= CurrentBar because DetectStructureBreaks sets it to
+                            // CurrentBar - offset (0 for historical, 1 for realtime IsFirstTickOfBar).
+                            // Math.Max(0,...) is a safety guard; in practice the offset is 0 or 1.
                             fibSwingHigh    = High[Math.Max(0, CurrentBar - latest.EndBarIdx)];
                             fibSwingHighIdx = latest.EndBarIdx;
                             fibHighIsLive   = true;
@@ -599,7 +604,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 fibSwingHighIdx = swHigh1Idx;
                                 fibHighIsLive   = false;
                             }
-                            // Live low starts at the break bar's low
+                            // Live low starts at the break bar's low (same EndBarIdx invariant as above).
                             fibSwingLow    = Low[Math.Max(0, CurrentBar - latest.EndBarIdx)];
                             fibSwingLowIdx = latest.EndBarIdx;
                             fibLowIsLive   = true;
@@ -706,7 +711,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (swHigh1 > 0 && (Math.Abs(price - swHigh1) <= tol || (Low[0] <= swHigh1 + tol && High[0] >= swHigh1 - tol))) rawWeight += 1.0;
             if (swLow1  > 0 && (Math.Abs(price - swLow1)  <= tol || (Low[0] <= swLow1  + tol && High[0] >= swLow1  - tol))) rawWeight += 1.0;
 
-            // Current-bar sweep boost: +2.0 if enabled (sweep happened this bar or previous confirmed bar)
+            // Current-bar sweep boost: +2.0 if enabled.
+            // In historical mode a sweep fires at CurrentBar (offset=0), so distance = 0.
+            // In realtime mode a sweep fires at CurrentBar-1 (offset=1, IsFirstTickOfBar), so distance = 1.
+            // Both cases are covered by <= 1, ensuring the boost applies only to the most-recent confirmed bar.
             bool recentSweep = SweepsBoostConfluence && sweepEvents.Count > 0 && (CurrentBar - sweepEvents[sweepEvents.Count - 1].BarIndex) <= 1;
             if (recentSweep) rawWeight += 2.0;
 
