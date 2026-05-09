@@ -28,7 +28,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     {
         #region Private Data Classes
         private class SwingPoint  { public int BarIndex; public double Price; public bool IsHigh; }
-        private class BosEvent    { public int StartBarIdx; public int EndBarIdx; public double Price; public bool IsBull; public bool IsBos; public bool Rendered; }
+        private class BosEvent    { public int EventId; public int StartBarIdx; public int EndBarIdx; public double Price; public bool IsBull; public bool IsBos; public bool Rendered; }
         private class EqLevel     { public int StartBarIdx; public int EndBarIdx; public double Price; public bool IsHigh; public bool Active; public bool Swept; }
         private class SweepEvent  { public int BarIndex; public double Price; public bool IsHigh; }
         private class SignalEvent  { public int BarIndex; public double Price; public bool IsBuy; public string Trigger; }
@@ -74,9 +74,21 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Premium/discount / confluence
         private bool inPremium, inDiscount;
-        private double confluenceWeight;
+        private double confluenceRawWeight;  // raw weight used for setup comparisons
+        private double confluenceScore;      // 0–100 score used for display and labels
         private string confluenceLabel;
         private double nearestFibLevel;
+
+        // Body EMA for full engulfing logic
+        private double bodyEma;
+        private double prevBodyEma;
+
+        // Fib engine event-tracking (process each structure event exactly once)
+        private int nextEventId;
+        private int lastProcessedEventId;
+
+        // Confirmed-bar gate (prevents intrabar re-fire of structure events)
+        private int lastConfirmedBar;
 
         // Dashboard state (for render thread)
         private string dashTrend, dashFibDir, dashSignal, dashConfluence, dashZone, dashLiquidity, dashFib618, dashATR, dashNearFib, dashTF;
@@ -101,7 +113,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Stroke styles
         private SharpDX.Direct2D1.StrokeStyle dxSolidStyle, dxDashStyle, dxDotStyle;
         // Text formats
-        private SharpDX.DirectWrite.TextFormat dxLabelFmt, dxDashFmt, dxDashHdrFmt;
+        private SharpDX.DirectWrite.TextFormat dxLabelFmt, dxDashFmt, dxDashHdrFmt, dxWatermarkFmt;
         private SharpDX.DirectWrite.Factory dxWriteFactory;
         #endregion
 
@@ -189,6 +201,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // 09. Visual / Rendering
                 Theme          = FibStructTheme.Auto;
+                ShowWatermark  = true;
                 FibLineOpacity = 70;
                 ZoneOpacity    = 20;
                 LineOpacity    = 90;
@@ -230,6 +243,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 warmupBars = Math.Max(SwingDetectionLength * 3, 50);
                 lastBuyAlertBar = lastSellAlertBar = lastBosAlertBar = lastChochAlertBar = lastSweepHAlertBar = lastSweepLAlertBar = -999;
                 dashSignal = "—";
+                bodyEma = 0;
+                prevBodyEma = 0;
+                nextEventId = 0;
+                lastProcessedEventId = -1;
+                lastConfirmedBar = -1;
+                confluenceRawWeight = 0;
+                confluenceScore = 0;
 
                 atrSeries = ATR(14);
             }
@@ -252,29 +272,52 @@ namespace NinjaTrader.NinjaScript.Indicators
             double atr = (atrSeries != null && CurrentBar >= 14) ? atrSeries[0] : TickSize * 10;
             if (atr <= 0 || double.IsNaN(atr)) atr = TickSize * 10;
 
-            // 1. Detect swings
+            // Determine whether this update represents a confirmed (closed) bar.
+            // Historical: every call is a fully confirmed bar (index 0 = the bar just closed).
+            // Realtime:   IsFirstTickOfBar fires on the first tick of a new bar, meaning
+            //             index 1 = the bar that just closed.
+            bool isNewConfirmedBar = (CurrentBar > lastConfirmedBar) &&
+                                     (State == State.Historical || IsFirstTickOfBar);
+            // Confirmed bar offset: 0 during historical, 1 during realtime IsFirstTickOfBar
+            int co = (State == State.Historical) ? 0 : (isNewConfirmedBar ? 1 : -1);
+
+            // 1. Detect swings (always — uses pivotBar offset internally)
             DetectSwings(atr);
 
-            // 2. EQH/EQL detection
+            // 2. EQH/EQL detection (always — logic is independent of visual toggle)
             DetectEqualLevels(atr);
 
-            // 3. Liquidity sweeps
-            DetectSweeps(atr);
+            if (isNewConfirmedBar)
+            {
+                lastConfirmedBar = CurrentBar;
 
-            // 4. BOS/CHoCH structure
-            DetectStructureBreaks();
+                // Update body EMA for engulfing on confirmed bar
+                double body = Math.Abs(Close[co] - Open[co]);
+                prevBodyEma = bodyEma;
+                double alpha = 2.0 / 15.0; // EMA(14)
+                bodyEma = (bodyEma <= 0) ? body : alpha * body + (1.0 - alpha) * bodyEma;
 
-            // 5. Update Fibonacci engine
+                // 3. Liquidity sweeps (confirmed bar, independent of visual toggle)
+                DetectSweeps(atr, co);
+
+                // 4. BOS/CHoCH structure (confirmed bar)
+                DetectStructureBreaks(co);
+
+                // Reset signal display each confirmed bar
+                dashSignal = "—";
+
+                // 5. Engulfing patterns + signals (confirmed bar)
+                DetectSignals(atr, co);
+            }
+
+            // 6. Update Fibonacci engine (live trailing runs every tick; anchor only on new events)
             UpdateFibEngine();
 
-            // 6. Confluence scoring
+            // 7. Confluence scoring (updates each tick for dashboard responsiveness)
             UpdateConfluence(atr);
 
-            // 7. Premium / discount
+            // 8. Premium / discount
             UpdatePremiumDiscount();
-
-            // 8. Engulfing patterns + signals
-            DetectSignals(atr);
 
             // 9. Update dashboard state
             UpdateDashboardState(atr);
@@ -358,7 +401,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Equal Levels (EQH/EQL)
         private void DetectEqualLevels(double atr)
         {
-            if (!ShowEqhEql) return;
+            // Detection always runs (visual toggle only affects rendering).
             double tol = atr * EqAtrTolerance;
 
             // EQH: two consecutive swing highs within tolerance
@@ -406,9 +449,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
 
         #region Sweeps
-        private void DetectSweeps(double atr)
+        private void DetectSweeps(double atr, int offset)
         {
-            if (!ShowSweeps) return;
+            // Detection always runs (visual toggle only affects rendering).
+            int sweepBar = CurrentBar - offset;
 
             // High sweep reference
             double refHigh       = (activeEqh != null && activeEqh.Active) ? activeEqh.Price : swHigh1;
@@ -416,7 +460,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (refHigh > 0 && refHighAnchor >= 0 && !sweptHighAnchors.Contains(refHighAnchor))
             {
-                if (High[0] > refHigh && Close[0] < refHigh && Open[0] < refHigh)
+                if (High[offset] > refHigh && Close[offset] < refHigh && Open[offset] < refHigh)
                 {
                     sweptHighAnchors.Add(refHighAnchor);
                     lastSweepWasHigh = true;
@@ -424,9 +468,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         activeEqh.Active  = false;
                         activeEqh.Swept   = true;
-                        activeEqh.EndBarIdx = CurrentBar;
+                        activeEqh.EndBarIdx = sweepBar;
                     }
-                    sweepEvents.Add(new SweepEvent { BarIndex = CurrentBar, Price = refHigh, IsHigh = true });
+                    sweepEvents.Add(new SweepEvent { BarIndex = sweepBar, Price = refHigh, IsHigh = true });
                     if (sweepEvents.Count > MaxSweepEvents) sweepEvents.RemoveAt(0);
                     FireSweepAlert(true);
                 }
@@ -438,7 +482,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (refLow > 0 && refLowAnchor >= 0 && !sweptLowAnchors.Contains(refLowAnchor))
             {
-                if (Low[0] < refLow && Close[0] > refLow && Open[0] > refLow)
+                if (Low[offset] < refLow && Close[offset] > refLow && Open[offset] > refLow)
                 {
                     sweptLowAnchors.Add(refLowAnchor);
                     lastSweepWasHigh = false;
@@ -446,9 +490,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         activeEql.Active  = false;
                         activeEql.Swept   = true;
-                        activeEql.EndBarIdx = CurrentBar;
+                        activeEql.EndBarIdx = sweepBar;
                     }
-                    sweepEvents.Add(new SweepEvent { BarIndex = CurrentBar, Price = refLow, IsHigh = false });
+                    sweepEvents.Add(new SweepEvent { BarIndex = sweepBar, Price = refLow, IsHigh = false });
                     if (sweepEvents.Count > MaxSweepEvents) sweepEvents.RemoveAt(0);
                     FireSweepAlert(false);
                 }
@@ -457,12 +501,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
 
         #region Structure Breaks (BOS/CHoCH)
-        private void DetectStructureBreaks()
+        private void DetectStructureBreaks(int offset)
         {
             if (!isWarmedUp) return;
+            int eventBar = CurrentBar - offset;
 
-            bool bullBreak = swHigh1 > 0 && swHigh1Idx >= 0 && Close[0] > swHigh1 && swHigh1Idx != lastBrokenHighIdx;
-            bool bearBreak = swLow1  > 0 && swLow1Idx  >= 0 && Close[0] < swLow1  && swLow1Idx  != lastBrokenLowIdx;
+            bool bullBreak = swHigh1 > 0 && swHigh1Idx >= 0 && Close[offset] > swHigh1 && swHigh1Idx != lastBrokenHighIdx;
+            bool bearBreak = swLow1  > 0 && swLow1Idx  >= 0 && Close[offset] < swLow1  && swLow1Idx  != lastBrokenLowIdx;
 
             // Conflict resolution
             if (bullBreak && bearBreak)
@@ -479,16 +524,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (lastChochDir != 1)
                 {
+                    // CHoCH direction flip — reset BOTH sweep trackers (Pine: lastSweptHighIdx := na; lastSweptLowIdx := na)
                     lastChochDir = 1;
+                    sweptHighAnchors.Clear();
                     sweptLowAnchors.Clear();
                 }
 
-                if (ShowBosCHoCH)
-                {
-                    var ev = new BosEvent { StartBarIdx = swHigh1Idx, EndBarIdx = CurrentBar, Price = swHigh1, IsBull = true, IsBos = isBos };
-                    bosEvents.Add(ev);
-                    if (bosEvents.Count > MaxBosEvents) bosEvents.RemoveAt(0);
-                }
+                var ev = new BosEvent { EventId = nextEventId++, StartBarIdx = swHigh1Idx, EndBarIdx = eventBar, Price = swHigh1, IsBull = true, IsBos = isBos };
+                bosEvents.Add(ev);
+                if (bosEvents.Count > MaxBosEvents) bosEvents.RemoveAt(0);
 
                 FireBosChochAlert(true, isBos);
             }
@@ -501,16 +545,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (lastChochDir != -1)
                 {
+                    // CHoCH direction flip — reset BOTH sweep trackers
                     lastChochDir = -1;
                     sweptHighAnchors.Clear();
+                    sweptLowAnchors.Clear();
                 }
 
-                if (ShowBosCHoCH)
-                {
-                    var ev = new BosEvent { StartBarIdx = swLow1Idx, EndBarIdx = CurrentBar, Price = swLow1, IsBull = false, IsBos = isBos };
-                    bosEvents.Add(ev);
-                    if (bosEvents.Count > MaxBosEvents) bosEvents.RemoveAt(0);
-                }
+                var ev = new BosEvent { EventId = nextEventId++, StartBarIdx = swLow1Idx, EndBarIdx = eventBar, Price = swLow1, IsBull = false, IsBos = isBos };
+                bosEvents.Add(ev);
+                if (bosEvents.Count > MaxBosEvents) bosEvents.RemoveAt(0);
 
                 FireBosChochAlert(false, isBos);
             }
@@ -520,43 +563,98 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Fibonacci Engine
         private void UpdateFibEngine()
         {
-            if (bosEvents.Count == 0) return;
-            var latest = bosEvents[bosEvents.Count - 1];
-
-            if (!latest.IsBos)
+            // Process new structure events exactly once per event (not every tick).
+            if (bosEvents.Count > 0)
             {
-                // CHoCH: flip fib direction
-                fibDirection = latest.IsBull ? 1 : -1;
+                var latest = bosEvents[bosEvents.Count - 1];
+                if (latest.EventId != lastProcessedEventId)
+                {
+                    lastProcessedEventId = latest.EventId;
 
-                if (fibDirection == 1)
-                {
-                    if (swLow1 > 0)  { fibSwingLow = swLow1; fibSwingLowIdx = swLow1Idx; fibLowIsLive = false; }
-                    if (swHigh1 > 0) { fibSwingHigh = swHigh1; fibSwingHighIdx = swHigh1Idx; fibHighIsLive = true; }
-                }
-                else
-                {
-                    if (swHigh1 > 0) { fibSwingHigh = swHigh1; fibSwingHighIdx = swHigh1Idx; fibHighIsLive = false; }
-                    if (swLow1 > 0)  { fibSwingLow = swLow1; fibSwingLowIdx = swLow1Idx; fibLowIsLive = true; }
+                    if (!latest.IsBos)
+                    {
+                        // CHoCH: flip fib direction
+                        // Bullish CHoCH: fibDir = 1; high starts at break-bar high (live), low anchors to latest swing low (locked)
+                        // Bearish CHoCH: fibDir = -1; low starts at break-bar low (live), high anchors to latest swing high (locked)
+                        fibDirection = latest.IsBull ? 1 : -1;
+
+                        if (fibDirection == 1)
+                        {
+                            if (swLow1 > 0)
+                            {
+                                fibSwingLow    = swLow1;
+                                fibSwingLowIdx = swLow1Idx;
+                                fibLowIsLive   = false;
+                            }
+                            // Live high starts at the break bar's high
+                            fibSwingHigh    = High[Math.Max(0, CurrentBar - latest.EndBarIdx)];
+                            fibSwingHighIdx = latest.EndBarIdx;
+                            fibHighIsLive   = true;
+                        }
+                        else
+                        {
+                            if (swHigh1 > 0)
+                            {
+                                fibSwingHigh    = swHigh1;
+                                fibSwingHighIdx = swHigh1Idx;
+                                fibHighIsLive   = false;
+                            }
+                            // Live low starts at the break bar's low
+                            fibSwingLow    = Low[Math.Max(0, CurrentBar - latest.EndBarIdx)];
+                            fibSwingLowIdx = latest.EndBarIdx;
+                            fibLowIsLive   = true;
+                        }
+                    }
+                    else
+                    {
+                        // BOS: update anchors while preserving direction
+                        if (fibDirection == 1)
+                        {
+                            // Update locked low if a new confirmed swing low is available
+                            if (swLow1 > 0 && !fibLowIsLive)
+                            {
+                                fibSwingLow    = swLow1;
+                                fibSwingLowIdx = swLow1Idx;
+                            }
+                            // Extend live high
+                            if (swHigh1 > 0)
+                            {
+                                fibSwingHigh    = swHigh1;
+                                fibSwingHighIdx = swHigh1Idx;
+                                fibHighIsLive   = true;
+                            }
+                        }
+                        else if (fibDirection == -1)
+                        {
+                            // Update locked high if a new confirmed swing high is available
+                            if (swHigh1 > 0 && !fibHighIsLive)
+                            {
+                                fibSwingHigh    = swHigh1;
+                                fibSwingHighIdx = swHigh1Idx;
+                            }
+                            // Extend live low
+                            if (swLow1 > 0)
+                            {
+                                fibSwingLow    = swLow1;
+                                fibSwingLowIdx = swLow1Idx;
+                                fibLowIsLive   = true;
+                            }
+                        }
+                    }
                 }
             }
-            else
-            {
-                // BOS: update anchors while preserving direction
-                if (fibDirection == 1)
-                {
-                    if (swLow1 > 0 && !fibLowIsLive)  { fibSwingLow = swLow1; fibSwingLowIdx = swLow1Idx; }
-                    if (swHigh1 > 0)                   { fibSwingHigh = swHigh1; fibSwingHighIdx = swHigh1Idx; fibHighIsLive = true; }
-                }
-                else if (fibDirection == -1)
-                {
-                    if (swHigh1 > 0 && !fibHighIsLive) { fibSwingHigh = swHigh1; fibSwingHighIdx = swHigh1Idx; }
-                    if (swLow1 > 0)                     { fibSwingLow = swLow1; fibSwingLowIdx = swLow1Idx; fibLowIsLive = true; }
-                }
-            }
 
-            // Live edge trailing
-            if (fibHighIsLive && High[0] > fibSwingHigh) fibSwingHigh = High[0];
-            if (fibLowIsLive  && Low[0]  < fibSwingLow)  fibSwingLow  = Low[0];
+            // Live edge trailing (intrabar — updates price AND bar index)
+            if (fibHighIsLive && High[0] > fibSwingHigh)
+            {
+                fibSwingHigh    = High[0];
+                fibSwingHighIdx = CurrentBar;
+            }
+            if (fibLowIsLive && Low[0] < fibSwingLow)
+            {
+                fibSwingLow    = Low[0];
+                fibSwingLowIdx = CurrentBar;
+            }
         }
 
         private double GetFibPrice(double ratio)
@@ -572,15 +670,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Confluence
         private void UpdateConfluence(double atr)
         {
-            if (fibDirection == 0) { confluenceWeight = 0; confluenceLabel = "None"; nearestFibLevel = 0; return; }
+            if (fibDirection == 0)
+            {
+                confluenceRawWeight = 0;
+                confluenceScore     = 0;
+                confluenceLabel     = "None";
+                nearestFibLevel     = 0;
+                return;
+            }
             double tol = atr * ConfluenceAtrTolerance;
             if (tol <= 0 || double.IsNaN(tol)) tol = TickSize;
 
             double price = Close[0];
-            double weight = 0;
+            double rawWeight = 0;
             double nearestDist = double.MaxValue;
             nearestFibLevel = 0;
 
+            // Pine weights per level (0.236: +1.0 only if shown; others based on level significance)
             double[] ratios  = { 0.236, 0.382, 0.500, 0.618, 0.786, -0.5, -0.618 };
             double[] weights = { 1.0,   1.5,   2.0,   2.5,   1.5,   1.5,  2.5   };
             bool[]   shown   = { ShowFib0236, ShowFib0382, ShowFib0500, ShowFib0618, ShowFib0786, ShowTargetN050, ShowTargetN0618 };
@@ -589,23 +695,24 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 double fp = GetFibPrice(ratios[i]);
                 if (fp <= 0) continue;
+                // 0.236 only adds weight when shown (Pine uses showFib0236 guard)
                 bool near = Math.Abs(price - fp) <= tol || (Low[0] <= fp + tol && High[0] >= fp - tol);
-                if (near && shown[i]) weight += weights[i];
+                if (near && shown[i]) rawWeight += weights[i];
                 double dist = Math.Abs(price - fp);
                 if (dist < nearestDist) { nearestDist = dist; nearestFibLevel = ratios[i]; }
             }
 
-            // Swing high/low confluence
-            if (swHigh1 > 0 && (Math.Abs(price - swHigh1) <= tol || (Low[0] <= swHigh1 + tol && High[0] >= swHigh1 - tol))) weight += 1.0;
-            if (swLow1  > 0 && (Math.Abs(price - swLow1)  <= tol || (Low[0] <= swLow1  + tol && High[0] >= swLow1  - tol))) weight += 1.0;
+            // Latest swing high/low confluence: +1.0 each
+            if (swHigh1 > 0 && (Math.Abs(price - swHigh1) <= tol || (Low[0] <= swHigh1 + tol && High[0] >= swHigh1 - tol))) rawWeight += 1.0;
+            if (swLow1  > 0 && (Math.Abs(price - swLow1)  <= tol || (Low[0] <= swLow1  + tol && High[0] >= swLow1  - tol))) rawWeight += 1.0;
 
-            // Sweep boost
-            bool recentSweep = SweepsBoostConfluence && sweepEvents.Count > 0 && (CurrentBar - sweepEvents[sweepEvents.Count - 1].BarIndex) <= 3;
-            if (recentSweep) weight += 2.0;
+            // Current-bar sweep boost: +2.0 if enabled (sweep happened this bar or previous confirmed bar)
+            bool recentSweep = SweepsBoostConfluence && sweepEvents.Count > 0 && (CurrentBar - sweepEvents[sweepEvents.Count - 1].BarIndex) <= 1;
+            if (recentSweep) rawWeight += 2.0;
 
-            double score = Math.Min(weight * 10.0, 100.0);
-            confluenceWeight = score;
-            confluenceLabel  = score >= 60 ? "Strong" : score >= 30 ? "Moderate" : score > 0 ? "Weak" : "None";
+            confluenceRawWeight = rawWeight;
+            confluenceScore     = Math.Min(rawWeight * 10.0, 100.0);
+            confluenceLabel     = confluenceScore >= 60 ? "Strong" : confluenceScore >= 30 ? "Moderate" : confluenceScore > 0 ? "Weak" : "None";
         }
         #endregion
 
@@ -620,56 +727,105 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
 
         #region Engulfing Patterns
-        private bool IsEngulfingBull(bool strict)
+        // Full Pine-parity engulfing: checks body size, EMA body average, isLongBody, isSmallPrev, bodyIsBigger.
+        private bool IsEngulfingBull(bool strict, int offset)
         {
-            if (CurrentBar < 1) return false;
-            bool currBull = Close[0] > Open[0];
-            bool prevBear = Close[1] < Open[1];
+            if (CurrentBar < offset + 1) return false;
+            bool currBull  = Close[offset]     > Open[offset];
+            bool prevBear  = Close[offset + 1] < Open[offset + 1];
             if (!currBull || !prevBear) return false;
-            if (strict) return Open[0] < Close[1] && Close[0] > Open[1];
-            double currBodyH = Math.Max(Open[0], Close[0]);
-            double currBodyL = Math.Min(Open[0], Close[0]);
-            double prevBodyH = Math.Max(Open[1], Close[1]);
-            double prevBodyL = Math.Min(Open[1], Close[1]);
-            bool strictHigh = Close[0] > Open[1];
-            bool strictLow  = Open[0]  < Close[1];
-            return (strictHigh || strictLow) && currBodyH >= prevBodyH && currBodyL <= prevBodyL;
+
+            double body     = Math.Abs(Close[offset]     - Open[offset]);
+            double priorBody = Math.Abs(Close[offset + 1] - Open[offset + 1]);
+
+            // EMA body averages (running EMA updated each confirmed bar)
+            double bodyAvg  = bodyEma     > 0 ? bodyEma     : body;
+            double priorAvg = prevBodyEma > 0 ? prevBodyEma : priorBody;
+
+            bool isLongBody   = body      > bodyAvg;
+            bool isSmallPrev  = priorBody < priorAvg;
+            bool bodyIsBigger = body      > priorBody;
+
+            if (strict)
+            {
+                // Strict: current long, bigger than previous, previous small, full body engulf
+                return isLongBody && bodyIsBigger && isSmallPrev
+                    && Open[offset] < Close[offset + 1]
+                    && Close[offset] > Open[offset + 1];
+            }
+            else
+            {
+                // Loose: allow equality on one side, but at least one side strictly exceeds
+                bool strictHigh = Close[offset]  > Open[offset + 1];
+                bool strictLow  = Open[offset]   < Close[offset + 1];
+                double currBodyH = Math.Max(Open[offset],     Close[offset]);
+                double currBodyL = Math.Min(Open[offset],     Close[offset]);
+                double prevBodyH = Math.Max(Open[offset + 1], Close[offset + 1]);
+                double prevBodyL = Math.Min(Open[offset + 1], Close[offset + 1]);
+                return bodyIsBigger && (strictHigh || strictLow)
+                    && currBodyH >= prevBodyH && currBodyL <= prevBodyL;
+            }
         }
 
-        private bool IsEngulfingBear(bool strict)
+        private bool IsEngulfingBear(bool strict, int offset)
         {
-            if (CurrentBar < 1) return false;
-            bool currBear = Close[0] < Open[0];
-            bool prevBull = Close[1] > Open[1];
+            if (CurrentBar < offset + 1) return false;
+            bool currBear  = Close[offset]     < Open[offset];
+            bool prevBull  = Close[offset + 1] > Open[offset + 1];
             if (!currBear || !prevBull) return false;
-            if (strict) return Open[0] > Close[1] && Close[0] < Open[1];
-            double currBodyH = Math.Max(Open[0], Close[0]);
-            double currBodyL = Math.Min(Open[0], Close[0]);
-            double prevBodyH = Math.Max(Open[1], Close[1]);
-            double prevBodyL = Math.Min(Open[1], Close[1]);
-            bool strictHigh = Open[0]  > Close[1];
-            bool strictLow  = Close[0] < Open[1];
-            return (strictHigh || strictLow) && currBodyH >= prevBodyH && currBodyL <= prevBodyL;
+
+            double body     = Math.Abs(Close[offset]     - Open[offset]);
+            double priorBody = Math.Abs(Close[offset + 1] - Open[offset + 1]);
+
+            double bodyAvg  = bodyEma     > 0 ? bodyEma     : body;
+            double priorAvg = prevBodyEma > 0 ? prevBodyEma : priorBody;
+
+            bool isLongBody   = body      > bodyAvg;
+            bool isSmallPrev  = priorBody < priorAvg;
+            bool bodyIsBigger = body      > priorBody;
+
+            if (strict)
+            {
+                return isLongBody && bodyIsBigger && isSmallPrev
+                    && Open[offset]  > Close[offset + 1]
+                    && Close[offset] < Open[offset + 1];
+            }
+            else
+            {
+                bool strictHigh = Open[offset]  > Close[offset + 1];
+                bool strictLow  = Close[offset] < Open[offset + 1];
+                double currBodyH = Math.Max(Open[offset],     Close[offset]);
+                double currBodyL = Math.Min(Open[offset],     Close[offset]);
+                double prevBodyH = Math.Max(Open[offset + 1], Close[offset + 1]);
+                double prevBodyL = Math.Min(Open[offset + 1], Close[offset + 1]);
+                return bodyIsBigger && (strictHigh || strictLow)
+                    && currBodyH >= prevBodyH && currBodyL <= prevBodyL;
+            }
         }
         #endregion
 
         #region Signals
-        private void DetectSignals(double atr)
+        private void DetectSignals(double atr, int offset)
         {
             if (!isWarmedUp) return;
-            if (CurrentBar < 2) return;
+            if (CurrentBar < offset + 2) return;
 
-            bool sweepBull = sweepEvents.Count > 0 && !sweepEvents[sweepEvents.Count - 1].IsHigh && sweepEvents[sweepEvents.Count - 1].BarIndex == CurrentBar;
-            bool sweepBear = sweepEvents.Count > 0 &&  sweepEvents[sweepEvents.Count - 1].IsHigh  && sweepEvents[sweepEvents.Count - 1].BarIndex == CurrentBar;
+            int confirmedBar = CurrentBar - offset;
 
-            bool engulfBull = ShowEngulfing && IsEngulfingBull(StrictEngulfing) && (inDiscount || confluenceWeight >= 1.5) && structureBias >= 0;
-            bool engulfBear = ShowEngulfing && IsEngulfingBear(StrictEngulfing) && (inPremium  || confluenceWeight >= 1.5) && structureBias <= 0;
+            // Sweep happened on the confirmed bar
+            bool sweepBull = sweepEvents.Count > 0 && !sweepEvents[sweepEvents.Count - 1].IsHigh && sweepEvents[sweepEvents.Count - 1].BarIndex == confirmedBar;
+            bool sweepBear = sweepEvents.Count > 0 &&  sweepEvents[sweepEvents.Count - 1].IsHigh  && sweepEvents[sweepEvents.Count - 1].BarIndex == confirmedBar;
 
-            bool chochBull = bosEvents.Count > 0 && !bosEvents[bosEvents.Count - 1].IsBos &&  bosEvents[bosEvents.Count - 1].IsBull  && bosEvents[bosEvents.Count - 1].EndBarIdx == CurrentBar;
-            bool chochBear = bosEvents.Count > 0 && !bosEvents[bosEvents.Count - 1].IsBos && !bosEvents[bosEvents.Count - 1].IsBull  && bosEvents[bosEvents.Count - 1].EndBarIdx == CurrentBar;
+            // Use confluenceRawWeight for setup filters (not the 0–100 score)
+            bool engulfBull = ShowEngulfing && IsEngulfingBull(StrictEngulfing, offset) && (inDiscount || confluenceRawWeight >= 1.5) && structureBias >= 0;
+            bool engulfBear = ShowEngulfing && IsEngulfingBear(StrictEngulfing, offset) && (inPremium  || confluenceRawWeight >= 1.5) && structureBias <= 0;
 
-            bool buyRaw  = chochBull || (sweepBull && (inDiscount || confluenceWeight >= 1.5)) || engulfBull;
-            bool sellRaw = chochBear || (sweepBear && (inPremium  || confluenceWeight >= 1.5)) || engulfBear;
+            // CHoCH happened on the confirmed bar
+            bool chochBull = bosEvents.Count > 0 && !bosEvents[bosEvents.Count - 1].IsBos &&  bosEvents[bosEvents.Count - 1].IsBull && bosEvents[bosEvents.Count - 1].EndBarIdx == confirmedBar;
+            bool chochBear = bosEvents.Count > 0 && !bosEvents[bosEvents.Count - 1].IsBos && !bosEvents[bosEvents.Count - 1].IsBull && bosEvents[bosEvents.Count - 1].EndBarIdx == confirmedBar;
+
+            bool buyRaw  = chochBull || (sweepBull && (inDiscount || confluenceRawWeight >= 1.5)) || engulfBull;
+            bool sellRaw = chochBear || (sweepBear && (inPremium  || confluenceRawWeight >= 1.5)) || engulfBear;
 
             if (buyRaw && sellRaw) { buyRaw = false; sellRaw = false; }
 
@@ -678,7 +834,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (buyRaw && cooldownOk)
             {
                 string trigger = BuildTrigger(chochBull, sweepBull, engulfBull);
-                signalEvents.Add(new SignalEvent { BarIndex = CurrentBar, Price = Low[0] - atr * 0.3, IsBuy = true, Trigger = trigger });
+                signalEvents.Add(new SignalEvent { BarIndex = confirmedBar, Price = Low[offset] - atr * 0.3, IsBuy = true, Trigger = trigger });
                 if (signalEvents.Count > MaxSignalEvents) signalEvents.RemoveAt(0);
                 barsSinceLastSignal = 0;
                 dashSignal = "BUY (" + trigger + ")";
@@ -687,7 +843,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (sellRaw && cooldownOk)
             {
                 string trigger = BuildTrigger(chochBear, sweepBear, engulfBear);
-                signalEvents.Add(new SignalEvent { BarIndex = CurrentBar, Price = High[0] + atr * 0.3, IsBuy = false, Trigger = trigger });
+                signalEvents.Add(new SignalEvent { BarIndex = confirmedBar, Price = High[offset] + atr * 0.3, IsBuy = false, Trigger = trigger });
                 if (signalEvents.Count > MaxSignalEvents) signalEvents.RemoveAt(0);
                 barsSinceLastSignal = 0;
                 dashSignal = "SELL (" + trigger + ")";
@@ -708,20 +864,29 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Dashboard State
         private void UpdateDashboardState(double atr)
         {
-            dashTrend      = structureBias > 0 ? "Bullish" : structureBias < 0 ? "Bearish" : "Neutral";
-            dashFibDir     = fibDirection  > 0 ? "Bullish" : fibDirection  < 0 ? "Bearish" : "None";
+            dashTrend  = structureBias > 0 ? "Bullish" : structureBias < 0 ? "Bearish" : "Neutral";
+            // Pine: "Long ↑" / "Short ↓" / "—"
+            dashFibDir = fibDirection  > 0 ? "Long ↑"  : fibDirection  < 0 ? "Short ↓"  : "—";
             if (dashSignal == null) dashSignal = "—";
-            dashConfluence = string.Format("{0:F0}% {1}", confluenceWeight, confluenceLabel);
+            // Dashboard uses confluenceScore (0–100) for display
+            dashConfluence = string.Format("{0:F0}% {1}", confluenceScore, confluenceLabel);
             dashZone       = inPremium ? "Premium" : inDiscount ? "Discount" : "—";
             bool hasEqh    = activeEqh != null && activeEqh.Active;
             bool hasEql    = activeEql != null && activeEql.Active;
             dashLiquidity  = (hasEqh && hasEql) ? "EQH+EQL" : hasEqh ? "EQH" : hasEql ? "EQL" : "—";
             double p618    = GetFibPrice(0.618);
-            int priceDecimals = Instrument.MasterInstrument.Digits;
-            dashFib618     = p618 > 0 ? p618.ToString("F" + priceDecimals.ToString()) : "—";
-            dashATR        = atr.ToString("F" + priceDecimals.ToString());
-            dashNearFib    = nearestFibLevel != 0 ? (nearestFibLevel * 100).ToString("F1") + "%" : "—";
-            dashTF         = BarsPeriod.Value + " " + BarsPeriod.BarsPeriodType.ToString();
+            // Use FormatPrice for safe NT8 price display (avoids invalid Digits property)
+            dashFib618     = p618 > 0 ? Instrument.MasterInstrument.FormatPrice(p618) : "—";
+            dashATR        = Instrument.MasterInstrument.FormatPrice(atr);
+            // Near Fib: show ratio plus ATR distance, e.g. "0.618 (0.12 ATR)"
+            if (nearestFibLevel != 0 && atr > 0)
+            {
+                double nearFibPrice = GetFibPrice(nearestFibLevel);
+                double atrDist      = nearFibPrice > 0 ? Math.Abs(Close[0] - nearFibPrice) / atr : 0;
+                dashNearFib = string.Format("{0:F3} ({1:F2} ATR)", nearestFibLevel, atrDist);
+            }
+            else dashNearFib = "—";
+            dashTF = BarsPeriod.Value + " " + BarsPeriod.BarsPeriodType.ToString();
         }
         #endregion
 
@@ -763,8 +928,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!EnableAlerts) return;
             if (isBos && !AlertOnBos) return;
             if (!isBos && !AlertOnChoch) return;
-            if (CurrentBar - lastBosAlertBar < 5) return;
-            lastBosAlertBar = CurrentBar;
+            // Use separate throttle for BOS vs CHoCH so one cannot suppress the other
+            int lastAlertBar = isBos ? lastBosAlertBar : lastChochAlertBar;
+            if (CurrentBar - lastAlertBar < 5) return;
+            if (isBos) lastBosAlertBar = CurrentBar;
+            else       lastChochAlertBar = CurrentBar;
             string evType = isBos ? "BOS" : "CHoCH";
             string msg = WebhookJsonFormat
                 ? string.Format("{{\"event\":\"{0}\",\"direction\":\"{1}\",\"instrument\":\"{2}\",\"price\":{3:F4},\"bar\":{4}}}",
@@ -811,6 +979,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             try
             {
                 var rt = RenderTarget;
+                bool dark = IsDarkTheme();
                 float fib_a  = FibLineOpacity   / 100f;
                 float zone_a = ZoneOpacity      / 100f;
                 float line_a = LineOpacity      / 100f;
@@ -826,12 +995,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxGoldenZoneBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, ToColor4(FibLineColor,    zone_a));
                 dxTargetZoneBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, ToColor4(ConfluenceColor, zone_a));
 
-                dxDashBgBrush     = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.08f, 0.08f, 0.12f, dash_a));
-                dxDashBorderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.25f, 0.25f, 0.35f, dash_a));
-                dxDashHeaderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.15f, 0.15f, 0.25f, dash_a));
-
-                dxTextBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.95f, 0.95f, 0.95f, 1f));
-                dxMutedBrush     = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.55f, 0.55f, 0.55f, 0.6f));
+                // Theme-aware dashboard colors
+                if (dark)
+                {
+                    dxDashBgBrush     = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.08f, 0.08f, 0.12f, dash_a));
+                    dxDashBorderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.25f, 0.25f, 0.35f, dash_a));
+                    dxDashHeaderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.15f, 0.15f, 0.25f, dash_a));
+                    dxTextBrush       = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.95f, 0.95f, 0.95f, 1f));
+                    dxMutedBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.55f, 0.55f, 0.55f, 0.6f));
+                }
+                else
+                {
+                    // Light theme: dark text on light background
+                    dxDashBgBrush     = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.94f, 0.94f, 0.96f, dash_a));
+                    dxDashBorderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.65f, 0.65f, 0.70f, dash_a));
+                    dxDashHeaderBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.80f, 0.80f, 0.86f, dash_a));
+                    dxTextBrush       = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.08f, 0.08f, 0.10f, 1f));
+                    dxMutedBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.40f, 0.40f, 0.44f, 0.8f));
+                }
 
                 // Stroke styles
                 var solidProps = new SharpDX.Direct2D1.StrokeStyleProperties { LineJoin = SharpDX.Direct2D1.LineJoin.Round };
@@ -843,11 +1024,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 var dotProps = new SharpDX.Direct2D1.StrokeStyleProperties { DashStyle = SharpDX.Direct2D1.DashStyle.Dot, LineJoin = SharpDX.Direct2D1.LineJoin.Round };
                 dxDotStyle   = new SharpDX.Direct2D1.StrokeStyle(rt.Factory, dotProps);
 
-                // Text formats
+                // Text formats — use proper constructor overload (FontWeight cannot be set via object initializer)
                 dxWriteFactory = new SharpDX.DirectWrite.Factory(SharpDX.DirectWrite.FactoryType.Shared);
-                dxLabelFmt    = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
-                dxDashFmt     = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
-                dxDashHdrFmt  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize + 1f) { FontWeight = SharpDX.DirectWrite.FontWeight.Bold };
+                dxLabelFmt    = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial",
+                    SharpDX.DirectWrite.FontWeight.Normal, SharpDX.DirectWrite.FontStyle.Normal,
+                    SharpDX.DirectWrite.FontStretch.Normal, DashboardFontSize);
+                dxDashFmt     = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial",
+                    SharpDX.DirectWrite.FontWeight.Normal, SharpDX.DirectWrite.FontStyle.Normal,
+                    SharpDX.DirectWrite.FontStretch.Normal, DashboardFontSize);
+                dxDashHdrFmt  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial",
+                    SharpDX.DirectWrite.FontWeight.Bold, SharpDX.DirectWrite.FontStyle.Normal,
+                    SharpDX.DirectWrite.FontStretch.Normal, DashboardFontSize + 1f);
+                dxWatermarkFmt = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial",
+                    SharpDX.DirectWrite.FontWeight.Normal, SharpDX.DirectWrite.FontStyle.Italic,
+                    SharpDX.DirectWrite.FontStretch.Normal, DashboardFontSize - 1f);
+                dxWatermarkFmt.TextAlignment      = SharpDX.DirectWrite.TextAlignment.Center;
+                dxWatermarkFmt.ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center;
 
                 dxReady = true;
             }
@@ -867,7 +1059,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxSolidStyle);      DisposeRef(ref dxDashStyle);
             DisposeRef(ref dxDotStyle);
             DisposeRef(ref dxLabelFmt);        DisposeRef(ref dxDashFmt);
-            DisposeRef(ref dxDashHdrFmt);
+            DisposeRef(ref dxDashHdrFmt);      DisposeRef(ref dxWatermarkFmt);
             DisposeRef(ref dxWriteFactory);
         }
 
@@ -895,25 +1087,28 @@ namespace NinjaTrader.NinjaScript.Indicators
             float rtH = rt.Size.Height;
 
             try { RenderEqLevels(chartControl, chartScale, fromBar, toBar); }
-            catch (Exception ex) { Print("FSE EqLevels: " + ex.Message); }
+            catch { }
 
             try { RenderFibLevels(chartControl, chartScale, fromBar, toBar, rtW); }
-            catch (Exception ex) { Print("FSE FibLevels: " + ex.Message); }
+            catch { }
 
             try { RenderBosEvents(chartControl, chartScale, fromBar, toBar); }
-            catch (Exception ex) { Print("FSE Bos: " + ex.Message); }
+            catch { }
 
             try { RenderSweepMarkers(chartControl, chartScale, fromBar, toBar); }
-            catch (Exception ex) { Print("FSE Sweeps: " + ex.Message); }
+            catch { }
 
             try { RenderSwingLabels(chartControl, chartScale, fromBar, toBar); }
-            catch (Exception ex) { Print("FSE SwingLabels: " + ex.Message); }
+            catch { }
 
             try { if (ShowBuySellSignals) RenderSignals(chartControl, chartScale, fromBar, toBar); }
-            catch (Exception ex) { Print("FSE Signals: " + ex.Message); }
+            catch { }
 
             try { if (ShowDashboard && DashboardPosition != FibStructDashboardPosition.Hidden) RenderDashboard(chartControl, chartScale, rtW, rtH); }
-            catch (Exception ex) { Print("FSE Dashboard: " + ex.Message); }
+            catch { }
+
+            try { if (ShowWatermark) RenderWatermark(rtW, rtH); }
+            catch { }
 
         }
         #endregion
@@ -1107,7 +1302,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             int   dw   = DashboardWidth;
             int   rowH = DashRowHeight;
             int   pad  = 8;
-            int   numRows = 13;
+            int   numRows = 12;   // header + 11 data rows
             float dh   = pad * 2 + (rowH * numRows);
 
             float panelX = (float)ChartPanel.X;
@@ -1140,7 +1335,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             float colW = dw - pad * 2;
 
             DrawDashRow(rt, ox + pad, y, colW, rowH, "Trend",      dashTrend      ?? "—", GetTrendBrush(dashTrend));      y += rowH;
-            DrawDashRow(rt, ox + pad, y, colW, rowH, "Fib Dir",    dashFibDir     ?? "—", GetTrendBrush(dashFibDir));     y += rowH;
+            DrawDashRow(rt, ox + pad, y, colW, rowH, "Fib Dir",    dashFibDir     ?? "—", GetFibDirBrush(dashFibDir));    y += rowH;
             DrawDashRow(rt, ox + pad, y, colW, rowH, "Signal",     dashSignal     ?? "—", GetSignalBrush(dashSignal));    y += rowH;
             DrawDashRow(rt, ox + pad, y, colW, rowH, "Confluence", dashConfluence ?? "—", GetConfBrush());                y += rowH;
             DrawDashRow(rt, ox + pad, y, colW, rowH, "Zone",       dashZone       ?? "—", GetZoneBrush(dashZone));        y += rowH;
@@ -1149,8 +1344,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             DrawDashRow(rt, ox + pad, y, colW, rowH, "ATR(14)",    dashATR        ?? "—", dxMutedBrush);                 y += rowH;
             DrawDashRow(rt, ox + pad, y, colW, rowH, "Near Fib",   dashNearFib    ?? "—", dxFibBrush);                   y += rowH;
             DrawDashRow(rt, ox + pad, y, colW, rowH, "TF",         dashTF         ?? "—", dxMutedBrush);                 y += rowH;
-            DrawDashRow(rt, ox + pad, y, colW, rowH, "Version",    "v1.5.2-NT8",          dxMutedBrush);                 y += rowH;
-            DrawDashRow(rt, ox + pad, y, colW, rowH, "WillyAlgo",  "FibStructureEngine",  dxMutedBrush);
+            DrawDashRow(rt, ox + pad, y, colW, rowH, "Version",    "v1.5.2-NT8",          dxMutedBrush);
+        }
+
+        private void RenderWatermark(float rtW, float rtH)
+        {
+            if (dxWatermarkFmt == null || dxMutedBrush == null) return;
+            var rt = RenderTarget;
+            float ww = 200f;
+            float wh = 20f;
+            float wx = (rtW - ww) / 2f;
+            float wy = rtH - wh - 6f;
+            rt.DrawText("WillyAlgoTrader", dxWatermarkFmt,
+                new SharpDX.RectangleF(wx, wy, ww, wh), dxMutedBrush);
         }
 
         private void DrawDashRow(SharpDX.Direct2D1.RenderTarget rt, float x, float y, float w, float rowH,
@@ -1169,6 +1375,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             return dxMutedBrush;
         }
 
+        private SharpDX.Direct2D1.SolidColorBrush GetFibDirBrush(string dir)
+        {
+            if (dir == null) return dxTextBrush;
+            if (dir.Contains("Long"))  return dxBullBrush;
+            if (dir.Contains("Short")) return dxBearBrush;
+            return dxMutedBrush;
+        }
+
         private SharpDX.Direct2D1.SolidColorBrush GetSignalBrush(string sig)
         {
             if (sig == null) return dxTextBrush;
@@ -1179,8 +1393,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private SharpDX.Direct2D1.SolidColorBrush GetConfBrush()
         {
-            if (confluenceWeight >= 60) return dxConfBrush;
-            if (confluenceWeight >= 30) return dxFibBrush;
+            // confluenceScore is 0–100
+            if (confluenceScore >= 60) return dxConfBrush;
+            if (confluenceScore >= 30) return dxFibBrush;
             return dxMutedBrush;
         }
 
@@ -1523,23 +1738,28 @@ namespace NinjaTrader.NinjaScript.Indicators
         public FibStructTheme Theme { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Show Watermark", Order = 2, GroupName = "09. Visual / Rendering",
+            Description = "Render 'WillyAlgoTrader' watermark at bottom-center of chart")]
+        public bool ShowWatermark { get; set; }
+
+        [NinjaScriptProperty]
         [Range(10, 100)]
-        [Display(Name = "Fib Line Opacity (%)", Order = 2, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Fib Line Opacity (%)", Order = 3, GroupName = "09. Visual / Rendering")]
         public int FibLineOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(5, 80)]
-        [Display(Name = "Zone Opacity (%)", Order = 3, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Zone Opacity (%)", Order = 4, GroupName = "09. Visual / Rendering")]
         public int ZoneOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(20, 100)]
-        [Display(Name = "Line Opacity (%)", Order = 4, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Line Opacity (%)", Order = 5, GroupName = "09. Visual / Rendering")]
         public int LineOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(4f, 24f)]
-        [Display(Name = "Marker Size", Order = 5, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Marker Size", Order = 6, GroupName = "09. Visual / Rendering")]
         public float MarkerSize { get; set; }
         #endregion
 
@@ -1571,47 +1791,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
 
         #region NinjaScript generated code
-        // This region was created by NinjaTrader. Do not edit.
+        // This region is intentionally left empty.
+        // NinjaTrader will auto-generate the cache accessor methods on compilation.
+        // The incomplete manually-generated section has been removed to avoid
+        // exposing only SwingDetectionLength while the indicator has many [NinjaScriptProperty] values.
         #endregion
-    }
-}
-
-namespace NinjaTrader.NinjaScript.Indicators
-{
-    public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-    {
-        private FibonacciStructureEngine[] cacheFibonacciStructureEngine;
-
-        public FibonacciStructureEngine FibonacciStructureEngine(int swingDetectionLength)
-        {
-            return FibonacciStructureEngine(Input, swingDetectionLength);
-        }
-
-        public FibonacciStructureEngine FibonacciStructureEngine(ISeries<double> input, int swingDetectionLength)
-        {
-            if (cacheFibonacciStructureEngine != null)
-                foreach (var item in cacheFibonacciStructureEngine)
-                    if (item != null && item.SwingDetectionLength == swingDetectionLength && item.EqualsInput(input))
-                        return item;
-            return CacheIndicator<FibonacciStructureEngine>(
-                new FibonacciStructureEngine() { SwingDetectionLength = swingDetectionLength },
-                input, ref cacheFibonacciStructureEngine);
-        }
-    }
-}
-
-namespace NinjaTrader.NinjaScript.Strategies
-{
-    public partial class Strategy : NinjaTrader.NinjaScript.StrategyBase
-    {
-        public NinjaTrader.NinjaScript.Indicators.FibonacciStructureEngine FibonacciStructureEngine(int swingDetectionLength)
-        {
-            return indicator.FibonacciStructureEngine(Input, swingDetectionLength);
-        }
-
-        public NinjaTrader.NinjaScript.Indicators.FibonacciStructureEngine FibonacciStructureEngine(ISeries<double> input, int swingDetectionLength)
-        {
-            return indicator.FibonacciStructureEngine(input, swingDetectionLength);
-        }
     }
 }
