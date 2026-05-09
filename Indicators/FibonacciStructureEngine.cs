@@ -794,7 +794,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (swLow1  > 0 && (Math.Abs(price - swLow1)  <= tol || (Low[offset] <= swLow1  + tol && High[offset] >= swLow1  - tol))) rawWeight += 1.0;
 
             // Current-bar sweep boost: +2.0 if enabled.
-            // Pine parity: boost applies only when sweep occurs on this scored confirmed bar.
+            // Pine parity: boost applies only when sweep occurs on the confirmed bar
+            // currently being evaluated for confluence.
             int confirmedBar = CurrentBar - offset;
             bool recentSweep = SweepsBoostConfluence && sweepEvents.Count > 0 && sweepEvents[sweepEvents.Count - 1].BarIndex == confirmedBar;
             if (recentSweep) rawWeight += 2.0;
