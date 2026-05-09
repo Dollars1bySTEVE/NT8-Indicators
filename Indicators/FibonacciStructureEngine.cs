@@ -273,7 +273,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < SwingDetectionLength * 2 + 1) return;
 
             isWarmedUp = CurrentBar >= warmupBars;
-            barsSinceLastSignal++;
 
             double atr = (atrSeries != null && CurrentBar >= 14) ? atrSeries[0] : TickSize * 10;
             if (atr <= 0 || double.IsNaN(atr)) atr = TickSize * 10;
@@ -287,12 +286,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Confirmed bar offset: 0 during historical, 1 during realtime IsFirstTickOfBar
             int co = (State == State.Historical) ? 0 : (isNewConfirmedBar ? 1 : -1);
 
-            // 1. EQH/EQL detection (always — logic is independent of visual toggle)
-            DetectEqualLevels(atr);
-
             if (isNewConfirmedBar)
             {
                 lastConfirmedBar = CurrentBar;
+                barsSinceLastSignal++;
 
                 // Update body EMA for engulfing on confirmed bar
                 double body = Math.Abs(Close[co] - Open[co]);
@@ -305,21 +302,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 //    after all right-side bars are closed; never confirm intrabar)
                 DetectSwings(atr, co);
 
-                // 3. Liquidity sweeps (confirmed bar, independent of visual toggle)
+                // 3. EQH/EQL detection — uses newly confirmed swings, independent of visual toggle
+                DetectEqualLevels(atr);
+
+                // 4. Liquidity sweeps (confirmed bar, independent of visual toggle)
                 DetectSweeps(atr, co);
 
-                // 4. BOS/CHoCH structure (confirmed bar)
+                // 5. BOS/CHoCH structure (confirmed bar)
                 DetectStructureBreaks(co);
 
-                // 5. Fibonacci engine — process new structure events and lock/update anchors
+                // 6. Fibonacci engine — process new structure events and lock/update anchors
                 UpdateFibEngineConfirmed();
 
-                // 6. Confluence and premium/discount for the same confirmed bar.
+                // 7. Confluence and premium/discount for the same confirmed bar.
                 //    These must run BEFORE signal evaluation so signals use current values.
                 UpdateConfluence(atr, co);
                 UpdatePremiumDiscount(co);
 
-                // 7. Engulf/sweep/CHoCH signals evaluated with current confluence/zone values.
+                // 8. Engulf/sweep/CHoCH signals evaluated with current confluence/zone values.
                 // dashSignal is reset to "—" here; it retains its value during the forming bar
                 // that follows, which is intentional (signal stays visible for one bar after
                 // confirmation, matching Pine's bar-persistent plotting). It resets again at
@@ -327,7 +327,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dashSignal = "—";
                 DetectSignals(atr, co);
 
-                // 8. Dashboard state snapshot for the confirmed bar
+                // 9. Dashboard state snapshot for the confirmed bar
                 UpdateDashboardState(atr);
             }
 
@@ -343,7 +343,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Dashboard refresh (picks up live confluence/zone for the forming bar)
             UpdateDashboardState(atr);
 
-            // 9. Trim lists to performance limits
+            // 10. Trim lists to performance limits
             TrimLists();
         }
         #endregion
@@ -794,10 +794,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (swLow1  > 0 && (Math.Abs(price - swLow1)  <= tol || (Low[offset] <= swLow1  + tol && High[offset] >= swLow1  - tol))) rawWeight += 1.0;
 
             // Current-bar sweep boost: +2.0 if enabled.
-            // A sweep on the confirmed bar (distance 0) or the bar just before (distance 1)
-            // qualifies so the boost applies correctly in both historical and realtime modes.
+            // Pine parity: boost applies only when sweep occurs on this scored confirmed bar.
             int confirmedBar = CurrentBar - offset;
-            bool recentSweep = SweepsBoostConfluence && sweepEvents.Count > 0 && (confirmedBar - sweepEvents[sweepEvents.Count - 1].BarIndex) <= 1;
+            bool recentSweep = SweepsBoostConfluence && sweepEvents.Count > 0 && sweepEvents[sweepEvents.Count - 1].BarIndex == confirmedBar;
             if (recentSweep) rawWeight += 2.0;
 
             confluenceRawWeight = rawWeight;
