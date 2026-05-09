@@ -1245,7 +1245,28 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             var rt = RenderTarget;
             float xStart = cc.GetXByBarIndex(ChartBars, Math.Max(Math.Min(fibSwingHighIdx, fibSwingLowIdx), fromBar));
-            float xEnd   = Math.Min(rtW, cc.GetXByBarIndex(ChartBars, CurrentBar) + FibExtensionBars * 6f);
+
+            // Estimate pixels per bar from visible bar range so extension scales with zoom.
+            float pixelsPerBar = 6f;
+            int visibleBars = Math.Max(1, toBar - fromBar);
+            if (visibleBars > 1)
+            {
+                float xFrom = cc.GetXByBarIndex(ChartBars, fromBar);
+                float xTo   = cc.GetXByBarIndex(ChartBars, toBar);
+                float span   = xTo - xFrom;
+                if (span > 0f)
+                    pixelsPerBar = span / visibleBars;
+            }
+
+            // Clamp fib line end so labels remain inside the chart panel.
+            const float labelWidth  = 115f;
+            const float labelPadding = 6f;
+            const float edgePadding  = 4f;
+            float panelRight     = (float)(ChartPanel.X + ChartPanel.W);
+            float desiredLineEnd = cc.GetXByBarIndex(ChartBars, CurrentBar) + FibExtensionBars * pixelsPerBar;
+            float maxLineEnd     = panelRight - labelWidth - labelPadding - edgePadding;
+            float xEnd           = Math.Min(desiredLineEnd, maxLineEnd);
+            xEnd = Math.Max(xEnd, xStart + 10f);
 
             // Golden zone fill (0.500 to 0.786)
             {
@@ -1286,7 +1307,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float y = (float)cs.GetYByValue(price);
                 rt.DrawLine(new SharpDX.Vector2(xStart, y), new SharpDX.Vector2(xEnd, y), dxFibBrush, 1f, strokeStyle);
                 string lbl = string.Format("{0}  {1:F4}", labels[i], price);
-                rt.DrawText(lbl, dxLabelFmt, new SharpDX.RectangleF(xEnd + 2, y - 8, 100, 16), dxFibBrush);
+                float labelX = Math.Min(xEnd + labelPadding, panelRight - labelWidth - edgePadding);
+                rt.DrawText(lbl, dxLabelFmt, new SharpDX.RectangleF(labelX, y - 8, labelWidth, 16), dxFibBrush);
             }
         }
         #endregion
