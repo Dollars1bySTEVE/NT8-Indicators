@@ -98,11 +98,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxBullBrush, dxBearBrush, dxFibBrush, dxConfBrush, dxEqBrush, dxSweepBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxGoldenZoneBrush, dxTargetZoneBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxTextBrush, dxMutedBrush, dxDashBgBrush, dxDashBorderBrush, dxDashHeaderBrush;
-        private SharpDX.Direct2D1.SolidColorBrush dxWatermarkBrush;
         // Stroke styles
         private SharpDX.Direct2D1.StrokeStyle dxSolidStyle, dxDashStyle, dxDotStyle;
         // Text formats
-        private SharpDX.DirectWrite.TextFormat dxLabelFmt, dxDashFmt, dxDashHdrFmt, dxWatermarkFmt;
+        private SharpDX.DirectWrite.TextFormat dxLabelFmt, dxDashFmt, dxDashHdrFmt;
         private SharpDX.DirectWrite.Factory dxWriteFactory;
         #endregion
 
@@ -190,7 +189,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // 09. Visual / Rendering
                 Theme          = FibStructTheme.Auto;
-                ShowWatermark  = true;
                 FibLineOpacity = 70;
                 ZoneOpacity    = 20;
                 LineOpacity    = 90;
@@ -834,7 +832,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 dxTextBrush      = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.95f, 0.95f, 0.95f, 1f));
                 dxMutedBrush     = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.55f, 0.55f, 0.55f, 0.6f));
-                dxWatermarkBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0.55f, 0.55f, 0.55f, 0.12f));
 
                 // Stroke styles
                 var solidProps = new SharpDX.Direct2D1.StrokeStyleProperties { LineJoin = SharpDX.Direct2D1.LineJoin.Round };
@@ -851,7 +848,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxLabelFmt    = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
                 dxDashFmt     = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize);
                 dxDashHdrFmt  = new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", DashboardFontSize + 1f) { FontWeight = SharpDX.DirectWrite.FontWeight.Bold };
-                dxWatermarkFmt= new SharpDX.DirectWrite.TextFormat(dxWriteFactory, "Arial", 22f);
 
                 dxReady = true;
             }
@@ -867,11 +863,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxGoldenZoneBrush); DisposeRef(ref dxTargetZoneBrush);
             DisposeRef(ref dxDashBgBrush);     DisposeRef(ref dxDashBorderBrush);
             DisposeRef(ref dxDashHeaderBrush); DisposeRef(ref dxTextBrush);
-            DisposeRef(ref dxMutedBrush);      DisposeRef(ref dxWatermarkBrush);
+            DisposeRef(ref dxMutedBrush);
             DisposeRef(ref dxSolidStyle);      DisposeRef(ref dxDashStyle);
             DisposeRef(ref dxDotStyle);
             DisposeRef(ref dxLabelFmt);        DisposeRef(ref dxDashFmt);
-            DisposeRef(ref dxDashHdrFmt);      DisposeRef(ref dxWatermarkFmt);
+            DisposeRef(ref dxDashHdrFmt);
             DisposeRef(ref dxWriteFactory);
         }
 
@@ -919,8 +915,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             try { if (ShowDashboard && DashboardPosition != FibStructDashboardPosition.Hidden) RenderDashboard(chartControl, chartScale, rtW, rtH); }
             catch (Exception ex) { Print("FSE Dashboard: " + ex.Message); }
 
-            try { if (ShowWatermark) RenderWatermark(rt, rtW, rtH); }
-            catch (Exception ex) { Print("FSE Watermark: " + ex.Message); }
         }
         #endregion
 
@@ -1196,18 +1190,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (zone == "Premium")  return dxBearBrush;
             if (zone == "Discount") return dxBullBrush;
             return dxMutedBrush;
-        }
-        #endregion
-
-        #region Render — Watermark
-        private void RenderWatermark(SharpDX.Direct2D1.RenderTarget rt, float rtW, float rtH)
-        {
-            string text = "WillyAlgoTrader";
-            float textW = 200f;
-            float textH = 30f;
-            float x = (rtW - textW) / 2f;
-            float y = rtH - 40f;
-            rt.DrawText(text, dxWatermarkFmt, new SharpDX.RectangleF(x, y, textW, textH), dxWatermarkBrush);
         }
         #endregion
 
@@ -1541,27 +1523,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         public FibStructTheme Theme { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Watermark", Order = 2, GroupName = "09. Visual / Rendering")]
-        public bool ShowWatermark { get; set; }
-
-        [NinjaScriptProperty]
         [Range(10, 100)]
-        [Display(Name = "Fib Line Opacity (%)", Order = 3, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Fib Line Opacity (%)", Order = 2, GroupName = "09. Visual / Rendering")]
         public int FibLineOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(5, 80)]
-        [Display(Name = "Zone Opacity (%)", Order = 4, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Zone Opacity (%)", Order = 3, GroupName = "09. Visual / Rendering")]
         public int ZoneOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(20, 100)]
-        [Display(Name = "Line Opacity (%)", Order = 5, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Line Opacity (%)", Order = 4, GroupName = "09. Visual / Rendering")]
         public int LineOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Range(4f, 24f)]
-        [Display(Name = "Marker Size", Order = 6, GroupName = "09. Visual / Rendering")]
+        [Display(Name = "Marker Size", Order = 5, GroupName = "09. Visual / Rendering")]
         public float MarkerSize { get; set; }
         #endregion
 
