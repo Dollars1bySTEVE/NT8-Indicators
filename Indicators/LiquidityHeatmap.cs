@@ -673,12 +673,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             var cc = ChartControl;
-            mouseHooked = false;
-            mouseHookPending = false;
+            mouseHookPending = true;
             cc.Dispatcher.InvokeAsync(() =>
             {
                 cc.MouseMove -= OnChartMouseMove;
                 cc.MouseLeave -= OnChartMouseLeave;
+                mouseHooked = false;
+                mouseHookPending = false;
             });
         }
 
