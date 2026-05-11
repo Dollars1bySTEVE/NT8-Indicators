@@ -65,6 +65,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly object syncRoot = new object();
         private const int MaxTradePrints = 10000;
         private const int PersistTradePrints = 5000;
+        private const int MaxQuotePoints = 20000;
 
         private SortedDictionary<double, long> bidBook;
         private SortedDictionary<double, long> askBook;
@@ -686,7 +687,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            bool changed = !ReferenceEquals(hit, hoveredPrint) || !p.Equals(hoverPoint);
+            double moveDx = p.X - hoverPoint.X;
+            double moveDy = p.Y - hoverPoint.Y;
+            bool movedEnough = (moveDx * moveDx + moveDy * moveDy) >= 4.0;
+            bool changed = !ReferenceEquals(hit, hoveredPrint) || movedEnough;
             hoveredPrint = hit;
             hoverPoint = p;
             if (changed)
@@ -757,8 +761,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             quotePoints.Add(new QuotePoint { Time = timeUtc, Bid = currentBid, Ask = currentAsk });
-            if (quotePoints.Count > 20000)
-                quotePoints.RemoveRange(0, quotePoints.Count - 20000);
+            if (quotePoints.Count > MaxQuotePoints)
+                quotePoints.RemoveRange(0, quotePoints.Count - MaxQuotePoints);
         }
 
         private void BuildHeatmapBrushes()
@@ -874,7 +878,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (size <= MaxSizeThreshold)
             {
                 float t = MaxSizeThreshold <= MidSizeThreshold ? 1f : (float)(size - MidSizeThreshold) / (MaxSizeThreshold - MidSizeThreshold);
-                return Lerp(new Color4(0.95f, 0.88f, 0.10f, 0.52f), new Color4(1f, 0.48f, 0.05f, 0.68f), t);
+                return Lerp(new Color4(0.20f, 0.95f, 0.15f, 0.38f), new Color4(1f, 0.48f, 0.05f, 0.68f), t);
             }
 
             return new Color4(1f, 0.10f, 0.05f, 0.80f);
