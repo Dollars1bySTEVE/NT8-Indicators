@@ -11,15 +11,19 @@ using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
+using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 using SharpDX;
 using SharpDX.Direct2D1;
 using SharpDX.DirectWrite;
+using DwFontStyle = SharpDX.DirectWrite.FontStyle;
+using DwFontWeight = SharpDX.DirectWrite.FontWeight;
 using DxBrush = SharpDX.Direct2D1.SolidColorBrush;
 using MediaBrush = System.Windows.Media.Brush;
 using WpfBrush = System.Windows.Media.SolidColorBrush;
+using WpfPoint = System.Windows.Point;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -83,7 +87,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private List<RenderedDot> renderedDots;
 
         private TradePrint hoveredPrint;
-        private Point hoverPoint;
+        private WpfPoint hoverPoint;
         private bool mouseHooked;
         private bool mouseHookPending;
 
@@ -304,11 +308,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxBestBidFillBrush = new DxBrush(RenderTarget, ToDxColor4(BidLineColor, 0.95f));
                 dxBestAskFillBrush = new DxBrush(RenderTarget, ToDxColor4(AskLineColor, 0.95f));
 
-                tfWall = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Bold, FontStyle.Normal, 12f);
-                tfLadder = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Normal, FontStyle.Normal, 10f);
-                tfTooltip = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.SemiBold, FontStyle.Normal, 12f);
-                tfTooltipSmall = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Normal, FontStyle.Normal, 11f);
-                tfBranding = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Normal, FontStyle.Normal, 11f);
+                tfWall = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", DwFontWeight.Bold, DwFontStyle.Normal, 12f);
+                tfLadder = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", DwFontWeight.Normal, DwFontStyle.Normal, 10f);
+                tfTooltip = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", DwFontWeight.SemiBold, DwFontStyle.Normal, 12f);
+                tfTooltipSmall = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", DwFontWeight.Normal, DwFontStyle.Normal, 11f);
+                tfBranding = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", DwFontWeight.Normal, DwFontStyle.Normal, 11f);
             }
             catch
             {
@@ -689,7 +693,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!EnableTradeDots || renderedDots == null)
                 return;
 
-            Point p = e.GetPosition(ChartControl);
+            WpfPoint p = e.GetPosition(ChartControl);
             TradePrint hit = null;
 
             lock (syncRoot)
