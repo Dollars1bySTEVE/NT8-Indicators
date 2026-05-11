@@ -84,6 +84,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private TradePrint hoveredPrint;
         private Point hoverPoint;
         private bool mouseHooked;
+        private bool mouseHookPending;
 
         private double currentBid;
         private double currentAsk;
@@ -647,30 +648,33 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Mouse Handling
         private void HookMouseEvents()
         {
-            if (ChartControl == null || mouseHooked)
+            if (ChartControl == null || mouseHooked || mouseHookPending)
                 return;
 
-            mouseHooked = true;
+            mouseHookPending = true;
             ChartControl.Dispatcher.InvokeAsync(() =>
             {
-                if (ChartControl == null)
+                if (ChartControl == null || !mouseHookPending)
                 {
-                    mouseHooked = false;
+                    mouseHookPending = false;
                     return;
                 }
 
                 ChartControl.MouseMove += OnChartMouseMove;
                 ChartControl.MouseLeave += OnChartMouseLeave;
+                mouseHooked = true;
+                mouseHookPending = false;
             });
         }
 
         private void UnhookMouseEvents()
         {
-            if (ChartControl == null || !mouseHooked)
+            if (ChartControl == null || (!mouseHooked && !mouseHookPending))
                 return;
 
             var cc = ChartControl;
             mouseHooked = false;
+            mouseHookPending = false;
             cc.Dispatcher.InvokeAsync(() =>
             {
                 cc.MouseMove -= OnChartMouseMove;
