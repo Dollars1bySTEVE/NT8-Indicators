@@ -18,6 +18,7 @@ using SharpDX;
 using SharpDX.Direct2D1;
 using SharpDX.DirectWrite;
 using DxBrush = SharpDX.Direct2D1.SolidColorBrush;
+using MediaBrush = System.Windows.Media.Brush;
 using WpfBrush = System.Windows.Media.SolidColorBrush;
 #endregion
 
@@ -824,7 +825,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             return leftX + (float)(ratio * (rightX - leftX));
         }
 
-        private Color4 ToDxColor4(Brush brush, float alpha)
+        private Color4 ToDxColor4(MediaBrush brush, float alpha)
         {
             WpfBrush solid = brush as WpfBrush;
             if (solid == null)
@@ -1029,7 +1030,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Obsolete("Retained for backward compatibility with previously serialized templates/workspaces.")]
         [Browsable(false)]
         [XmlIgnore]
-        public Brush BackgroundColor { get; set; }
+        public MediaBrush BackgroundColor { get; set; }
 
         [Browsable(false)]
         public string BackgroundColorSerializable
@@ -1061,7 +1062,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Wall Color", GroupName = "Walls", Order = 3)]
-        public Brush WallColor { get; set; }
+        public MediaBrush WallColor { get; set; }
 
         [Browsable(false)]
         public string WallColorSerializable
@@ -1089,7 +1090,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Buy Dot Color", GroupName = "Trade Prints (Dots)", Order = 5)]
-        public Brush BuyDotColor { get; set; }
+        public MediaBrush BuyDotColor { get; set; }
 
         [Browsable(false)]
         public string BuyDotColorSerializable
@@ -1101,7 +1102,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Sell Dot Color", GroupName = "Trade Prints (Dots)", Order = 6)]
-        public Brush SellDotColor { get; set; }
+        public MediaBrush SellDotColor { get; set; }
 
         [Browsable(false)]
         public string SellDotColorSerializable
@@ -1117,7 +1118,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bid Line Color", GroupName = "Bid/Ask Line", Order = 2)]
-        public Brush BidLineColor { get; set; }
+        public MediaBrush BidLineColor { get; set; }
 
         [Browsable(false)]
         public string BidLineColorSerializable
@@ -1129,7 +1130,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Ask Line Color", GroupName = "Bid/Ask Line", Order = 3)]
-        public Brush AskLineColor { get; set; }
+        public MediaBrush AskLineColor { get; set; }
 
         [Browsable(false)]
         public string AskLineColorSerializable
@@ -1153,7 +1154,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bid Ladder Color", GroupName = "DOM Ladder", Order = 2)]
-        public Brush BidLadderColor { get; set; }
+        public MediaBrush BidLadderColor { get; set; }
 
         [Browsable(false)]
         public string BidLadderColorSerializable
@@ -1165,7 +1166,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Ask Ladder Color", GroupName = "DOM Ladder", Order = 3)]
-        public Brush AskLadderColor { get; set; }
+        public MediaBrush AskLadderColor { get; set; }
 
         [Browsable(false)]
         public string AskLadderColorSerializable
