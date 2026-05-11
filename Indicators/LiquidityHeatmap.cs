@@ -1026,6 +1026,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "History Snapshots", GroupName = "Heatmap", Order = 4)]
         public int HistorySnapshots { get; set; }
 
+        [Obsolete("Retained for backward compatibility with previously serialized templates/workspaces.")]
+        [Browsable(false)]
+        [XmlIgnore]
+        public Brush BackgroundColor { get; set; }
+
+        [Browsable(false)]
+        public string BackgroundColorSerializable
+        {
+            get { return Serialize.BrushToString(BackgroundColor); }
+            set { BackgroundColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [Display(Name = "Low Size Threshold", GroupName = "Heatmap", Order = 6)]
         public int LowSizeThreshold { get; set; }
