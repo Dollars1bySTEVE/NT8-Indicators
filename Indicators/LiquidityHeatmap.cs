@@ -650,14 +650,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ChartControl == null || mouseHooked)
                 return;
 
+            mouseHooked = true;
             ChartControl.Dispatcher.InvokeAsync(() =>
             {
-                if (ChartControl == null || mouseHooked)
+                if (ChartControl == null)
+                {
+                    mouseHooked = false;
                     return;
+                }
 
                 ChartControl.MouseMove += OnChartMouseMove;
                 ChartControl.MouseLeave += OnChartMouseLeave;
-                mouseHooked = true;
             });
         }
 
@@ -667,11 +670,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             var cc = ChartControl;
+            mouseHooked = false;
             cc.Dispatcher.InvokeAsync(() =>
             {
                 cc.MouseMove -= OnChartMouseMove;
                 cc.MouseLeave -= OnChartMouseLeave;
-                mouseHooked = false;
             });
         }
 
