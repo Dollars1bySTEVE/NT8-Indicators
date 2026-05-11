@@ -29,7 +29,7 @@ Add chart screenshots here after loading the indicator on ES/NQ in live data or 
 
 ## Property Groups
 
-- **Heatmap**: master toggle, visible price levels, snapshot timing/history, thresholds, background.
+- **Heatmap**: master toggle, visible price levels, snapshot timing/history, and thresholds.
 - **Walls**: wall detection toggle, size threshold, wall color.
 - **Trade Prints (Dots)**: min size filter, radius range, buy/sell colors.
 - **Bid/Ask Line**: step-line display, forward extension, and right-edge bid/ask labels.

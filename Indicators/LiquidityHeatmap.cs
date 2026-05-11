@@ -17,6 +17,9 @@ using NinjaTrader.NinjaScript;
 using SharpDX;
 using SharpDX.Direct2D1;
 using SharpDX.DirectWrite;
+using DxBrush = SharpDX.Direct2D1.SolidColorBrush;
+using MediaBrush = System.Windows.Media.Brush;
+using WpfBrush = System.Windows.Media.SolidColorBrush;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -82,25 +85,26 @@ namespace NinjaTrader.NinjaScript.Indicators
         private TradePrint hoveredPrint;
         private Point hoverPoint;
         private bool mouseHooked;
+        private bool mouseHookPending;
 
         private double currentBid;
         private double currentAsk;
         private double currentLast;
 
-        private SolidColorBrush[] dxHeatBrushes;
-        private SolidColorBrush dxWallBrush;
-        private SolidColorBrush dxBidLineBrush;
-        private SolidColorBrush dxAskLineBrush;
-        private SolidColorBrush dxBuyDotBrush;
-        private SolidColorBrush dxSellDotBrush;
-        private SolidColorBrush dxBidLadderBrush;
-        private SolidColorBrush dxAskLadderBrush;
-        private SolidColorBrush dxWhiteBrush;
-        private SolidColorBrush dxTooltipBackgroundBrush;
-        private SolidColorBrush dxTooltipBorderBrush;
-        private SolidColorBrush dxBrandingBrush;
-        private SolidColorBrush dxBestBidFillBrush;
-        private SolidColorBrush dxBestAskFillBrush;
+        private DxBrush[] dxHeatBrushes;
+        private DxBrush dxWallBrush;
+        private DxBrush dxBidLineBrush;
+        private DxBrush dxAskLineBrush;
+        private DxBrush dxBuyDotBrush;
+        private DxBrush dxSellDotBrush;
+        private DxBrush dxBidLadderBrush;
+        private DxBrush dxAskLadderBrush;
+        private DxBrush dxWhiteBrush;
+        private DxBrush dxTooltipBackgroundBrush;
+        private DxBrush dxTooltipBorderBrush;
+        private DxBrush dxBrandingBrush;
+        private DxBrush dxBestBidFillBrush;
+        private DxBrush dxBestAskFillBrush;
 
         private TextFormat tfWall;
         private TextFormat tfLadder;
@@ -127,7 +131,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VisiblePriceLevels = 20;
                 SnapshotIntervalMs = 100;
                 HistorySnapshots = 14400;
-                BackgroundColor = Brushes.Black;
                 LowSizeThreshold = 20;
                 MidSizeThreshold = 80;
                 MaxSizeThreshold = 200;
@@ -287,19 +290,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             try
             {
                 BuildHeatmapBrushes();
-                dxWallBrush = new SolidColorBrush(RenderTarget, ToDxColor4(WallColor, 0.95f));
-                dxBidLineBrush = new SolidColorBrush(RenderTarget, ToDxColor4(BidLineColor, 0.95f));
-                dxAskLineBrush = new SolidColorBrush(RenderTarget, ToDxColor4(AskLineColor, 0.95f));
-                dxBuyDotBrush = new SolidColorBrush(RenderTarget, ToDxColor4(BuyDotColor, 0.85f));
-                dxSellDotBrush = new SolidColorBrush(RenderTarget, ToDxColor4(SellDotColor, 0.85f));
-                dxBidLadderBrush = new SolidColorBrush(RenderTarget, ToDxColor4(BidLadderColor, 0.95f));
-                dxAskLadderBrush = new SolidColorBrush(RenderTarget, ToDxColor4(AskLadderColor, 0.95f));
-                dxWhiteBrush = new SolidColorBrush(RenderTarget, new Color4(1f, 1f, 1f, 1f));
-                dxTooltipBackgroundBrush = new SolidColorBrush(RenderTarget, new Color4(0f, 0f, 0f, 0.78f));
-                dxTooltipBorderBrush = new SolidColorBrush(RenderTarget, new Color4(0.9f, 0.9f, 0.9f, 0.85f));
-                dxBrandingBrush = new SolidColorBrush(RenderTarget, new Color4(1f, 1f, 1f, 0.40f));
-                dxBestBidFillBrush = new SolidColorBrush(RenderTarget, ToDxColor4(BidLineColor, 0.95f));
-                dxBestAskFillBrush = new SolidColorBrush(RenderTarget, ToDxColor4(AskLineColor, 0.95f));
+                dxWallBrush = new DxBrush(RenderTarget, ToDxColor4(WallColor, 0.95f));
+                dxBidLineBrush = new DxBrush(RenderTarget, ToDxColor4(BidLineColor, 0.95f));
+                dxAskLineBrush = new DxBrush(RenderTarget, ToDxColor4(AskLineColor, 0.95f));
+                dxBuyDotBrush = new DxBrush(RenderTarget, ToDxColor4(BuyDotColor, 0.85f));
+                dxSellDotBrush = new DxBrush(RenderTarget, ToDxColor4(SellDotColor, 0.85f));
+                dxBidLadderBrush = new DxBrush(RenderTarget, ToDxColor4(BidLadderColor, 0.95f));
+                dxAskLadderBrush = new DxBrush(RenderTarget, ToDxColor4(AskLadderColor, 0.95f));
+                dxWhiteBrush = new DxBrush(RenderTarget, new Color4(1f, 1f, 1f, 1f));
+                dxTooltipBackgroundBrush = new DxBrush(RenderTarget, new Color4(0f, 0f, 0f, 0.78f));
+                dxTooltipBorderBrush = new DxBrush(RenderTarget, new Color4(0.9f, 0.9f, 0.9f, 0.85f));
+                dxBrandingBrush = new DxBrush(RenderTarget, new Color4(1f, 1f, 1f, 0.40f));
+                dxBestBidFillBrush = new DxBrush(RenderTarget, ToDxColor4(BidLineColor, 0.95f));
+                dxBestAskFillBrush = new DxBrush(RenderTarget, ToDxColor4(AskLineColor, 0.95f));
 
                 tfWall = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Bold, FontStyle.Normal, 12f);
                 tfLadder = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Normal, FontStyle.Normal, 10f);
@@ -646,22 +649,39 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Mouse Handling
         private void HookMouseEvents()
         {
-            if (ChartControl == null || mouseHooked)
+            if (ChartControl == null || mouseHooked || mouseHookPending)
                 return;
 
-            ChartControl.MouseMove += OnChartMouseMove;
-            ChartControl.MouseLeave += OnChartMouseLeave;
-            mouseHooked = true;
+            mouseHookPending = true;
+            ChartControl.Dispatcher.InvokeAsync(() =>
+            {
+                if (ChartControl == null || !mouseHookPending)
+                {
+                    mouseHookPending = false;
+                    return;
+                }
+
+                ChartControl.MouseMove += OnChartMouseMove;
+                ChartControl.MouseLeave += OnChartMouseLeave;
+                mouseHooked = true;
+                mouseHookPending = false;
+            });
         }
 
         private void UnhookMouseEvents()
         {
-            if (ChartControl == null || !mouseHooked)
+            if (ChartControl == null || (!mouseHooked && !mouseHookPending))
                 return;
 
-            ChartControl.MouseMove -= OnChartMouseMove;
-            ChartControl.MouseLeave -= OnChartMouseLeave;
-            mouseHooked = false;
+            var cc = ChartControl;
+            mouseHookPending = true;
+            cc.Dispatcher.InvokeAsync(() =>
+            {
+                cc.MouseMove -= OnChartMouseMove;
+                cc.MouseLeave -= OnChartMouseLeave;
+                mouseHooked = false;
+                mouseHookPending = false;
+            });
         }
 
         private void OnChartMouseMove(object sender, MouseEventArgs e)
@@ -773,12 +793,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     DisposeDx(ref dxHeatBrushes[i]);
             }
 
-            dxHeatBrushes = new SolidColorBrush[64];
+            dxHeatBrushes = new DxBrush[64];
             for (int i = 0; i < dxHeatBrushes.Length; i++)
             {
                 float t = (float)i / (dxHeatBrushes.Length - 1);
                 long synthetic = (long)(t * Math.Max(1, MaxSizeThreshold));
-                dxHeatBrushes[i] = new SolidColorBrush(RenderTarget, SizeToColor(synthetic));
+                dxHeatBrushes[i] = new DxBrush(RenderTarget, SizeToColor(synthetic));
             }
         }
 
@@ -805,11 +825,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             return leftX + (float)(ratio * (rightX - leftX));
         }
 
-        private Color4 ToDxColor4(Brush brush, float alpha)
+        private Color4 ToDxColor4(MediaBrush brush, float alpha)
         {
-            SolidColorBrush solid = brush as SolidColorBrush;
+            WpfBrush solid = brush as WpfBrush;
             if (solid == null)
-                solid = Brushes.White as SolidColorBrush;
+                solid = Brushes.White as WpfBrush;
             var c = solid.Color;
             return new Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
         }
@@ -1007,10 +1027,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "History Snapshots", GroupName = "Heatmap", Order = 4)]
         public int HistorySnapshots { get; set; }
 
+        [Obsolete("Retained for backward compatibility with previously serialized templates/workspaces.")]
+        [Browsable(false)]
         [XmlIgnore]
-        [NinjaScriptProperty]
-        [Display(Name = "Background Color", GroupName = "Heatmap", Order = 5)]
-        public Brush BackgroundColor { get; set; }
+        public MediaBrush BackgroundColor { get; set; }
 
         [Browsable(false)]
         public string BackgroundColorSerializable
@@ -1042,7 +1062,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Wall Color", GroupName = "Walls", Order = 3)]
-        public Brush WallColor { get; set; }
+        public MediaBrush WallColor { get; set; }
 
         [Browsable(false)]
         public string WallColorSerializable
@@ -1070,7 +1090,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Buy Dot Color", GroupName = "Trade Prints (Dots)", Order = 5)]
-        public Brush BuyDotColor { get; set; }
+        public MediaBrush BuyDotColor { get; set; }
 
         [Browsable(false)]
         public string BuyDotColorSerializable
@@ -1082,7 +1102,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Sell Dot Color", GroupName = "Trade Prints (Dots)", Order = 6)]
-        public Brush SellDotColor { get; set; }
+        public MediaBrush SellDotColor { get; set; }
 
         [Browsable(false)]
         public string SellDotColorSerializable
@@ -1098,7 +1118,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bid Line Color", GroupName = "Bid/Ask Line", Order = 2)]
-        public Brush BidLineColor { get; set; }
+        public MediaBrush BidLineColor { get; set; }
 
         [Browsable(false)]
         public string BidLineColorSerializable
@@ -1110,7 +1130,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Ask Line Color", GroupName = "Bid/Ask Line", Order = 3)]
-        public Brush AskLineColor { get; set; }
+        public MediaBrush AskLineColor { get; set; }
 
         [Browsable(false)]
         public string AskLineColorSerializable
@@ -1134,7 +1154,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Bid Ladder Color", GroupName = "DOM Ladder", Order = 2)]
-        public Brush BidLadderColor { get; set; }
+        public MediaBrush BidLadderColor { get; set; }
 
         [Browsable(false)]
         public string BidLadderColorSerializable
@@ -1146,7 +1166,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [NinjaScriptProperty]
         [Display(Name = "Ask Ladder Color", GroupName = "DOM Ladder", Order = 3)]
-        public Brush AskLadderColor { get; set; }
+        public MediaBrush AskLadderColor { get; set; }
 
         [Browsable(false)]
         public string AskLadderColorSerializable
