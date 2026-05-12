@@ -1013,7 +1013,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Range(1, 10000)]
         [Display(Name = "Aggressive Market Orders Filter (min size)", Order = 11, GroupName = "Book Map Style")]
-        public int _AggresiveMarketOrdersFilter { get; set; }
+        public int _AggressiveMarketOrdersFilter { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100000)]
