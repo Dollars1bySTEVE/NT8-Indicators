@@ -832,13 +832,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                         double threshold   = visibleRange * (_AutoCenterThreshold / 100.0);
                         bool   priceNearEdge = currentPrice > (visibleHigh - threshold)
                                             || currentPrice < (visibleLow  + threshold);
-                        if (priceNearEdge)
+
+                        if (priceNearEdge
+                            && (DateTime.Now - _lastAutoCenterInvalidate) >= AUTO_CENTER_INVALIDATE_INTERVAL)
+                        {
+                            _lastAutoCenterInvalidate = DateTime.Now;
                             ChartControl.InvalidateVisual();
+                        }
                     }
                 }
                 catch { }
             }
         }
+
+        private static readonly TimeSpan AUTO_CENTER_INVALIDATE_INTERVAL = TimeSpan.FromMilliseconds(100);
+        private DateTime _lastAutoCenterInvalidate = DateTime.MinValue;
 
         // ── OnMarketDepth — rate-limited ForceRefresh ─────────────────────────
 
