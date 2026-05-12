@@ -25,6 +25,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Linq;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Cbi;
@@ -372,10 +373,11 @@ namespace SightEngine
             int maxLevels = ladderRange;
             int count     = 0;
 
-            // Bids
-            foreach (var kv in bidLevels)
+            // Bids — sorted highest price first (best bid nearest to market at top)
+            foreach (var kv in bidLevels.OrderByDescending(x => x.Key))
             {
-                if (count++ > maxLevels) break;
+                if (count >= maxLevels) break;
+                count++;
                 double price = kv.Key;
                 if (price < visLow || price > visHigh) continue;
                 float y = (float)CHART_SCALE.GetYByValue(price) - tickH * 0.5f;
@@ -391,10 +393,11 @@ namespace SightEngine
             }
 
             count = 0;
-            // Asks
-            foreach (var kv in askLevels)
+            // Asks — sorted lowest price first (best ask nearest to market at top)
+            foreach (var kv in askLevels.OrderBy(x => x.Key))
             {
-                if (count++ > maxLevels) break;
+                if (count >= maxLevels) break;
+                count++;
                 double price = kv.Key;
                 if (price < visLow || price > visHigh) continue;
                 float y = (float)CHART_SCALE.GetYByValue(price) - tickH * 0.5f;
@@ -527,11 +530,10 @@ namespace SightEngine
             if (CHART_SCALE == null || chartControl == null) return;
             if (marketOrderData == null || ChartBarsRef == null) return;
 
-            var orders = marketOrderData.GetSnapshot();
-            foreach (var entry in orders)
+            // Fill the reusable buffer with only the visible bar range — no new list allocation.
+            marketOrderData.CopyFilteredTo(_marketOrdersBuf, fromBar, toBar);
+            foreach (var entry in _marketOrdersBuf)
             {
-                if (entry.BarIndex < fromBar || entry.BarIndex > toBar) continue;
-
                 float x = (float)chartControl.GetXByBarIndex(ChartBarsRef, entry.BarIndex);
                 float y = (float)CHART_SCALE.GetYByValue(entry.Price);
 
@@ -544,7 +546,8 @@ namespace SightEngine
 
         /// <summary>
         /// Draws a horizontal line at the price level with the highest cumulative
-        /// executed volume (Point of Control) across the full chart panel width.
+        /// executed volume (Point of Control) across the full chart panel width,
+        /// including the BookMap column.
         /// </summary>
         public void renderPOCLine()
         {
@@ -560,16 +563,16 @@ namespace SightEngine
 
             _pocStart.X = 0f;
             _pocStart.Y = pocY;
-            _pocEnd.X   = PanelW - marginRight;
+            _pocEnd.X   = PanelW;          // extend to full panel width (includes BookMap column)
             _pocEnd.Y   = pocY;
 
             myDrawLine(ref _pocStart, ref _pocEnd, _pocColor, 1.0f, 2.0f, null);
 
-            // Label
+            // Label at the right edge of the panel
             if (bookmapTextFormat != null)
             {
                 string label = "POC";
-                _genRect.X      = PanelW - marginRight - 40f;
+                _genRect.X      = PanelW - 40f;
                 _genRect.Y      = pocY - 10f;
                 _genRect.Width  = 36f;
                 _genRect.Height = 14f;
@@ -610,6 +613,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Stores the BarMarginRight value that was in place before this indicator
         // applied its own margin, so it can be restored on termination.
         private int _priorBarMarginRight = -1;
+
+        // Reusable buffer for renderAllMarketBars — avoids a new list allocation per frame.
+        private readonly List<SightEngine.MarketOrderEntry> _marketOrdersBuf =
+            new List<SightEngine.MarketOrderEntry>(512);
 
         // Track last bid/ask to classify trade direction
         private double _lastBid;

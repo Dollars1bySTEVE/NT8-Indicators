@@ -436,6 +436,23 @@ namespace SightEngine
                 return new List<MarketOrderEntry>(_orders);
         }
 
+        /// <summary>
+        /// Clears <paramref name="dest"/> then, under a single lock, copies only the
+        /// entries whose <see cref="MarketOrderEntry.BarIndex"/> falls within
+        /// [<paramref name="fromBar"/>, <paramref name="toBar"/>] into it.
+        /// Re-uses the caller-supplied list to avoid a per-frame heap allocation.
+        /// </summary>
+        public void CopyFilteredTo(List<MarketOrderEntry> dest, int fromBar, int toBar)
+        {
+            dest.Clear();
+            lock (_syncRoot)
+            {
+                foreach (var entry in _orders)
+                    if (entry.BarIndex >= fromBar && entry.BarIndex <= toBar)
+                        dest.Add(entry);
+            }
+        }
+
         public void AddOrder(double price, bool isBuy, long volume, DateTime time, int barIndex)
         {
             if (volume <= 0 || price <= 0) return;
