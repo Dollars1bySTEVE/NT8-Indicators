@@ -615,6 +615,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int _priorBarMarginRight = -1;
 
         // Reusable buffer for renderAllMarketBars — avoids a new list allocation per frame.
+        // Initial capacity of 512 covers typical visible-bar ranges without reallocation.
         private readonly List<SightEngine.MarketOrderEntry> _marketOrdersBuf =
             new List<SightEngine.MarketOrderEntry>(512);
 
