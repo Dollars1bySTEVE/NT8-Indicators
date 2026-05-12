@@ -607,6 +607,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime _lastForceRefresh = DateTime.MinValue;
         private const int REFRESH_INTERVAL_MS = 100; // max 10 refreshes/sec
 
+        // Stores the BarMarginRight value that was in place before this indicator
+        // applied its own margin, so it can be restored on termination.
+        private int _priorBarMarginRight = -1;
+
         // Track last bid/ask to classify trade direction
         private double _lastBid;
         private double _lastAsk;
@@ -695,18 +699,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.DataLoaded)
             {
-                // Set once here — not every OnRender frame (Phase 1.5)
+                // Capture the existing margin before we change it so we can restore it on exit
                 if (ChartControl != null)
+                {
+                    _priorBarMarginRight = ChartControl.Properties.BarMarginRight;
                     ChartControl.Properties.BarMarginRight = _BookMarginRight;
+                }
 
                 // Push style settings into the render helper
                 ApplyBookMapStyle();
             }
             else if (State == State.Terminated)
             {
-                // Restore BarMarginRight (Phase 1.6)
-                if (ChartControl != null)
-                    ChartControl.Properties.BarMarginRight = 0;
+                // Restore the BarMarginRight that was set before this indicator was added
+                if (ChartControl != null && _priorBarMarginRight >= 0)
+                    ChartControl.Properties.BarMarginRight = _priorBarMarginRight;
 
                 // Dispose GPU resources
                 wyckoffBM?.DisposeBrushCache();
