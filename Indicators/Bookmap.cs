@@ -1223,12 +1223,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 for (int idx = 0; idx < cacheBookmap.Length; idx++)
                 {
                     if (cacheBookmap[idx] != null
-                        && cacheBookmap[idx]._AggresiveMarketOrdersFilter == aggresiveMarketOrdersFilter
-                        && cacheBookmap[idx]._AutoCenterPrice             == autoCenterPrice
-                        && cacheBookmap[idx]._LadderRange                 == ladderRange
-                        && cacheBookmap[idx]._MarketBarsCalculation       == marketBarsCalculation
-                        && cacheBookmap[idx]._ShowPOCLine                 == showPOCLine
-                        && cacheBookmap[idx]._UseHeatGradient             == useHeatGradient
+                        && cacheBookmap[idx]._AggresiveMarketOrdersFilter  == aggresiveMarketOrdersFilter
+                        && cacheBookmap[idx]._AutoCenterPrice              == autoCenterPrice
+                        && cacheBookmap[idx]._AutoCenterThreshold          == autoCenterThreshold
+                        && cacheBookmap[idx]._BackgroundColorOpacity       == backgroundColorOpacity
+                        && cacheBookmap[idx]._BigPendingOrdersOpacity      == bigPendingOrdersOpacity
+                        && cacheBookmap[idx]._BookMarginRight              == bookMarginRight
+                        && cacheBookmap[idx]._BookmapMinFontWidth          == bookMapMinFontWidth
+                        && cacheBookmap[idx]._BookmapMinFontHeight         == bookMapMinFontHeight
+                        && cacheBookmap[idx]._BubbleScaleMultiplier        == bubbleScaleMultiplier
+                        && cacheBookmap[idx]._FilterBigPendingOrders       == filterBigPendingOrders
+                        && cacheBookmap[idx]._FilterPendingOrdersPer       == filterPendingOrdersPer
+                        && cacheBookmap[idx]._FilterTextPendingOrdersPer   == filterTextPendingOrdersPer
+                        && cacheBookmap[idx]._LadderRange                  == ladderRange
+                        && cacheBookmap[idx]._MarketBarsCalculation        == marketBarsCalculation
+                        && cacheBookmap[idx]._MarketCummulativeCalculation == marketCummulativeCalculation
+                        && cacheBookmap[idx]._MarketOrdersCalculation      == marketOrdersCalculation
+                        && cacheBookmap[idx]._ShowPOCLine                  == showPOCLine
+                        && cacheBookmap[idx]._UseHeatGradient              == useHeatGradient
                         && cacheBookmap[idx].EqualsInput(input))
                     {
                         return cacheBookmap[idx];
