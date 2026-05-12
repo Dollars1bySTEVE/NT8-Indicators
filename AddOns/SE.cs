@@ -183,16 +183,51 @@ namespace SightEngine
 
                 var levels = isBid ? _bidLevels : _askLevels;
 
+                long RecomputeMaxSize()
+                {
+                    long maxSize = 0;
+                    foreach (var level in levels)
+                        if (level.Value > maxSize)
+                            maxSize = level.Value;
+
+                    return maxSize;
+                }
+
+                long previousVolume = 0;
+                bool hadPreviousLevel = levels.TryGetValue(e.Price, out previousVolume);
+                bool touchedCurrentMax =
+                    hadPreviousLevel &&
+                    ((isBid && previousVolume >= MaxBidSize) || (isAsk && previousVolume >= MaxAskSize));
+
                 if (e.Operation == Operation.Remove || e.Volume <= 0)
                 {
                     levels.Remove(e.Price);
+
+                    if (touchedCurrentMax)
+                    {
+                        if (isBid) MaxBidSize = RecomputeMaxSize();
+                        if (isAsk) MaxAskSize = RecomputeMaxSize();
+                    }
                 }
                 else
                 {
                     levels[e.Price] = e.Volume;
 
-                    if (isBid && e.Volume > MaxBidSize) MaxBidSize = e.Volume;
-                    if (isAsk && e.Volume > MaxAskSize) MaxAskSize = e.Volume;
+                    if (isBid)
+                    {
+                        if (e.Volume > MaxBidSize)
+                            MaxBidSize = e.Volume;
+                        else if (touchedCurrentMax && e.Volume < previousVolume)
+                            MaxBidSize = RecomputeMaxSize();
+                    }
+
+                    if (isAsk)
+                    {
+                        if (e.Volume > MaxAskSize)
+                            MaxAskSize = e.Volume;
+                        else if (touchedCurrentMax && e.Volume < previousVolume)
+                            MaxAskSize = RecomputeMaxSize();
+                    }
                 }
             }
         }
