@@ -494,23 +494,23 @@ namespace SightEngine
             if (volume < (long)filterAggresiveMarketOrders) return;
             if (RENDER_TARGET == null || RENDER_TARGET.IsDisposed) return;
 
-            float aggresivePer = (float)(Math2.Percent(
+            float aggressivePer = (float)(Math2.Percent(
                 filterAggresiveMarketOrders * 10f, volume) / 100f);
-            aggresivePer = Math2.Clampf(aggresivePer, 0f, 1f);
+            aggressivePer = Math2.Clampf(aggressivePer, 0f, 1f);
 
             // Scaled bubble: radius grows with order intensity
             float minScale = 0.8f;
             float maxScale = _bubbleScaleMultiplier;
-            float scale    = minScale + aggresivePer * (maxScale - minScale);
+            float scale    = minScale + aggressivePer * (maxScale - minScale);
             scale = Math2.Clampf(scale, minScale, maxScale);
 
-            _marketEllipse = new SharpDX.Direct2D1.Ellipse(
-                new SharpDX.Vector2(X, Y),
-                W * scale,
-                H * scale);
+            // Update scratch Ellipse struct in-place (no heap alloc for structs)
+            _marketEllipse.Point   = new SharpDX.Vector2(X, Y);
+            _marketEllipse.RadiusX = W * scale;
+            _marketEllipse.RadiusY = H * scale;
 
-            myDrawEllipse(ref _marketEllipse, color, aggresivePer * opacity, 2.0f);
-            myFillEllipse(ref _marketEllipse, color, aggresivePer * opacity * 0.6f);
+            myDrawEllipse(ref _marketEllipse, color, aggressivePer * opacity, 2.0f);
+            myFillEllipse(ref _marketEllipse, color, aggressivePer * opacity * 0.6f);
         }
 
         // ── renderAllMarketBars — iterate market-order history ───────────────
