@@ -278,6 +278,13 @@ namespace SightEngine
         /// <summary>Called from OnMarketDepth — same as BookMap but kept separate for sidebar rendering.</summary>
         public void AddOrder(double lastPrice, MarketDepthEventArgs e)
         {
+            _ = lastPrice;
+            AddOrder(e);
+        }
+
+        /// <summary>Called from OnMarketDepth — same as BookMap but kept separate for sidebar rendering.</summary>
+        public void AddOrder(MarketDepthEventArgs e)
+        {
             if (e == null) return;
 
             lock (_syncRoot)
