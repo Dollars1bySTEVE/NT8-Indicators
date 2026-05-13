@@ -1830,7 +1830,7 @@ namespace SightEngine
 		private readonly ConcurrentDictionary<double, long> bidLevels = new ConcurrentDictionary<double, long>();
 		private readonly ConcurrentDictionary<double, long> askLevels = new ConcurrentDictionary<double, long>();
 
-		public void AddOrder(double marketPrice, NinjaTrader.Data.MarketDepthEventArgs depthMarketArgs)
+		public void AddOrder(double _marketPrice, NinjaTrader.Data.MarketDepthEventArgs depthMarketArgs)
 		{
 			if (depthMarketArgs == null)
 				return;
