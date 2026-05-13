@@ -1962,7 +1962,6 @@ namespace SightEngine
 		// Keep a small trailing buffer beyond the currently active bar index.
 		private const int BarRetentionBuffer = 500;
 		private readonly ConcurrentQueue<MarketOrderEntry> entries = new ConcurrentQueue<MarketOrderEntry>();
-		private readonly object trimLock = new object();
 		private int lastTrimBarIndex = int.MinValue;
 
 		private void TrimOldEntriesUnlocked(int minBarIndex)
@@ -1976,22 +1975,22 @@ namespace SightEngine
 			if (volume <= 0 || double.IsNaN(price) || double.IsInfinity(price))
 				return;
 
-			lock (trimLock)
+			entries.Enqueue(new MarketOrderEntry
 			{
-				entries.Enqueue(new MarketOrderEntry
-				{
-					Price = price,
-					Volume = volume,
-					IsBuy = isBuy,
-					BarIndex = barIndex,
-					Time = time
-				});
+				Price = price,
+				Volume = volume,
+				IsBuy = isBuy,
+				BarIndex = barIndex,
+				Time = time
+			});
 
-				if (barIndex != lastTrimBarIndex)
-				{
-					TrimOldEntriesUnlocked(barIndex - BarRetentionBuffer);
-					lastTrimBarIndex = barIndex;
-				}
+			int observed;
+			while ((observed = System.Threading.Volatile.Read(ref lastTrimBarIndex)) < barIndex)
+			{
+				if (System.Threading.Interlocked.CompareExchange(ref lastTrimBarIndex, barIndex, observed) != observed)
+					continue;
+				TrimOldEntriesUnlocked(Math.Max(0, barIndex - BarRetentionBuffer));
+				break;
 			}
 		}
 
