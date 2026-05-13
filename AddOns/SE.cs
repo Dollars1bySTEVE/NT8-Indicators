@@ -1963,14 +1963,12 @@ namespace SightEngine
 		private const int BarRetentionBuffer = 500;
 		private readonly ConcurrentQueue<MarketOrderEntry> entries = new ConcurrentQueue<MarketOrderEntry>();
 		private readonly object trimLock = new object();
+		private int lastTrimBarIndex = int.MinValue;
 
-		private void TrimOldEntries(int minBarIndex)
+		private void TrimOldEntriesUnlocked(int minBarIndex)
 		{
-			lock (trimLock)
-			{
-				while (entries.TryPeek(out var oldest) && oldest.BarIndex < minBarIndex)
-					entries.TryDequeue(out _);
-			}
+			while (entries.TryPeek(out var oldest) && oldest.BarIndex < minBarIndex)
+				entries.TryDequeue(out _);
 		}
 
 		public void AddOrder(double price, bool isBuy, long volume, DateTime time, int barIndex)
@@ -1978,16 +1976,23 @@ namespace SightEngine
 			if (volume <= 0 || double.IsNaN(price) || double.IsInfinity(price))
 				return;
 
-			entries.Enqueue(new MarketOrderEntry
+			lock (trimLock)
 			{
-				Price = price,
-				Volume = volume,
-				IsBuy = isBuy,
-				BarIndex = barIndex,
-				Time = time
-			});
+				entries.Enqueue(new MarketOrderEntry
+				{
+					Price = price,
+					Volume = volume,
+					IsBuy = isBuy,
+					BarIndex = barIndex,
+					Time = time
+				});
 
-			TrimOldEntries(barIndex - BarRetentionBuffer);
+				if (barIndex != lastTrimBarIndex)
+				{
+					TrimOldEntriesUnlocked(barIndex - BarRetentionBuffer);
+					lastTrimBarIndex = barIndex;
+				}
+			}
 		}
 
 		public void CopyFilteredTo(List<MarketOrderEntry> target, int fromBar, int toBar)
