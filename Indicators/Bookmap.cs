@@ -124,6 +124,11 @@ namespace SightEngine
         private SharpDX.Vector2         _lineStart     = new SharpDX.Vector2();
         private SharpDX.Vector2         _lineEnd       = new SharpDX.Vector2();
 
+        // Reusable buffer for renderAllMarketBars — avoids a new list allocation per frame.
+        // Initial capacity of 512 covers typical visible-bar ranges without reallocation.
+        private readonly List<SightEngine.MarketOrderEntry> _marketOrdersBuf =
+            new List<SightEngine.MarketOrderEntry>(512);
+
         // Base half-size for market-order bubbles (set to half a tick height)
         public float W = 4f;
         public float H = 4f;
@@ -614,11 +619,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         // applied its own margin, so it can be restored on termination.
         private int _priorBarMarginRight = -1;
 
-        // Reusable buffer for renderAllMarketBars — avoids a new list allocation per frame.
-        // Initial capacity of 512 covers typical visible-bar ranges without reallocation.
-        private readonly List<SightEngine.MarketOrderEntry> _marketOrdersBuf =
-            new List<SightEngine.MarketOrderEntry>(512);
-
         // Track last bid/ask to classify trade direction
         private double _lastBid;
         private double _lastAsk;
@@ -662,7 +662,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _BigPendingOrdersOpacity      = 90f;
                 _FilterPendingOrdersPer       = 5f;
                 _FilterTextPendingOrdersPer   = 95f;
-                _AggresiveMarketOrdersFilter  = 30;
+                _AggressiveMarketOrdersFilter  = 30;
                 _FilterBigPendingOrders       = 100;
                 _LadderRange                  = _BookMapLadderRange.Levels50;
                 this._MarketBarsCalculation        = global::_MarketBarsCalculation.EachTick;
@@ -758,7 +758,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             wyckoffBM.bigPendingOrdersOpacity     = _BigPendingOrdersOpacity     / 100f;
             wyckoffBM.filterPendingOrdersPer      = _FilterPendingOrdersPer;
             wyckoffBM.filterTextPendingOrdersPer  = _FilterTextPendingOrdersPer;
-            wyckoffBM.filterAggresiveMarketOrders = _AggresiveMarketOrdersFilter;
+            wyckoffBM.filterAggresiveMarketOrders = _AggressiveMarketOrdersFilter;
             wyckoffBM.filterBigPendingOrders      = _FilterBigPendingOrders;
             wyckoffBM.ladderRange                 = (int)_LadderRange;
             wyckoffBM.marketOrdersCalc            = _MarketOrdersCalculation;
@@ -1231,7 +1231,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 for (int idx = 0; idx < cacheBookmap.Length; idx++)
                 {
                     if (cacheBookmap[idx] != null
-                        && cacheBookmap[idx]._AggresiveMarketOrdersFilter  == aggresiveMarketOrdersFilter
+                        && cacheBookmap[idx]._AggressiveMarketOrdersFilter  == aggresiveMarketOrdersFilter
                         && cacheBookmap[idx]._AutoCenterPrice              == autoCenterPrice
                         && cacheBookmap[idx]._AutoCenterThreshold          == autoCenterThreshold
                         && cacheBookmap[idx]._BackgroundColorOpacity       == backgroundColorOpacity
@@ -1257,7 +1257,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             var indicator = new Bookmap();
-            indicator._AggresiveMarketOrdersFilter  = aggresiveMarketOrdersFilter;
+            indicator._AggressiveMarketOrdersFilter  = aggresiveMarketOrdersFilter;
             indicator._AutoCenterPrice              = autoCenterPrice;
             indicator._AutoCenterThreshold          = autoCenterThreshold;
             indicator._BackgroundColorOpacity       = backgroundColorOpacity;
