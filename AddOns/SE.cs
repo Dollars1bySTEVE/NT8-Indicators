@@ -1718,21 +1718,17 @@ namespace SightEngine
 	{
 		public static double Percent(double total, double quantity, int roundDigits)
 		{
-			if (total == 0)
-				return 0;
-			return Math.Round((quantity * 100d) / total, roundDigits);
+			return NinjaTrader.NinjaScript.AddOns.SightEngine.Math2.Percent(total, quantity, roundDigits);
 		}
 
 		public static double Percent(double total, double quantity)
 		{
-			return Percent(total, quantity, 2);
+			return NinjaTrader.NinjaScript.AddOns.SightEngine.Math2.Percent(total, quantity);
 		}
 
 		public static float Clampf(float value, float min, float max)
 		{
-			if (value < min) return min;
-			if (value > max) return max;
-			return value;
+			return NinjaTrader.NinjaScript.AddOns.SightEngine.Math2.Clampf(value, min, max);
 		}
 	}
 
@@ -1893,8 +1889,12 @@ namespace SightEngine
 					? new VolumeNode(existing.Bid, existing.Ask + volume)
 					: new VolumeNode(existing.Bid + volume, existing.Ask));
 
-			if (updated.Total > maxTotal)
-				maxTotal = updated.Total;
+			long currentMax;
+			while ((currentMax = maxTotal) < updated.Total)
+			{
+				if (System.Threading.Interlocked.CompareExchange(ref maxTotal, updated.Total, currentMax) == currentMax)
+					break;
+			}
 		}
 
 		public Dictionary<double, VolumeNode> GetSnapshot()
@@ -1926,7 +1926,7 @@ namespace SightEngine
 		public void Clear()
 		{
 			ladder.Clear();
-			maxTotal = 0;
+			System.Threading.Interlocked.Exchange(ref maxTotal, 0);
 		}
 	}
 
@@ -1974,8 +1974,7 @@ namespace SightEngine
 
 		public void Clear()
 		{
-			MarketOrderEntry tmp;
-			while (entries.TryDequeue(out tmp)) { }
+			while (entries.TryDequeue(out _)) { }
 		}
 	}
 }
