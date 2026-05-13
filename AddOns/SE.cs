@@ -1959,7 +1959,14 @@ namespace SightEngine
 
 	public sealed class MarketOrderLadder
 	{
+		private const int BarRetentionBuffer = 500;
 		private readonly ConcurrentQueue<MarketOrderEntry> entries = new ConcurrentQueue<MarketOrderEntry>();
+
+		private void TrimOldEntries(int minBarIndex)
+		{
+			while (entries.TryPeek(out var oldest) && oldest.BarIndex < minBarIndex)
+				entries.TryDequeue(out _);
+		}
 
 		public void AddOrder(double price, bool isBuy, long volume, DateTime time, int barIndex)
 		{
@@ -1974,6 +1981,8 @@ namespace SightEngine
 				BarIndex = barIndex,
 				Time = time
 			});
+
+			TrimOldEntries(barIndex - BarRetentionBuffer);
 		}
 
 		public void CopyFilteredTo(List<MarketOrderEntry> target, int fromBar, int toBar)
