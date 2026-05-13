@@ -117,6 +117,12 @@ namespace NinjaTrader.NinjaScript.AddOns
 			{
 				return Math.Round(Math.Atan2(y, x) * (180/3.14), 2);
 			}
+			public static float Clampf(float value, float min, float max)
+			{
+				if (value < min) return min;
+				if (value > max) return max;
+				return value;
+			}
 			public class BoundedValue<T>
 			{
 				public BoundedValue(){}
@@ -1704,4 +1710,272 @@ namespace NinjaTrader.NinjaScript.AddOns
 	}
 	
 	#endregion
+}
+
+namespace SightEngine
+{
+	public static class Math2
+	{
+		public static double Percent(double total, double quantity, int roundDigits)
+		{
+			if (total == 0)
+				return 0;
+			return Math.Round((quantity * 100d) / total, roundDigits);
+		}
+
+		public static double Percent(double total, double quantity)
+		{
+			return Percent(total, quantity, 2);
+		}
+
+		public static float Clampf(float value, float min, float max)
+		{
+			if (value < min) return min;
+			if (value > max) return max;
+			return value;
+		}
+	}
+
+	public sealed class BookMap
+	{
+		private readonly ConcurrentDictionary<double, long> bidLevels = new ConcurrentDictionary<double, long>();
+		private readonly ConcurrentDictionary<double, long> askLevels = new ConcurrentDictionary<double, long>();
+		private readonly object sync = new object();
+		private long maxBidSize;
+		private long maxAskSize;
+
+		public long MaxBidSize { get { return maxBidSize; } }
+		public long MaxAskSize { get { return maxAskSize; } }
+
+		public void onMarketDepth(NinjaTrader.Data.MarketDepthEventArgs depthMarketArgs)
+		{
+			if (depthMarketArgs == null)
+				return;
+
+			if (depthMarketArgs.MarketDataType != NinjaTrader.Cbi.MarketDataType.Bid &&
+				depthMarketArgs.MarketDataType != NinjaTrader.Cbi.MarketDataType.Ask)
+				return;
+
+			bool isBid = depthMarketArgs.MarketDataType == NinjaTrader.Cbi.MarketDataType.Bid;
+			var target = isBid ? bidLevels : askLevels;
+			double price = depthMarketArgs.Price;
+			long volume = depthMarketArgs.Volume;
+
+			lock (sync)
+			{
+				if (depthMarketArgs.Operation == NinjaTrader.Cbi.Operation.Remove || volume <= 0)
+				{
+					long removed;
+					target.TryRemove(price, out removed);
+				}
+				else
+				{
+					target[price] = volume;
+				}
+
+				maxBidSize = ComputeMax(bidLevels);
+				maxAskSize = ComputeMax(askLevels);
+			}
+		}
+
+		public Dictionary<double, long> GetBidLevels()
+		{
+			return new Dictionary<double, long>(bidLevels);
+		}
+
+		public Dictionary<double, long> GetAskLevels()
+		{
+			return new Dictionary<double, long>(askLevels);
+		}
+
+		public void Clear()
+		{
+			lock (sync)
+			{
+				bidLevels.Clear();
+				askLevels.Clear();
+				maxBidSize = 0;
+				maxAskSize = 0;
+			}
+		}
+
+		private static long ComputeMax(ConcurrentDictionary<double, long> levels)
+		{
+			long max = 0;
+			foreach (var kv in levels)
+			{
+				if (kv.Value > max)
+					max = kv.Value;
+			}
+			return max;
+		}
+	}
+
+	public sealed class OrderBookLadder
+	{
+		private readonly ConcurrentDictionary<double, long> bidLevels = new ConcurrentDictionary<double, long>();
+		private readonly ConcurrentDictionary<double, long> askLevels = new ConcurrentDictionary<double, long>();
+
+		public void AddOrder(double marketPrice, NinjaTrader.Data.MarketDepthEventArgs depthMarketArgs)
+		{
+			if (depthMarketArgs == null)
+				return;
+
+			if (depthMarketArgs.MarketDataType != NinjaTrader.Cbi.MarketDataType.Bid &&
+				depthMarketArgs.MarketDataType != NinjaTrader.Cbi.MarketDataType.Ask)
+				return;
+
+			var target = depthMarketArgs.MarketDataType == NinjaTrader.Cbi.MarketDataType.Bid ? bidLevels : askLevels;
+			double price = depthMarketArgs.Price;
+			long volume = depthMarketArgs.Volume;
+
+			if (depthMarketArgs.Operation == NinjaTrader.Cbi.Operation.Remove || volume <= 0)
+			{
+				long removed;
+				target.TryRemove(price, out removed);
+			}
+			else
+			{
+				target[price] = volume;
+			}
+		}
+
+		public Dictionary<double, long> GetBidLevels()
+		{
+			return new Dictionary<double, long>(bidLevels);
+		}
+
+		public Dictionary<double, long> GetAskLevels()
+		{
+			return new Dictionary<double, long>(askLevels);
+		}
+
+		public void Clear()
+		{
+			bidLevels.Clear();
+			askLevels.Clear();
+		}
+	}
+
+	public sealed class VolumeNode
+	{
+		public long Bid { get; private set; }
+		public long Ask { get; private set; }
+		public long Total { get { return Bid + Ask; } }
+
+		public VolumeNode()
+		{
+		}
+
+		public VolumeNode(long bid, long ask)
+		{
+			Bid = bid;
+			Ask = ask;
+		}
+	}
+
+	public sealed class PriceLadder
+	{
+		private readonly ConcurrentDictionary<double, VolumeNode> ladder = new ConcurrentDictionary<double, VolumeNode>();
+		private long maxTotal;
+
+		public long MaxTotal { get { return maxTotal; } }
+
+		public void AddTrade(double price, bool isBuy, long volume)
+		{
+			if (volume <= 0 || double.IsNaN(price) || double.IsInfinity(price))
+				return;
+
+			VolumeNode updated = ladder.AddOrUpdate(
+				price,
+				_ => isBuy ? new VolumeNode(0, volume) : new VolumeNode(volume, 0),
+				(_, existing) => isBuy
+					? new VolumeNode(existing.Bid, existing.Ask + volume)
+					: new VolumeNode(existing.Bid + volume, existing.Ask));
+
+			if (updated.Total > maxTotal)
+				maxTotal = updated.Total;
+		}
+
+		public Dictionary<double, VolumeNode> GetSnapshot()
+		{
+			var snapshot = new Dictionary<double, VolumeNode>(ladder.Count);
+			foreach (var kv in ladder)
+				snapshot[kv.Key] = new VolumeNode(kv.Value.Bid, kv.Value.Ask);
+			return snapshot;
+		}
+
+		public double GetPOCPrice()
+		{
+			double pocPrice = 0d;
+			long bestTotal = 0L;
+
+			foreach (var kv in ladder)
+			{
+				long total = kv.Value.Total;
+				if (total > bestTotal)
+				{
+					bestTotal = total;
+					pocPrice = kv.Key;
+				}
+			}
+
+			return pocPrice;
+		}
+
+		public void Clear()
+		{
+			ladder.Clear();
+			maxTotal = 0;
+		}
+	}
+
+	public struct MarketOrderEntry
+	{
+		public double Price { get; set; }
+		public long Volume { get; set; }
+		public bool IsBuy { get; set; }
+		public int BarIndex { get; set; }
+		public DateTime Time { get; set; }
+	}
+
+	public sealed class MarketOrderLadder
+	{
+		private readonly ConcurrentQueue<MarketOrderEntry> entries = new ConcurrentQueue<MarketOrderEntry>();
+
+		public void AddOrder(double price, bool isBuy, long volume, DateTime time, int barIndex)
+		{
+			if (volume <= 0 || double.IsNaN(price) || double.IsInfinity(price))
+				return;
+
+			entries.Enqueue(new MarketOrderEntry
+			{
+				Price = price,
+				Volume = volume,
+				IsBuy = isBuy,
+				BarIndex = barIndex,
+				Time = time
+			});
+		}
+
+		public void CopyFilteredTo(List<MarketOrderEntry> target, int fromBar, int toBar)
+		{
+			if (target == null)
+				return;
+
+			target.Clear();
+			foreach (var entry in entries)
+			{
+				if (entry.BarIndex < fromBar || entry.BarIndex > toBar)
+					continue;
+				target.Add(entry);
+			}
+		}
+
+		public void Clear()
+		{
+			MarketOrderEntry tmp;
+			while (entries.TryDequeue(out tmp)) { }
+		}
+	}
 }
