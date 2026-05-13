@@ -1759,18 +1759,36 @@ namespace SightEngine
 
 			lock (sync)
 			{
+				long previousVolume;
+				bool hadPrevious = target.TryGetValue(price, out previousVolume);
+				long currentMax = isBid ? maxBidSize : maxAskSize;
+
 				if (depthMarketArgs.Operation == NinjaTrader.Cbi.Operation.Remove || volume <= 0)
 				{
 					long removed;
 					target.TryRemove(price, out removed);
+
+					if (hadPrevious && previousVolume >= currentMax)
+						currentMax = ComputeMax(target);
 				}
 				else
 				{
 					target[price] = volume;
+
+					if (volume > currentMax)
+					{
+						currentMax = volume;
+					}
+					else if (hadPrevious && previousVolume >= currentMax && volume < previousVolume)
+					{
+						currentMax = ComputeMax(target);
+					}
 				}
 
-				maxBidSize = ComputeMax(bidLevels);
-				maxAskSize = ComputeMax(askLevels);
+				if (isBid)
+					maxBidSize = currentMax;
+				else
+					maxAskSize = currentMax;
 			}
 		}
 
