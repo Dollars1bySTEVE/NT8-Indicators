@@ -1959,13 +1959,18 @@ namespace SightEngine
 
 	public sealed class MarketOrderLadder
 	{
+		// Keep a small trailing buffer beyond the currently active bar index.
 		private const int BarRetentionBuffer = 500;
 		private readonly ConcurrentQueue<MarketOrderEntry> entries = new ConcurrentQueue<MarketOrderEntry>();
+		private readonly object trimLock = new object();
 
 		private void TrimOldEntries(int minBarIndex)
 		{
-			while (entries.TryPeek(out var oldest) && oldest.BarIndex < minBarIndex)
-				entries.TryDequeue(out _);
+			lock (trimLock)
+			{
+				while (entries.TryPeek(out var oldest) && oldest.BarIndex < minBarIndex)
+					entries.TryDequeue(out _);
+			}
 		}
 
 		public void AddOrder(double price, bool isBuy, long volume, DateTime time, int barIndex)
