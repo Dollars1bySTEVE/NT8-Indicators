@@ -805,7 +805,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (scb != null)
             {
                 System.Windows.Media.Color c;
-                try   { c = scb.Color; }
+                try { c = scb.Color; }
                 catch (InvalidOperationException) { c = System.Windows.Media.Colors.White; }
                 return new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, (c.A / 255f) * opacity));
