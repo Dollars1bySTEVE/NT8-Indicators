@@ -659,6 +659,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 using (var geometry = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
                 using (var sink = geometry.Open())
                 {
+                    sink.SetFillMode(SharpDX.Direct2D1.FillMode.Winding);
                     sink.BeginFigure(_ribbonUpper[0], SharpDX.Direct2D1.FigureBegin.Filled);
                     for (int p = 1; p < _ribbonUpper.Count; p++)
                         sink.AddLine(_ribbonUpper[p]);
@@ -679,7 +680,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!ShowEmaLabels || _mainTextFormat == null)
                 return;
 
-            int barIndex = CurrentBar;
+            int barIndex = ChartBars.ToIndex;
+            if (barIndex < 0 || barIndex > CurrentBar)
+                return;
             if (barIndex < 200)
                 return;
 
@@ -687,7 +690,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowEma13 && _ema13LabelBrushDx != null)
             {
-                double value = _ema13[0];
+                double value = _ema13.GetValueAt(barIndex);
                 float y = chartScale.GetYByValue(value) - 8f;
                 RenderTarget.DrawText(
                     "EMA13  " + value.ToString("F2"),
@@ -698,7 +701,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowEma48 && _ema48LabelBrushDx != null)
             {
-                double value = _ema48[0];
+                double value = _ema48.GetValueAt(barIndex);
                 float y = chartScale.GetYByValue(value) - 8f;
                 RenderTarget.DrawText(
                     "EMA48  " + value.ToString("F2"),
@@ -709,7 +712,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowEma200 && _ema200LabelBrushDx != null)
             {
-                double value = _ema200[0];
+                double value = _ema200.GetValueAt(barIndex);
                 float y = chartScale.GetYByValue(value) - 8f;
                 RenderTarget.DrawText(
                     "EMA200 " + value.ToString("F2"),
