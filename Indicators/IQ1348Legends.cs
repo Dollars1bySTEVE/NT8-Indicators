@@ -58,15 +58,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly object _signalsLock = new object();
         private int _lastSignalBar = int.MinValue / 2;
 
-        // Reused ribbon polyline buffers — avoids per-segment List<Vector2>
-        // allocations on every OnRender call (which can fire on every mouse
-        // move/resize).
-        private readonly List<SharpDX.Vector2> _ribbonUpper = new List<SharpDX.Vector2>(512);
-        private readonly List<SharpDX.Vector2> _ribbonLower = new List<SharpDX.Vector2>(512);
-
         // Snapshot buffer reused by RenderSignals so we don't allocate on every
         // render frame while still iterating outside the lock.
         private readonly List<SignalEvent> _signalsSnapshot = new List<SignalEvent>(64);
+
+        // Preallocated buffer reused by RenderEmaLabels to avoid per-frame
+        // List<> allocations in the hot OnRender path.
+        private readonly List<(string Text, SharpDX.Direct2D1.SolidColorBrush Brush, float Y)> _emaLabelBuffer
+            = new List<(string, SharpDX.Direct2D1.SolidColorBrush, float)>(3);
 
         // Tracks the last key-level base used by Draw.HorizontalLine so the grid
         // is only refreshed when the bar closes or the base level actually moves
@@ -526,34 +525,42 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (gapAllowed && !alreadyFiredThisBar)
                     {
-                        double arrowOffset = SignalOffsetTicks * TickSize;
                         bool isBull = crossedAbove;
-                        double signalPrice = isBull
-                            ? Low[0] - arrowOffset
-                            : High[0] + arrowOffset;
 
-                        lock (_signalsLock)
+                        // Filter signals by EMA200 bias for accurate readings:
+                        // LONG only when price is at or above EMA200; SHORT only when at or below.
+                        bool biasAligned = isBull ? Close[0] >= ema200 : Close[0] <= ema200;
+
+                        if (biasAligned)
                         {
-                            _signals.Add(new SignalEvent
+                            double arrowOffset = SignalOffsetTicks * TickSize;
+                            double signalPrice = isBull
+                                ? Low[0] - arrowOffset
+                                : High[0] + arrowOffset;
+
+                            lock (_signalsLock)
                             {
-                                BarIndex = CurrentBar,
-                                IsBull = isBull,
-                                Price = signalPrice
-                            });
-                        }
+                                _signals.Add(new SignalEvent
+                                {
+                                    BarIndex = CurrentBar,
+                                    IsBull = isBull,
+                                    Price = signalPrice
+                                });
+                            }
 
-                        _lastSignalBar = CurrentBar;
+                            _lastSignalBar = CurrentBar;
 
-                        if (PlayAlertSound)
-                        {
-                            if (isBull)
-                                Alert("CrossAlertLong", Priority.Medium, "EMA Cross - Long signal",
-                                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
-                                    10, Brushes.Yellow, Brushes.Black);
-                            else
-                                Alert("CrossAlertShort", Priority.Medium, "EMA Cross - Short signal",
-                                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
-                                    10, Brushes.Yellow, Brushes.Black);
+                            if (PlayAlertSound)
+                            {
+                                if (isBull)
+                                    Alert("CrossAlertLong", Priority.Medium, "EMA Cross - Long signal",
+                                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                        10, Brushes.Yellow, Brushes.Black);
+                                else
+                                    Alert("CrossAlertShort", Priority.Medium, "EMA Cross - Short signal",
+                                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                        10, Brushes.Yellow, Brushes.Black);
+                            }
                         }
                     }
                 }
@@ -628,45 +635,47 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (lastIdx < 200)
                 return;
 
-            int i = Math.Max(firstIdx, 200);
-            while (i <= lastIdx)
+            int startIdx = Math.Max(firstIdx, 200);
+            int endIdx = lastIdx - 1;
+            for (int i = startIdx; i <= endIdx; i++)
             {
-                if (i < 1)
-                {
-                    i++;
+                double ema13Left = _ema13.GetValueAt(i);
+                double ema13Right = _ema13.GetValueAt(i + 1);
+                double ema48Left = _ema48.GetValueAt(i);
+                double ema48Right = _ema48.GetValueAt(i + 1);
+
+                if (double.IsNaN(ema13Left) || double.IsInfinity(ema13Left)
+                    || double.IsNaN(ema13Right) || double.IsInfinity(ema13Right)
+                    || double.IsNaN(ema48Left) || double.IsInfinity(ema48Left)
+                    || double.IsNaN(ema48Right) || double.IsInfinity(ema48Right))
                     continue;
-                }
 
-                bool isBull = _ema13.GetValueAt(i) > _ema48.GetValueAt(i);
-                _ribbonUpper.Clear();
-                _ribbonLower.Clear();
+                bool isBull = ema13Left > ema48Left;
+                bool rightIsBull = ema13Right > ema48Right;
+                if (rightIsBull != isBull)
+                    continue;
 
-                while (i <= lastIdx && i >= 1)
-                {
-                    bool barIsBull = _ema13.GetValueAt(i) > _ema48.GetValueAt(i);
-                    if (barIsBull != isBull)
-                        break;
+                float xLeft = chartControl.GetXByBarIndex(ChartBars, i);
+                float xRight = chartControl.GetXByBarIndex(ChartBars, i + 1);
+                float y13Left = chartScale.GetYByValue(ema13Left);
+                float y13Right = chartScale.GetYByValue(ema13Right);
+                float y48Left = chartScale.GetYByValue(ema48Left);
+                float y48Right = chartScale.GetYByValue(ema48Right);
 
-                    float x = chartControl.GetXByBarIndex(ChartBars, i);
-                    _ribbonUpper.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema13.GetValueAt(i))));
-                    _ribbonLower.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema48.GetValueAt(i))));
-                    i++;
-                }
-
-                if (_ribbonUpper.Count < 2)
+                if (float.IsNaN(y13Left) || float.IsInfinity(y13Left)
+                    || float.IsNaN(y13Right) || float.IsInfinity(y13Right)
+                    || float.IsNaN(y48Left) || float.IsInfinity(y48Left)
+                    || float.IsNaN(y48Right) || float.IsInfinity(y48Right))
                     continue;
 
                 using (var geometry = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
                 using (var sink = geometry.Open())
                 {
                     sink.SetFillMode(SharpDX.Direct2D1.FillMode.Winding);
-                    sink.BeginFigure(_ribbonUpper[0], SharpDX.Direct2D1.FigureBegin.Filled);
-                    for (int p = 1; p < _ribbonUpper.Count; p++)
-                        sink.AddLine(_ribbonUpper[p]);
-
-                    for (int p = _ribbonLower.Count - 1; p >= 0; p--)
-                        sink.AddLine(_ribbonLower[p]);
-
+                    sink.BeginFigure(new SharpDX.Vector2(xLeft, y13Left), SharpDX.Direct2D1.FigureBegin.Filled);
+                    sink.AddLine(new SharpDX.Vector2(xRight, y13Right));
+                    sink.AddLine(new SharpDX.Vector2(xRight, y48Right));
+                    sink.AddLine(new SharpDX.Vector2(xLeft, y48Left));
                     sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
                     sink.Close();
 
@@ -681,44 +690,58 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             int barIndex = ChartBars.ToIndex;
-            if (barIndex < 0 || barIndex > CurrentBar)
-                return;
+            if (barIndex < 0)
+                barIndex = 0;
+            if (barIndex > CurrentBar)
+                barIndex = CurrentBar;
             if (barIndex < 200)
                 return;
 
             float x = chartControl.GetXByBarIndex(ChartBars, barIndex) + 6f;
+            const float minSpacing = 18f;
+            var labels = _emaLabelBuffer;
+            labels.Clear();
 
             if (ShowEma13 && _ema13LabelBrushDx != null)
             {
                 double value = _ema13.GetValueAt(barIndex);
                 float y = chartScale.GetYByValue(value) - 8f;
-                RenderTarget.DrawText(
-                    "EMA13  " + value.ToString("F2"),
-                    _mainTextFormat,
-                    new SharpDX.RectangleF(x, y, 220f, 24f),
-                    _ema13LabelBrushDx);
+                labels.Add(("EMA13  " + value.ToString("F2"), _ema13LabelBrushDx, y));
             }
 
             if (ShowEma48 && _ema48LabelBrushDx != null)
             {
                 double value = _ema48.GetValueAt(barIndex);
                 float y = chartScale.GetYByValue(value) - 8f;
-                RenderTarget.DrawText(
-                    "EMA48  " + value.ToString("F2"),
-                    _mainTextFormat,
-                    new SharpDX.RectangleF(x, y, 220f, 24f),
-                    _ema48LabelBrushDx);
+                labels.Add(("EMA48  " + value.ToString("F2"), _ema48LabelBrushDx, y));
             }
 
             if (ShowEma200 && _ema200LabelBrushDx != null)
             {
                 double value = _ema200.GetValueAt(barIndex);
                 float y = chartScale.GetYByValue(value) - 8f;
+                labels.Add(("EMA200 " + value.ToString("F2"), _ema200LabelBrushDx, y));
+            }
+
+            labels.Sort((a, b) => a.Y.CompareTo(b.Y));
+
+            for (int k = 1; k < labels.Count; k++)
+            {
+                float minY = labels[k - 1].Y + minSpacing;
+                if (labels[k].Y < minY)
+                    labels[k] = (labels[k].Text, labels[k].Brush, minY);
+            }
+
+            foreach (var label in labels)
+            {
+                if (float.IsNaN(label.Y) || float.IsInfinity(label.Y))
+                    continue;
+
                 RenderTarget.DrawText(
-                    "EMA200 " + value.ToString("F2"),
+                    label.Text,
                     _mainTextFormat,
-                    new SharpDX.RectangleF(x, y, 220f, 24f),
-                    _ema200LabelBrushDx);
+                    new SharpDX.RectangleF(x, label.Y, 220f, 24f),
+                    label.Brush);
             }
         }
 
