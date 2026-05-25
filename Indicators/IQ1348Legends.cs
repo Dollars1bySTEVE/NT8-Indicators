@@ -718,11 +718,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 float minY = labels[k - 1].Y + minSpacing;
                 if (labels[k].Y < minY)
-                {
-                    var adjusted = labels[k];
-                    adjusted.Y = minY;
-                    labels[k] = adjusted;
-                }
+                    labels[k] = (labels[k].Text, labels[k].Brush, minY);
             }
 
             foreach (var label in labels)
