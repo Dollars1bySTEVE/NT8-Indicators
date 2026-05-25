@@ -312,7 +312,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnBarUpdate()
         {
             // Require at least 200 bars to compute all EMAs
-            if (CurrentBar < 200) return;
+            if (CurrentBar < 200)
+            {
+                Values[3][0] = double.NaN;
+                Values[4][0] = double.NaN;
+                return;
+            }
 
             double ema13  = EMA(Close, 13)[0];
             double ema48  = EMA(Close, 48)[0];
@@ -332,7 +337,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Guard: barsBack must stay within the MaximumBarsLookBack window.
                 // NT8's Draw.Region startBarsAgo/endBarsAgo use a 0-based offset where
                 // the maximum valid index is 254 (indices 0–254 = 255 slots max).
-                int barsBack = Math.Min(CurrentBar - 1, 254);
+                int barsBack = Math.Min(CurrentBar - 200, 254);
                 bool isBull  = ema13 > ema48;
 
                 if (isBull)
