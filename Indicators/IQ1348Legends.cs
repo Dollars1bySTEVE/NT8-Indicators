@@ -31,6 +31,10 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class IQ1348Legends : Indicator
     {
+        // Tracks whether the ribbon was last drawn as bullish (true), bearish (false),
+        // or unset (null) so RemoveDrawObject is only called on a state transition.
+        private bool? _lastRibbonBull;
+
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters — 1. EMA Lines
 
@@ -326,28 +330,37 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ShowRibbon)
             {
                 // Guard: barsBack must stay within the MaximumBarsLookBack window.
-                // Cap at 254 so we stay inside the 0-255 offset range.
+                // NT8's Draw.Region startBarsAgo/endBarsAgo use a 0-based offset where
+                // the maximum valid index is 254 (indices 0–254 = 255 slots max).
                 int barsBack = Math.Min(CurrentBar - 1, 254);
+                bool isBull  = ema13 > ema48;
 
-                if (ema13 > ema48)
+                if (isBull)
                 {
                     Draw.Region(this, "RibbonBull", 0, barsBack,
                         Values[3], Values[4],
                         Brushes.Transparent, RibbonBullColor, RibbonOpacity);
-                    RemoveDrawObject("RibbonBear");
+                    if (_lastRibbonBull != true)
+                        RemoveDrawObject("RibbonBear");
                 }
                 else
                 {
                     Draw.Region(this, "RibbonBear", 0, barsBack,
                         Values[3], Values[4],
                         Brushes.Transparent, RibbonBearColor, RibbonOpacity);
-                    RemoveDrawObject("RibbonBull");
+                    if (_lastRibbonBull != false)
+                        RemoveDrawObject("RibbonBull");
                 }
+                _lastRibbonBull = isBull;
             }
             else
             {
-                RemoveDrawObject("RibbonBull");
-                RemoveDrawObject("RibbonBear");
+                if (_lastRibbonBull.HasValue)
+                {
+                    RemoveDrawObject("RibbonBull");
+                    RemoveDrawObject("RibbonBear");
+                    _lastRibbonBull = null;
+                }
             }
 
             // ── 3. Yellow Low-Volume Candle Filter ──────────────────────────
@@ -411,7 +424,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 foreach (int offset in offsets)
                 {
                     double level = baseLevel + offset * LevelSpacing;
-                    string tag   = "KL_" + level.ToString("F0");
+                    string tag   = $"KL_{level:F0}";
                     Draw.HorizontalLine(this, tag, level, LevelColor,
                         DashStyleHelper.Solid, 1);
                 }
@@ -420,18 +433,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── 6. 200 EMA Macro Bias Label ─────────────────────────────────
             if (ShowBiasLabel)
             {
+                double biasY = High[0] + 10 * TickSize;
+                var    biasFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9);
                 if (Close[0] > ema200)
                     Draw.Text(this, "BiasLabel", false,
-                        "ABOVE 200 \u25b2", 0, High[0] + 10 * TickSize, 0,
+                        "ABOVE 200 \u25b2", 0, biasY, 0,
                         Brushes.LimeGreen,
-                        new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9),
+                        biasFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
                 else
                     Draw.Text(this, "BiasLabel", false,
-                        "BELOW 200 \u25bc", 0, High[0] + 10 * TickSize, 0,
+                        "BELOW 200 \u25bc", 0, biasY, 0,
                         Brushes.Red,
-                        new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9),
+                        biasFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
             }
