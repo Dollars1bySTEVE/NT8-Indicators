@@ -476,7 +476,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnBarUpdate()
         {
             if (CurrentBar < 201)
+            {
+                _bullUpper[0] = double.NaN;
+                _bullLower[0] = double.NaN;
+                _bearUpper[0] = double.NaN;
+                _bearLower[0] = double.NaN;
                 return;
+            }
 
             double ema13  = _ema13[0];
             double ema48  = _ema48[0];
@@ -621,10 +627,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _lastKeyLevelBase = double.NaN;
             }
 
-            if (ShowRibbon && CurrentBar >= 200)
+            if (ShowRibbon && CurrentBar >= 201)
             {
-                int barsBack = Math.Max(0, Math.Min(CurrentBar - 200, RegionMaxBarsBack));
-                Brush outlineBrush = Brushes.Transparent;
+                int barsBack = Math.Max(0, Math.Min(CurrentBar - 201, RegionMaxBarsBack));
+                var outlineBrush = Brushes.Transparent;
                 Draw.Region(this, "IQ1348_RibbonBull", 0, barsBack,
                     _bullUpper, _bullLower, outlineBrush, RibbonBullColor, RibbonOpacity);
                 Draw.Region(this, "IQ1348_RibbonBear", 0, barsBack,
