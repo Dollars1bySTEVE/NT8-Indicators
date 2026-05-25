@@ -62,6 +62,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         // render frame while still iterating outside the lock.
         private readonly List<SignalEvent> _signalsSnapshot = new List<SignalEvent>(64);
 
+        // Preallocated buffer reused by RenderEmaLabels to avoid per-frame
+        // List<> allocations in the hot OnRender path.
+        private readonly List<(string Text, SharpDX.Direct2D1.SolidColorBrush Brush, float Y)> _emaLabelBuffer
+            = new List<(string, SharpDX.Direct2D1.SolidColorBrush, float)>(3);
+
         // Tracks the last key-level base used by Draw.HorizontalLine so the grid
         // is only refreshed when the bar closes or the base level actually moves
         // (Calculate.OnPriceChange would otherwise repaint on every tick).
@@ -520,34 +525,42 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (gapAllowed && !alreadyFiredThisBar)
                     {
-                        double arrowOffset = SignalOffsetTicks * TickSize;
                         bool isBull = crossedAbove;
-                        double signalPrice = isBull
-                            ? Low[0] - arrowOffset
-                            : High[0] + arrowOffset;
 
-                        lock (_signalsLock)
+                        // Filter signals by EMA200 bias for accurate readings:
+                        // LONG only when price is at or above EMA200; SHORT only when at or below.
+                        bool biasAligned = isBull ? Close[0] >= ema200 : Close[0] <= ema200;
+
+                        if (biasAligned)
                         {
-                            _signals.Add(new SignalEvent
+                            double arrowOffset = SignalOffsetTicks * TickSize;
+                            double signalPrice = isBull
+                                ? Low[0] - arrowOffset
+                                : High[0] + arrowOffset;
+
+                            lock (_signalsLock)
                             {
-                                BarIndex = CurrentBar,
-                                IsBull = isBull,
-                                Price = signalPrice
-                            });
-                        }
+                                _signals.Add(new SignalEvent
+                                {
+                                    BarIndex = CurrentBar,
+                                    IsBull = isBull,
+                                    Price = signalPrice
+                                });
+                            }
 
-                        _lastSignalBar = CurrentBar;
+                            _lastSignalBar = CurrentBar;
 
-                        if (PlayAlertSound)
-                        {
-                            if (isBull)
-                                Alert("CrossAlertLong", Priority.Medium, "EMA Cross - Long signal",
-                                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
-                                    10, Brushes.Yellow, Brushes.Black);
-                            else
-                                Alert("CrossAlertShort", Priority.Medium, "EMA Cross - Short signal",
-                                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
-                                    10, Brushes.Yellow, Brushes.Black);
+                            if (PlayAlertSound)
+                            {
+                                if (isBull)
+                                    Alert("CrossAlertLong", Priority.Medium, "EMA Cross - Long signal",
+                                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                        10, Brushes.Yellow, Brushes.Black);
+                                else
+                                    Alert("CrossAlertShort", Priority.Medium, "EMA Cross - Short signal",
+                                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                        10, Brushes.Yellow, Brushes.Black);
+                            }
                         }
                     }
                 }
@@ -626,9 +639,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             int endIdx = lastIdx - 1;
             for (int i = startIdx; i <= endIdx; i++)
             {
-                if (i < 1)
-                    continue;
-
                 double ema13Left = _ema13.GetValueAt(i);
                 double ema13Right = _ema13.GetValueAt(i + 1);
                 double ema48Left = _ema48.GetValueAt(i);
@@ -689,7 +699,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             float x = chartControl.GetXByBarIndex(ChartBars, barIndex) + 6f;
             const float minSpacing = 18f;
-            var labels = new List<(string Text, SharpDX.Direct2D1.SolidColorBrush Brush, float Y)>(3);
+            var labels = _emaLabelBuffer;
+            labels.Clear();
 
             if (ShowEma13 && _ema13LabelBrushDx != null)
             {
