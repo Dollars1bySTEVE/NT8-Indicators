@@ -50,9 +50,28 @@ namespace NinjaTrader.NinjaScript.Indicators
         private EMA _ema48;
         private EMA _ema200;
 
-        // Signal cache for GPU rendering.
+        // Signal cache for GPU rendering. _signals is mutated on the data thread
+        // (OnBarUpdate) and enumerated on the UI thread (OnRender). All access
+        // must be protected by _signalsLock; readers should snapshot under the
+        // lock before iterating.
         private readonly List<SignalEvent> _signals = new List<SignalEvent>();
+        private readonly object _signalsLock = new object();
         private int _lastSignalBar = int.MinValue / 2;
+
+        // Reused ribbon polyline buffers — avoids per-segment List<Vector2>
+        // allocations on every OnRender call (which can fire on every mouse
+        // move/resize).
+        private readonly List<SharpDX.Vector2> _ribbonUpper = new List<SharpDX.Vector2>(512);
+        private readonly List<SharpDX.Vector2> _ribbonLower = new List<SharpDX.Vector2>(512);
+
+        // Snapshot buffer reused by RenderSignals so we don't allocate on every
+        // render frame while still iterating outside the lock.
+        private readonly List<SignalEvent> _signalsSnapshot = new List<SignalEvent>(64);
+
+        // Tracks the last key-level base used by Draw.HorizontalLine so the grid
+        // is only refreshed when the bar closes or the base level actually moves
+        // (Calculate.OnPriceChange would otherwise repaint on every tick).
+        private double _lastKeyLevelBase = double.NaN;
 
         // Static array — avoids a heap allocation on every bar close.
         private static readonly int[] _keyLevelOffsets = { -2, -1, 0, 1, 2, 3, 4 };
@@ -380,8 +399,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _ema48  = EMA(Close, 48);
                 _ema200 = EMA(Close, 200);
 
-                _signals.Clear();
+                lock (_signalsLock)
+                    _signals.Clear();
                 _lastSignalBar = int.MinValue / 2;
+                _lastKeyLevelBase = double.NaN;
             }
             else if (State == State.Terminated)
             {
@@ -493,7 +514,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     int barsSinceLastSignal = CurrentBar - _lastSignalBar;
                     bool gapAllowed = MinBarsBetweenSignals <= 0 || barsSinceLastSignal >= MinBarsBetweenSignals;
 
-                    if (gapAllowed)
+                    // Explicit per-bar guard: with Calculate.OnPriceChange, CrossAbove/CrossBelow
+                    // can evaluate true on multiple intrabar ticks. Without this, MinBarsBetweenSignals = 0
+                    // would unintentionally enable multiple signals/alerts on the same bar.
+                    bool alreadyFiredThisBar = _lastSignalBar == CurrentBar;
+
+                    if (gapAllowed && !alreadyFiredThisBar)
                     {
                         double arrowOffset = SignalOffsetTicks * TickSize;
                         bool isBull = crossedAbove;
@@ -501,12 +527,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                             ? Low[0] - arrowOffset
                             : High[0] + arrowOffset;
 
-                        _signals.Add(new SignalEvent
+                        lock (_signalsLock)
                         {
-                            BarIndex = CurrentBar,
-                            IsBull = isBull,
-                            Price = signalPrice
-                        });
+                            _signals.Add(new SignalEvent
+                            {
+                                BarIndex = CurrentBar,
+                                IsBull = isBull,
+                                Price = signalPrice
+                            });
+                        }
 
                         _lastSignalBar = CurrentBar;
 
@@ -525,23 +554,34 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            _signals.RemoveAll(s => CurrentBar - s.BarIndex > 256);
+            lock (_signalsLock)
+                _signals.RemoveAll(s => CurrentBar - s.BarIndex > 256);
 
             // ── 5. Horizontal Key Price Level Grid ───────────────────────────
             if (ShowPriceLevels && LevelSpacing > 0)
             {
                 double baseLevel = Math.Floor(Close[0] / LevelSpacing) * LevelSpacing;
-                foreach (int offset in _keyLevelOffsets)
+
+                // With Calculate.OnPriceChange, OnBarUpdate fires on every tick.
+                // Only repaint the grid when the bar closes or when the computed
+                // base level actually moves — otherwise Draw.HorizontalLine would
+                // be called on every tick for no visible change.
+                if (IsFirstTickOfBar || baseLevel != _lastKeyLevelBase)
                 {
-                    double level = baseLevel + offset * LevelSpacing;
-                    Draw.HorizontalLine(this, "KL_" + offset.ToString(), level,
-                        LevelColor, DashStyleHelper.Solid, 1);
+                    foreach (int offset in _keyLevelOffsets)
+                    {
+                        double level = baseLevel + offset * LevelSpacing;
+                        Draw.HorizontalLine(this, "KL_" + offset.ToString(), level,
+                            LevelColor, DashStyleHelper.Solid, 1);
+                    }
+                    _lastKeyLevelBase = baseLevel;
                 }
             }
             else
             {
                 foreach (int offset in _keyLevelOffsets)
                     RemoveDrawObject("KL_" + offset.ToString());
+                _lastKeyLevelBase = double.NaN;
             }
         }
 
@@ -593,8 +633,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
 
                 bool isBull = _ema13.GetValueAt(i) > _ema48.GetValueAt(i);
-                var upper = new List<SharpDX.Vector2>();
-                var lower = new List<SharpDX.Vector2>();
+                _ribbonUpper.Clear();
+                _ribbonLower.Clear();
 
                 while (i <= lastIdx && i >= 1)
                 {
@@ -603,23 +643,23 @@ namespace NinjaTrader.NinjaScript.Indicators
                         break;
 
                     float x = chartControl.GetXByBarIndex(ChartBars, i);
-                    upper.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema13.GetValueAt(i))));
-                    lower.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema48.GetValueAt(i))));
+                    _ribbonUpper.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema13.GetValueAt(i))));
+                    _ribbonLower.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema48.GetValueAt(i))));
                     i++;
                 }
 
-                if (upper.Count < 2)
+                if (_ribbonUpper.Count < 2)
                     continue;
 
                 using (var geometry = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
                 using (var sink = geometry.Open())
                 {
-                    sink.BeginFigure(upper[0], SharpDX.Direct2D1.FigureBegin.Filled);
-                    for (int p = 1; p < upper.Count; p++)
-                        sink.AddLine(upper[p]);
+                    sink.BeginFigure(_ribbonUpper[0], SharpDX.Direct2D1.FigureBegin.Filled);
+                    for (int p = 1; p < _ribbonUpper.Count; p++)
+                        sink.AddLine(_ribbonUpper[p]);
 
-                    for (int p = lower.Count - 1; p >= 0; p--)
-                        sink.AddLine(lower[p]);
+                    for (int p = _ribbonLower.Count - 1; p >= 0; p--)
+                        sink.AddLine(_ribbonLower[p]);
 
                     sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
                     sink.Close();
@@ -686,7 +726,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             float x = chartControl.GetXByBarIndex(ChartBars, lastVisible) + 6f;
             float y = chartScale.GetYByValue(High.GetValueAt(lastVisible) + 10 * TickSize) - 12f;
 
-            bool isBull = Close[0] > _ema200[0];
+            // Both position and label text/colour must reference the same bar
+            // (lastVisible) so that scrolling the chart shows a consistent bias.
+            double closeAtVisible = Close.GetValueAt(lastVisible);
+            double ema200AtVisible = _ema200.GetValueAt(lastVisible);
+            bool isBull = closeAtVisible > ema200AtVisible;
             RenderTarget.DrawText(
                 isBull ? "ABOVE 200 ▲" : "BELOW 200 ▼",
                 _mainTextFormat,
@@ -705,7 +749,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             float triHeight = 10f;
             double textDelta = SignalOffsetTicks * 1.5 * TickSize;
 
-            foreach (var signal in _signals)
+            // Snapshot under lock so the data thread's Add/RemoveAll in
+            // OnBarUpdate can't mutate _signals while we iterate (which would
+            // throw InvalidOperationException and be swallowed by OnRender's
+            // try/catch, making signals disappear intermittently).
+            _signalsSnapshot.Clear();
+            lock (_signalsLock)
+            {
+                if (_signalsSnapshot.Capacity < _signals.Count)
+                    _signalsSnapshot.Capacity = _signals.Count;
+                _signalsSnapshot.AddRange(_signals);
+            }
+
+            foreach (var signal in _signalsSnapshot)
             {
                 if (signal.BarIndex < firstIdx || signal.BarIndex > lastIdx)
                     continue;
@@ -750,6 +806,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ═══════════════════════════════════════════════════════════════
         #region Helpers
 
+        /// <summary>
+        /// Converts a WPF brush into a SharpDX Color4, applying the supplied alpha.
+        /// Only <see cref="System.Windows.Media.SolidColorBrush"/> is supported —
+        /// any other brush type (gradient, image, etc.) is treated as opaque white
+        /// because the ribbon parameters are exposed as solid-colour pickers.
+        /// </summary>
         private static SharpDX.Color4 ToDxColor4(System.Windows.Media.Brush brush, float alpha)
         {
             var scb = brush as System.Windows.Media.SolidColorBrush;
@@ -757,7 +819,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return new SharpDX.Color4(1f, 1f, 1f, alpha);
 
             System.Windows.Media.Color c = scb.Color;
-            return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
+            // Combine the brush's own Opacity with the caller-supplied alpha so
+            // partially-transparent SolidColorBrush inputs render correctly.
+            float effectiveAlpha = alpha * (float)scb.Opacity * (c.A / 255f);
+            if (effectiveAlpha < 0f) effectiveAlpha = 0f;
+            else if (effectiveAlpha > 1f) effectiveAlpha = 1f;
+            return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, effectiveAlpha);
         }
 
         private void EnsureSignalTextFormat()
