@@ -2,10 +2,17 @@
 // Three EMA lines (13, 48, 200), dynamic ribbon cloud, yellow low-volume candle filter,
 // crossover signal labels with alerts, horizontal key price level grid, 200 EMA bias label,
 // EMA price labels on the chart.
+//
+// RIBBON FIX: Each bull/bear segment gets its own uniquely-tagged Draw.Region so the cloud
+// colour is historically correct — green during long bias, red/orange during short bias.
+// Previously a single shared tag was overwritten on every bar, making the whole lookback
+// render with the *current* bias colour instead of the correct per-segment colour.
+//
 // Uses AddPlot() + Draw.Region() — no SharpDX GPU code required.
 
 #region Using declarations
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows.Media;
@@ -30,21 +37,25 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class IQ1348Legends : Indicator
     {
-        // Tracks whether the ribbon was last drawn as bullish (true), bearish (false),
-        // or unset (null) so RemoveDrawObject is only called on a state transition.
-        private bool? _lastRibbonBull;
+        // ── Ribbon segment tracking ──────────────────────────────────────────
+        // Each time EMA13/48 bias flips we "seal" the outgoing segment with a
+        // unique tag so its colour is frozen permanently.  The live (unsettled)
+        // segment uses the tag "RibbonCurrent" and is redrawn every bar.
+        private int          _segmentStartBar = -1;
+        private bool         _segmentIsBull   = true;
+        private List<string> _ribbonTags      = new List<string>();
 
         // Cached EMA indicator instances (created in State.DataLoaded).
         private EMA _ema13;
         private EMA _ema48;
         private EMA _ema200;
 
-        // Three separate fonts for different UI elements.
+        // Fonts — cached so we don't allocate on every bar.
         private NinjaTrader.Gui.Tools.SimpleFont _signalFont;
         private NinjaTrader.Gui.Tools.SimpleFont _biasFont;
         private NinjaTrader.Gui.Tools.SimpleFont _emaLabelFont;
 
-        // Static array — avoids heap allocation on every bar close.
+        // Static array — avoids a heap allocation on every bar close.
         private static readonly int[] _keyLevelOffsets = { -2, -1, 0, 1, 2, 3, 4 };
 
         // ═══════════════════════════════════════════════════════════════
@@ -115,7 +126,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Show EMA Labels", Order = 10, GroupName = "1. EMA Lines",
-            Description = "Show EMA 13 / EMA 48 / EMA 200 price labels on the chart at the current bar.")]
+            Description = "Show EMA 13 / 48 / 200 price labels floating on the chart at the current bar.")]
         public bool ShowEmaLabels { get; set; }
 
         #endregion
@@ -130,7 +141,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Ribbon Bull Color", Order = 2, GroupName = "2. Ribbon",
-            Description = "Fill color when EMA 13 > EMA 48 (bullish / long bias).")]
+            Description = "Fill colour when EMA 13 > EMA 48  (bullish / LONG bias).")]
         [XmlIgnore]
         public System.Windows.Media.Brush RibbonBullColor { get; set; }
         [Browsable(false)]
@@ -142,7 +153,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Ribbon Bear Color", Order = 3, GroupName = "2. Ribbon",
-            Description = "Fill color when EMA 13 < EMA 48 (bearish / short bias).")]
+            Description = "Fill colour when EMA 13 < EMA 48  (bearish / SHORT bias).")]
         [XmlIgnore]
         public System.Windows.Media.Brush RibbonBearColor { get; set; }
         [Browsable(false)]
@@ -155,7 +166,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Range(1, 100)]
         [Display(Name = "Ribbon Opacity %", Order = 4, GroupName = "2. Ribbon",
-            Description = "Opacity of the ribbon cloud fill (1=nearly transparent, 100=solid).")]
+            Description = "Opacity of the ribbon cloud fill (1 = nearly transparent, 100 = solid).")]
         public int RibbonOpacity { get; set; }
 
         #endregion
@@ -193,7 +204,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Range(8, 32)]
         [Display(Name = "Signal Font Size", Order = 2, GroupName = "4. Signals",
-            Description = "Font size for the LONG/SHORT signal text labels. Default 14.")]
+            Description = "Font size for the LONG/SHORT signal text labels.  Default 14.")]
         public int SignalFontSize { get; set; }
 
         [NinjaScriptProperty]
@@ -253,7 +264,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description              = "IQ 1348 Legends — 13/48/200 EMA strategy indicator with ribbon, signals, volume filter, and EMA labels.";
+                Description              = "IQ 1348 Legends — 13/48/200 EMA strategy indicator with per-segment colour ribbon, signals, volume filter, and EMA labels.";
                 Name                     = "IQ1348Legends";
                 Calculate                = Calculate.OnBarClose;
                 IsOverlay                = true;
@@ -290,14 +301,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // ── 2. Ribbon ─────────────────────────────────────────────────
                 ShowRibbon = true;
 
-                // Bullish cloud: bright lime green (Long / buy bias)
                 var bullBrush = new System.Windows.Media.SolidColorBrush(Colors.LimeGreen);
                 bullBrush.Freeze();
                 RibbonBullColor = bullBrush;
 
-                // Bearish cloud: bright red (Short / sell bias)
-                // FIX: was RGB(139,0,0) dark-red which was nearly invisible at 30% opacity.
-                // Now uses bright OrangeRed so the bearish cloud is clearly visible.
+                // Bright OrangeRed — clearly visible at 40 % opacity (old dark-maroon was not).
                 var bearBrush = new System.Windows.Media.SolidColorBrush(Colors.OrangeRed);
                 bearBrush.Freeze();
                 RibbonBearColor = bearBrush;
@@ -349,6 +357,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _signalFont   = new NinjaTrader.Gui.Tools.SimpleFont("Arial", SignalFontSize) { Bold = true };
                 _biasFont     = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 10);
                 _emaLabelFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9) { Bold = true };
+
+                // Reset segment tracker when data reloads.
+                _segmentStartBar = -1;
+                _ribbonTags.Clear();
             }
         }
 
@@ -359,7 +371,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < 200)
+            if (CurrentBar < 201)
             {
                 Values[3][0] = double.NaN;
                 Values[4][0] = double.NaN;
@@ -381,37 +393,57 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowRibbon)
             {
-                int  barsBack = Math.Min(CurrentBar - 200, 254);
                 bool isBull   = ema13 > ema48;
+                bool prevBull = _ema13[1] > _ema48[1];
 
-                if (isBull)
+                // Initialise segment tracker on the very first valid bar.
+                if (_segmentStartBar < 0)
                 {
-                    // EMA13 above EMA48 → LONG / buy bias → green cloud
-                    Draw.Region(this, "RibbonBull", 0, barsBack,
-                        Values[3], Values[4],
-                        Brushes.Transparent, RibbonBullColor, RibbonOpacity);
-                    if (_lastRibbonBull != true)
-                        RemoveDrawObject("RibbonBear");
+                    _segmentStartBar = CurrentBar;
+                    _segmentIsBull   = isBull;
                 }
-                else
+
+                // ── Bias flip: seal the outgoing segment with a frozen unique tag ──
+                if (isBull != prevBull)
                 {
-                    // EMA13 below EMA48 → SHORT / sell bias → red/orange cloud
-                    Draw.Region(this, "RibbonBear", 0, barsBack,
-                        Values[3], Values[4],
-                        Brushes.Transparent, RibbonBearColor, RibbonOpacity);
-                    if (_lastRibbonBull != false)
-                        RemoveDrawObject("RibbonBull");
+                    // The outgoing segment ran from _segmentStartBar (inclusive) to
+                    // CurrentBar-1 inclusive, i.e. 1 bar ago through N bars ago.
+                    int endBarsAgo   = 1;
+                    int startBarsAgo = Math.Min(CurrentBar - _segmentStartBar, 254);
+
+                    if (startBarsAgo >= endBarsAgo)
+                    {
+                        string sealTag = "Ribbon_seg_" + _segmentStartBar;
+                        _ribbonTags.Add(sealTag);
+                        Draw.Region(this, sealTag,
+                            endBarsAgo, startBarsAgo,
+                            Values[3], Values[4],
+                            Brushes.Transparent,
+                            _segmentIsBull ? RibbonBullColor : RibbonBearColor,
+                            RibbonOpacity);
+                    }
+
+                    _segmentStartBar = CurrentBar;
+                    _segmentIsBull   = isBull;
                 }
-                _lastRibbonBull = isBull;
+
+                // ── Always refresh the live (current) segment ─────────────────
+                int currentLen = Math.Min(CurrentBar - _segmentStartBar, 254);
+                Draw.Region(this, "RibbonCurrent",
+                    0, currentLen,
+                    Values[3], Values[4],
+                    Brushes.Transparent,
+                    isBull ? RibbonBullColor : RibbonBearColor,
+                    RibbonOpacity);
             }
             else
             {
-                if (_lastRibbonBull.HasValue)
-                {
-                    RemoveDrawObject("RibbonBull");
-                    RemoveDrawObject("RibbonBear");
-                    _lastRibbonBull = null;
-                }
+                // ShowRibbon toggled off — remove everything.
+                RemoveDrawObject("RibbonCurrent");
+                foreach (string tag in _ribbonTags)
+                    RemoveDrawObject(tag);
+                _ribbonTags.Clear();
+                _segmentStartBar = -1;
             }
 
             // ── 3. Yellow Low-Volume Candle Filter ───────────────────────────
@@ -507,7 +539,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (ShowEma13)
                     Draw.Text(this, "EmaLabel13", false,
-                        "EMA13 " + ema13.ToString("F2"), 0, ema13, 0,
+                        "EMA13  " + ema13.ToString("F2"), 0, ema13, 0,
                         Brushes.LimeGreen, _emaLabelFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -516,7 +548,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (ShowEma48)
                     Draw.Text(this, "EmaLabel48", false,
-                        "EMA48 " + ema48.ToString("F2"), 0, ema48, 0,
+                        "EMA48  " + ema48.ToString("F2"), 0, ema48, 0,
                         new System.Windows.Media.SolidColorBrush(
                             System.Windows.Media.Color.FromRgb(31, 188, 211)),
                         _emaLabelFont,
