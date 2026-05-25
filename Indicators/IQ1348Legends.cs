@@ -1,14 +1,14 @@
 // IQ 1348 Legends — NinjaTrader 8 indicator replicating the "13/48 Legends v8.0" system.
-// Three EMA lines (13, 48, 200), dynamic ribbon cloud, yellow low-volume candle filter,
+// Three EMA lines (13, 48, 200), SharpDX GPU ribbon cloud, yellow low-volume candle filter,
 // crossover signal labels with alerts, horizontal key price level grid, 200 EMA bias label,
 // EMA price labels on the chart.
 //
-// RIBBON FIX: Each bull/bear segment gets its own uniquely-tagged Draw.Region so the cloud
-// colour is historically correct — green during long bias, red/orange during short bias.
-// Previously a single shared tag was overwritten on every bar, making the whole lookback
-// render with the *current* bias colour instead of the correct per-segment colour.
-//
-// Uses AddPlot() + Draw.Region() — no SharpDX GPU code required.
+// Architecture notes:
+// - EMA13 uses per-bar dynamic plot coloring (bull/bear vs EMA48) via PlotBrushes.
+// - Ribbon cloud is rendered on the GPU in OnRender (no Draw.Region segment tags).
+// - Signal markers/labels, bias label, and EMA labels are rendered on the GPU.
+// - MaximumBarsLookBack uses 256 bars and default Calculate mode is OnPriceChange.
+// - Signal generation includes a configurable minimum-bar gap filter.
 
 #region Using declarations
 using System;
@@ -21,6 +21,9 @@ using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
+using SharpDX;
+using SharpDX.Direct2D1;
+using SharpDX.DirectWrite;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -29,34 +32,48 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// IQ 1348 Legends — Full 13/48/200 EMA strategy indicator.
     ///
     /// Plot index map:
-    ///   Values[0] = EMA 13  (fast, green)
+    ///   Values[0] = EMA 13  (fast, dynamic bull/bear color)
     ///   Values[1] = EMA 48  (slow, teal)
     ///   Values[2] = EMA 200 (macro, pink-red)
-    ///   Values[3] = RibbonUpper (transparent, anchors Draw.Region upper edge = EMA13)
-    ///   Values[4] = RibbonLower (transparent, anchors Draw.Region lower edge = EMA48)
     /// </summary>
     public class IQ1348Legends : Indicator
     {
-        // ── Ribbon segment tracking ──────────────────────────────────────────
-        // Each time EMA13/48 bias flips we "seal" the outgoing segment with a
-        // unique tag so its colour is frozen permanently.  The live (unsettled)
-        // segment uses the tag "RibbonCurrent" and is redrawn every bar.
-        private int          _segmentStartBar = -1;
-        private bool         _segmentIsBull   = true;
-        private List<string> _ribbonTags      = new List<string>();
+        private struct SignalEvent
+        {
+            public int BarIndex;
+            public bool IsBull;
+            public double Price;
+        }
 
         // Cached EMA indicator instances (created in State.DataLoaded).
         private EMA _ema13;
         private EMA _ema48;
         private EMA _ema200;
 
-        // Fonts — cached so we don't allocate on every bar.
-        private NinjaTrader.Gui.Tools.SimpleFont _signalFont;
-        private NinjaTrader.Gui.Tools.SimpleFont _biasFont;
-        private NinjaTrader.Gui.Tools.SimpleFont _emaLabelFont;
+        // Signal cache for GPU rendering.
+        private readonly List<SignalEvent> _signals = new List<SignalEvent>();
+        private int _lastSignalBar = int.MinValue / 2;
 
         // Static array — avoids a heap allocation on every bar close.
         private static readonly int[] _keyLevelOffsets = { -2, -1, 0, 1, 2, 3, 4 };
+
+        // SharpDX resources.
+        private SharpDX.Direct2D1.SolidColorBrush _bullBrushDx;
+        private SharpDX.Direct2D1.SolidColorBrush _bearBrushDx;
+
+        private SharpDX.Direct2D1.SolidColorBrush _ema13LabelBrushDx;
+        private SharpDX.Direct2D1.SolidColorBrush _ema48LabelBrushDx;
+        private SharpDX.Direct2D1.SolidColorBrush _ema200LabelBrushDx;
+
+        private SharpDX.Direct2D1.SolidColorBrush _biasBullBrushDx;
+        private SharpDX.Direct2D1.SolidColorBrush _biasBearBrushDx;
+
+        private SharpDX.Direct2D1.SolidColorBrush _signalBullBrushDx;
+        private SharpDX.Direct2D1.SolidColorBrush _signalBearBrushDx;
+
+        private SharpDX.DirectWrite.TextFormat _mainTextFormat;
+        private SharpDX.DirectWrite.TextFormat _signalTextFormat;
+        private int _lastSignalFontSize = -1;
 
         // ═══════════════════════════════════════════════════════════════
         #region Parameters — 1. EMA Lines
@@ -218,6 +235,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Fire an alert sound on each EMA 13/48 crossover.")]
         public bool PlayAlertSound { get; set; }
 
+        [NinjaScriptProperty]
+        [Range(0, 500)]
+        [Display(Name = "Min Bars Between Signals", Order = 5, GroupName = "4. Signals",
+            Description = "Suppress new crossover signals that occur within this many bars of the previous signal. 0 disables the filter.")]
+        public int MinBarsBetweenSignals { get; set; }
+
         #endregion
 
         // ═══════════════════════════════════════════════════════════════
@@ -264,16 +287,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description              = "IQ 1348 Legends — 13/48/200 EMA strategy indicator with per-segment colour ribbon, signals, volume filter, and EMA labels.";
+                Description              = "IQ 1348 Legends — 13/48/200 EMA strategy indicator with GPU ribbon, signals, volume filter, and EMA labels.";
                 Name                     = "IQ1348Legends";
-                Calculate                = Calculate.OnBarClose;
+                Calculate                = Calculate.OnPriceChange;
                 IsOverlay                = true;
                 IsAutoScale              = false;
                 DisplayInDataBox         = false;
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
                 IsSuspendedWhileInactive = false;
-                MaximumBarsLookBack      = MaximumBarsLookBack.Infinite;
+                MaximumBarsLookBack      = MaximumBarsLookBack.TwoHundredFiftySix;
 
                 // ── 1. EMA Lines ─────────────────────────────────────────────
                 ShowEma13      = true;
@@ -305,7 +328,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 bullBrush.Freeze();
                 RibbonBullColor = bullBrush;
 
-                // Bright OrangeRed — clearly visible at 40 % opacity (old dark-maroon was not).
                 var bearBrush = new System.Windows.Media.SolidColorBrush(Colors.OrangeRed);
                 bearBrush.Freeze();
                 RibbonBearColor = bearBrush;
@@ -318,10 +340,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VolumeThreshold      = 0.7;
 
                 // ── 4. Signals ────────────────────────────────────────────────
-                ShowSignals       = true;
-                SignalFontSize    = 14;
-                SignalOffsetTicks = 6;
-                PlayAlertSound    = false;
+                ShowSignals           = true;
+                SignalFontSize        = 14;
+                SignalOffsetTicks     = 6;
+                PlayAlertSound        = false;
+                MinBarsBetweenSignals = 5;
 
                 // ── 5. Price Levels ───────────────────────────────────────────
                 ShowPriceLevels = true;
@@ -335,11 +358,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowBiasLabel = true;
 
                 // ── Plots ──────────────────────────────────────────────────────
-                AddPlot(new Stroke(Ema13Color,  Ema13Thickness),  PlotStyle.Line, "EMA13");
-                AddPlot(new Stroke(Ema48Color,  Ema48Thickness),  PlotStyle.Line, "EMA48");
+                AddPlot(new Stroke(Ema13Color, Ema13Thickness), PlotStyle.Line, "EMA13");
+                AddPlot(new Stroke(Ema48Color, Ema48Thickness), PlotStyle.Line, "EMA48");
                 AddPlot(new Stroke(Ema200Color, Ema200Thickness), PlotStyle.Line, "EMA200");
-                AddPlot(new Stroke(Brushes.Transparent, 1),       PlotStyle.Line, "RibbonUpper");
-                AddPlot(new Stroke(Brushes.Transparent, 1),       PlotStyle.Line, "RibbonLower");
             }
             else if (State == State.DataLoaded)
             {
@@ -350,17 +371,72 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Plots[2].Brush = Ema200Color;
                 Plots[2].Width = Ema200Thickness;
 
+                if (RibbonBullColor != null && !RibbonBullColor.IsFrozen && RibbonBullColor.CanFreeze)
+                    RibbonBullColor.Freeze();
+                if (RibbonBearColor != null && !RibbonBearColor.IsFrozen && RibbonBearColor.CanFreeze)
+                    RibbonBearColor.Freeze();
+
                 _ema13  = EMA(Close, 13);
                 _ema48  = EMA(Close, 48);
                 _ema200 = EMA(Close, 200);
 
-                _signalFont   = new NinjaTrader.Gui.Tools.SimpleFont("Arial", SignalFontSize) { Bold = true };
-                _biasFont     = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 10);
-                _emaLabelFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9) { Bold = true };
+                _signals.Clear();
+                _lastSignalBar = int.MinValue / 2;
+            }
+            else if (State == State.Terminated)
+            {
+                DisposeDxResources();
+            }
+        }
 
-                // Reset segment tracker when data reloads.
-                _segmentStartBar = -1;
-                _ribbonTags.Clear();
+        #endregion
+
+        // ═══════════════════════════════════════════════════════════════
+        #region OnRenderTargetChanged
+
+        public override void OnRenderTargetChanged()
+        {
+            base.OnRenderTargetChanged();
+
+            DisposeDxResources();
+
+            if (RenderTarget == null)
+                return;
+
+            try
+            {
+                _bullBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    ToDxColor4(RibbonBullColor, RibbonOpacity / 100f));
+                _bearBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    ToDxColor4(RibbonBearColor, RibbonOpacity / 100f));
+
+                _ema13LabelBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(0f, 1f, 0f, 1f));
+                _ema48LabelBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(31f / 255f, 188f / 255f, 211f / 255f, 1f));
+                _ema200LabelBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(1f, 80f / 255f, 80f / 255f, 1f));
+
+                _biasBullBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(0f, 1f, 0f, 1f));
+                _biasBearBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(1f, 69f / 255f, 0f, 1f));
+
+                _signalBullBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(0f, 1f, 0f, 1f));
+                _signalBearBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
+                    new SharpDX.Color4(1f, 69f / 255f, 0f, 1f));
+
+                _mainTextFormat = new SharpDX.DirectWrite.TextFormat(NinjaTrader.Core.Globals.DirectWriteFactory, "Arial", 11f)
+                {
+                    FontWeight = SharpDX.DirectWrite.FontWeight.Bold,
+                    TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading
+                };
+
+                EnsureSignalTextFormat();
+            }
+            catch
+            {
             }
         }
 
@@ -372,79 +448,28 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnBarUpdate()
         {
             if (CurrentBar < 201)
-            {
-                Values[3][0] = double.NaN;
-                Values[4][0] = double.NaN;
                 return;
-            }
 
             double ema13  = _ema13[0];
             double ema48  = _ema48[0];
             double ema200 = _ema200[0];
 
             // ── 1. EMA Lines ─────────────────────────────────────────────────
-            Values[0][0] = ShowEma13  ? ema13  : double.NaN;
-            Values[1][0] = ShowEma48  ? ema48  : double.NaN;
+            Values[0][0] = ShowEma13 ? ema13 : double.NaN;
+            Values[1][0] = ShowEma48 ? ema48 : double.NaN;
             Values[2][0] = ShowEma200 ? ema200 : double.NaN;
 
-            // ── 2. Ribbon anchor plots ────────────────────────────────────────
-            Values[3][0] = ema13;
-            Values[4][0] = ema48;
-
-            if (ShowRibbon)
-            {
-                bool isBull   = ema13 > ema48;
-                bool prevBull = _ema13[1] > _ema48[1];
-
-                // Initialise segment tracker on the very first valid bar.
-                if (_segmentStartBar < 0)
-                {
-                    _segmentStartBar = CurrentBar;
-                    _segmentIsBull   = isBull;
-                }
-
-                // ── Bias flip: seal the outgoing segment with a frozen unique tag ──
-                if (isBull != prevBull)
-                {
-                    // The outgoing segment ran from _segmentStartBar (inclusive) to
-                    // CurrentBar-1 inclusive, i.e. 1 bar ago through N bars ago.
-                    int endBarsAgo   = 1;
-                    int startBarsAgo = Math.Min(CurrentBar - _segmentStartBar, 254);
-
-                    if (startBarsAgo >= endBarsAgo)
-                    {
-                        string sealTag = "Ribbon_seg_" + _segmentStartBar;
-                        _ribbonTags.Add(sealTag);
-                        Draw.Region(this, sealTag,
-                            endBarsAgo, startBarsAgo,
-                            Values[3], Values[4],
-                            Brushes.Transparent,
-                            _segmentIsBull ? RibbonBullColor : RibbonBearColor,
-                            RibbonOpacity);
-                    }
-
-                    _segmentStartBar = CurrentBar;
-                    _segmentIsBull   = isBull;
-                }
-
-                // ── Always refresh the live (current) segment ─────────────────
-                int currentLen = Math.Min(CurrentBar - _segmentStartBar, 254);
-                Draw.Region(this, "RibbonCurrent",
-                    0, currentLen,
-                    Values[3], Values[4],
-                    Brushes.Transparent,
-                    isBull ? RibbonBullColor : RibbonBearColor,
-                    RibbonOpacity);
-            }
+            System.Windows.Media.Brush ema13PlotBrush;
+            if (ema13 > ema48)
+                ema13PlotBrush = RibbonBullColor;
+            else if (ema13 < ema48)
+                ema13PlotBrush = RibbonBearColor;
+            else if (CurrentBar > 0 && PlotBrushes[0][1] != null)
+                ema13PlotBrush = PlotBrushes[0][1];
             else
-            {
-                // ShowRibbon toggled off — remove everything.
-                RemoveDrawObject("RibbonCurrent");
-                foreach (string tag in _ribbonTags)
-                    RemoveDrawObject(tag);
-                _ribbonTags.Clear();
-                _segmentStartBar = -1;
-            }
+                ema13PlotBrush = RibbonBullColor;
+
+            PlotBrushes[0][0] = ema13PlotBrush;
 
             // ── 3. Yellow Low-Volume Candle Filter ───────────────────────────
             if (ShowLowVolumeCandles && CurrentBar >= VolumePeriod)
@@ -460,40 +485,47 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── 4. EMA Crossover Signals ──────────────────────────────────────
             if (ShowSignals)
             {
-                double arrowOffset = SignalOffsetTicks * TickSize;
-                double textOffset  = SignalOffsetTicks * 2.5 * TickSize;
+                bool crossedAbove = CrossAbove(_ema13, _ema48, 1);
+                bool crossedBelow = CrossBelow(_ema13, _ema48, 1);
 
-                if (CrossAbove(_ema13, _ema48, 1))
+                if (crossedAbove || crossedBelow)
                 {
-                    Draw.ArrowUp(this, "BullSignal_" + CurrentBar, false,
-                        0, Low[0] - arrowOffset, Brushes.LimeGreen);
-                    Draw.Text(this, "BullLabel_" + CurrentBar, false,
-                        "LONG \u25b2", 0, Low[0] - textOffset, 0,
-                        Brushes.LimeGreen, _signalFont,
-                        System.Windows.TextAlignment.Center,
-                        Brushes.Transparent, Brushes.Transparent, 0);
+                    int barsSinceLastSignal = CurrentBar - _lastSignalBar;
+                    bool gapAllowed = MinBarsBetweenSignals <= 0 || barsSinceLastSignal >= MinBarsBetweenSignals;
 
-                    if (PlayAlertSound)
-                        Alert("CrossAlertLong", Priority.Medium, "EMA Cross - Long signal",
-                            NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
-                            10, Brushes.Yellow, Brushes.Black);
-                }
-                else if (CrossBelow(_ema13, _ema48, 1))
-                {
-                    Draw.ArrowDown(this, "BearSignal_" + CurrentBar, false,
-                        0, High[0] + arrowOffset, Brushes.OrangeRed);
-                    Draw.Text(this, "BearLabel_" + CurrentBar, false,
-                        "SHORT \u25bc", 0, High[0] + textOffset, 0,
-                        Brushes.OrangeRed, _signalFont,
-                        System.Windows.TextAlignment.Center,
-                        Brushes.Transparent, Brushes.Transparent, 0);
+                    if (gapAllowed)
+                    {
+                        double arrowOffset = SignalOffsetTicks * TickSize;
+                        bool isBull = crossedAbove;
+                        double signalPrice = isBull
+                            ? Low[0] - arrowOffset
+                            : High[0] + arrowOffset;
 
-                    if (PlayAlertSound)
-                        Alert("CrossAlertShort", Priority.Medium, "EMA Cross - Short signal",
-                            NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
-                            10, Brushes.Yellow, Brushes.Black);
+                        _signals.Add(new SignalEvent
+                        {
+                            BarIndex = CurrentBar,
+                            IsBull = isBull,
+                            Price = signalPrice
+                        });
+
+                        _lastSignalBar = CurrentBar;
+
+                        if (PlayAlertSound)
+                        {
+                            if (isBull)
+                                Alert("CrossAlertLong", Priority.Medium, "EMA Cross - Long signal",
+                                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                    10, Brushes.Yellow, Brushes.Black);
+                            else
+                                Alert("CrossAlertShort", Priority.Medium, "EMA Cross - Short signal",
+                                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
+                                    10, Brushes.Yellow, Brushes.Black);
+                        }
+                    }
                 }
             }
+
+            _signals.RemoveAll(s => CurrentBar - s.BarIndex > 256);
 
             // ── 5. Horizontal Key Price Level Grid ───────────────────────────
             if (ShowPriceLevels && LevelSpacing > 0)
@@ -511,69 +543,264 @@ namespace NinjaTrader.NinjaScript.Indicators
                 foreach (int offset in _keyLevelOffsets)
                     RemoveDrawObject("KL_" + offset.ToString());
             }
+        }
 
-            // ── 6. 200 EMA Macro Bias Label ───────────────────────────────────
-            if (ShowBiasLabel)
+        #endregion
+
+        // ═══════════════════════════════════════════════════════════════
+        #region OnRender
+
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            base.OnRender(chartControl, chartScale);
+
+            if (Bars == null || ChartBars == null || chartControl == null || chartScale == null || RenderTarget == null)
+                return;
+
+            try
             {
-                double biasY = High[0] + 10 * TickSize;
-                if (Close[0] > ema200)
-                    Draw.Text(this, "BiasLabel", false,
-                        "ABOVE 200 \u25b2", 0, biasY, 0,
-                        Brushes.LimeGreen, _biasFont,
-                        System.Windows.TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Transparent, 0);
-                else
-                    Draw.Text(this, "BiasLabel", false,
-                        "BELOW 200 \u25bc", 0, biasY, 0,
-                        Brushes.OrangeRed, _biasFont,
-                        System.Windows.TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Transparent, 0);
+                EnsureSignalTextFormat();
+
+                if (ShowRibbon)
+                    RenderRibbon(chartControl, chartScale);
+
+                RenderEmaLabels(chartControl, chartScale);
+                RenderBiasLabel(chartControl, chartScale);
+                RenderSignals(chartControl, chartScale);
             }
-            else
+            catch
             {
-                RemoveDrawObject("BiasLabel");
+            }
+        }
+
+        private void RenderRibbon(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (_bullBrushDx == null || _bearBrushDx == null)
+                return;
+
+            int firstIdx = ChartBars.FromIndex;
+            int lastIdx = ChartBars.ToIndex;
+            if (lastIdx < 200)
+                return;
+
+            int i = Math.Max(firstIdx, 200);
+            while (i <= lastIdx)
+            {
+                if (i < 1)
+                {
+                    i++;
+                    continue;
+                }
+
+                bool isBull = _ema13.GetValueAt(i) > _ema48.GetValueAt(i);
+                var upper = new List<SharpDX.Vector2>();
+                var lower = new List<SharpDX.Vector2>();
+
+                while (i <= lastIdx && i >= 1)
+                {
+                    bool barIsBull = _ema13.GetValueAt(i) > _ema48.GetValueAt(i);
+                    if (barIsBull != isBull)
+                        break;
+
+                    float x = chartControl.GetXByBarIndex(ChartBars, i);
+                    upper.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema13.GetValueAt(i))));
+                    lower.Add(new SharpDX.Vector2(x, chartScale.GetYByValue(_ema48.GetValueAt(i))));
+                    i++;
+                }
+
+                if (upper.Count < 2)
+                    continue;
+
+                using (var geometry = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
+                using (var sink = geometry.Open())
+                {
+                    sink.BeginFigure(upper[0], SharpDX.Direct2D1.FigureBegin.Filled);
+                    for (int p = 1; p < upper.Count; p++)
+                        sink.AddLine(upper[p]);
+
+                    for (int p = lower.Count - 1; p >= 0; p--)
+                        sink.AddLine(lower[p]);
+
+                    sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
+                    sink.Close();
+
+                    RenderTarget.FillGeometry(geometry, isBull ? _bullBrushDx : _bearBrushDx);
+                }
+            }
+        }
+
+        private void RenderEmaLabels(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (!ShowEmaLabels || _mainTextFormat == null)
+                return;
+
+            int barIndex = CurrentBar;
+            if (barIndex < 200)
+                return;
+
+            float x = chartControl.GetXByBarIndex(ChartBars, barIndex) + 6f;
+
+            if (ShowEma13 && _ema13LabelBrushDx != null)
+            {
+                double value = _ema13[0];
+                float y = chartScale.GetYByValue(value) - 8f;
+                RenderTarget.DrawText(
+                    "EMA13  " + value.ToString("F2"),
+                    _mainTextFormat,
+                    new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 24f),
+                    _ema13LabelBrushDx);
             }
 
-            // ── 7. EMA Price Labels (current bar only) ────────────────────────
-            if (ShowEmaLabels)
+            if (ShowEma48 && _ema48LabelBrushDx != null)
             {
-                if (ShowEma13)
-                    Draw.Text(this, "EmaLabel13", false,
-                        "EMA13  " + ema13.ToString("F2"), 0, ema13, 0,
-                        Brushes.LimeGreen, _emaLabelFont,
-                        System.Windows.TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Transparent, 0);
-                else
-                    RemoveDrawObject("EmaLabel13");
-
-                if (ShowEma48)
-                    Draw.Text(this, "EmaLabel48", false,
-                        "EMA48  " + ema48.ToString("F2"), 0, ema48, 0,
-                        new System.Windows.Media.SolidColorBrush(
-                            System.Windows.Media.Color.FromRgb(31, 188, 211)),
-                        _emaLabelFont,
-                        System.Windows.TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Transparent, 0);
-                else
-                    RemoveDrawObject("EmaLabel48");
-
-                if (ShowEma200)
-                    Draw.Text(this, "EmaLabel200", false,
-                        "EMA200 " + ema200.ToString("F2"), 0, ema200, 0,
-                        new System.Windows.Media.SolidColorBrush(
-                            System.Windows.Media.Color.FromRgb(255, 80, 80)),
-                        _emaLabelFont,
-                        System.Windows.TextAlignment.Left,
-                        Brushes.Transparent, Brushes.Transparent, 0);
-                else
-                    RemoveDrawObject("EmaLabel200");
+                double value = _ema48[0];
+                float y = chartScale.GetYByValue(value) - 8f;
+                RenderTarget.DrawText(
+                    "EMA48  " + value.ToString("F2"),
+                    _mainTextFormat,
+                    new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 24f),
+                    _ema48LabelBrushDx);
             }
-            else
+
+            if (ShowEma200 && _ema200LabelBrushDx != null)
             {
-                RemoveDrawObject("EmaLabel13");
-                RemoveDrawObject("EmaLabel48");
-                RemoveDrawObject("EmaLabel200");
+                double value = _ema200[0];
+                float y = chartScale.GetYByValue(value) - 8f;
+                RenderTarget.DrawText(
+                    "EMA200 " + value.ToString("F2"),
+                    _mainTextFormat,
+                    new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 24f),
+                    _ema200LabelBrushDx);
             }
+        }
+
+        private void RenderBiasLabel(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (!ShowBiasLabel || _mainTextFormat == null || _biasBullBrushDx == null || _biasBearBrushDx == null)
+                return;
+
+            int lastVisible = ChartBars.ToIndex;
+            if (lastVisible < 0 || lastVisible > CurrentBar)
+                return;
+
+            float x = chartControl.GetXByBarIndex(ChartBars, lastVisible) + 6f;
+            float y = chartScale.GetYByValue(High.GetValueAt(lastVisible) + 10 * TickSize) - 12f;
+
+            bool isBull = Close[0] > _ema200[0];
+            RenderTarget.DrawText(
+                isBull ? "ABOVE 200 ▲" : "BELOW 200 ▼",
+                _mainTextFormat,
+                new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 26f),
+                isBull ? _biasBullBrushDx : _biasBearBrushDx);
+        }
+
+        private void RenderSignals(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (!ShowSignals || _signalTextFormat == null || _signalBullBrushDx == null || _signalBearBrushDx == null)
+                return;
+
+            int firstIdx = ChartBars.FromIndex;
+            int lastIdx = ChartBars.ToIndex;
+            float triHalfWidth = 6f;
+            float triHeight = 10f;
+            double textDelta = SignalOffsetTicks * 1.5 * TickSize;
+
+            foreach (var signal in _signals)
+            {
+                if (signal.BarIndex < firstIdx || signal.BarIndex > lastIdx)
+                    continue;
+
+                float x = chartControl.GetXByBarIndex(ChartBars, signal.BarIndex);
+                float yArrow = chartScale.GetYByValue(signal.Price);
+
+                using (var tri = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
+                using (var sink = tri.Open())
+                {
+                    if (signal.IsBull)
+                    {
+                        sink.BeginFigure(new SharpDX.Vector2(x, yArrow - triHeight * 0.5f), SharpDX.Direct2D1.FigureBegin.Filled);
+                        sink.AddLine(new SharpDX.Vector2(x - triHalfWidth, yArrow + triHeight * 0.5f));
+                        sink.AddLine(new SharpDX.Vector2(x + triHalfWidth, yArrow + triHeight * 0.5f));
+                    }
+                    else
+                    {
+                        sink.BeginFigure(new SharpDX.Vector2(x, yArrow + triHeight * 0.5f), SharpDX.Direct2D1.FigureBegin.Filled);
+                        sink.AddLine(new SharpDX.Vector2(x - triHalfWidth, yArrow - triHeight * 0.5f));
+                        sink.AddLine(new SharpDX.Vector2(x + triHalfWidth, yArrow - triHeight * 0.5f));
+                    }
+
+                    sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
+                    sink.Close();
+
+                    RenderTarget.FillGeometry(tri, signal.IsBull ? _signalBullBrushDx : _signalBearBrushDx);
+                }
+
+                double textPrice = signal.IsBull ? signal.Price - textDelta : signal.Price + textDelta;
+                float yText = chartScale.GetYByValue(textPrice) - 9f;
+                RenderTarget.DrawText(
+                    signal.IsBull ? "LONG ▲" : "SHORT ▼",
+                    _signalTextFormat,
+                    new SharpDX.Mathematics.Interop.RawRectangleF(x - 80f, yText, x + 80f, yText + SignalFontSize + 12f),
+                    signal.IsBull ? _signalBullBrushDx : _signalBearBrushDx);
+            }
+        }
+
+        #endregion
+
+        // ═══════════════════════════════════════════════════════════════
+        #region Helpers
+
+        private static SharpDX.Color4 ToDxColor4(System.Windows.Media.Brush brush, float alpha)
+        {
+            var scb = brush as System.Windows.Media.SolidColorBrush;
+            if (scb == null)
+                return new SharpDX.Color4(1f, 1f, 1f, alpha);
+
+            System.Windows.Media.Color c = scb.Color;
+            return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
+        }
+
+        private void EnsureSignalTextFormat()
+        {
+            if (RenderTarget == null)
+                return;
+
+            if (_signalTextFormat != null && _lastSignalFontSize == SignalFontSize)
+                return;
+
+            if (_signalTextFormat != null)
+            {
+                _signalTextFormat.Dispose();
+                _signalTextFormat = null;
+            }
+
+            _signalTextFormat = new SharpDX.DirectWrite.TextFormat(NinjaTrader.Core.Globals.DirectWriteFactory,
+                "Arial", SignalFontSize)
+            {
+                FontWeight = SharpDX.DirectWrite.FontWeight.Bold,
+                TextAlignment = SharpDX.DirectWrite.TextAlignment.Center
+            };
+
+            _lastSignalFontSize = SignalFontSize;
+        }
+
+        private void DisposeDxResources()
+        {
+            if (_bullBrushDx != null) { _bullBrushDx.Dispose(); _bullBrushDx = null; }
+            if (_bearBrushDx != null) { _bearBrushDx.Dispose(); _bearBrushDx = null; }
+
+            if (_ema13LabelBrushDx != null) { _ema13LabelBrushDx.Dispose(); _ema13LabelBrushDx = null; }
+            if (_ema48LabelBrushDx != null) { _ema48LabelBrushDx.Dispose(); _ema48LabelBrushDx = null; }
+            if (_ema200LabelBrushDx != null) { _ema200LabelBrushDx.Dispose(); _ema200LabelBrushDx = null; }
+
+            if (_biasBullBrushDx != null) { _biasBullBrushDx.Dispose(); _biasBullBrushDx = null; }
+            if (_biasBearBrushDx != null) { _biasBearBrushDx.Dispose(); _biasBearBrushDx = null; }
+
+            if (_signalBullBrushDx != null) { _signalBullBrushDx.Dispose(); _signalBullBrushDx = null; }
+            if (_signalBearBrushDx != null) { _signalBearBrushDx.Dispose(); _signalBearBrushDx = null; }
+
+            if (_mainTextFormat != null) { _mainTextFormat.Dispose(); _mainTextFormat = null; }
+            if (_signalTextFormat != null) { _signalTextFormat.Dispose(); _signalTextFormat = null; }
         }
 
         #endregion
