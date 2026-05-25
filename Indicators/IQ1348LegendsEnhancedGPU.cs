@@ -865,18 +865,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
 	{
 		private IQ1348LegendsEnhancedGPU[] cacheIQ1348LegendsEnhancedGPU;
-		public IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(bool showEma13, System.Windows.Media.Brush ema13BullColor, System.Windows.Media.Brush ema13BearColor, int ema13Thickness, bool showEma48, System.Windows.Media.Brush ema48Color, int ema48Thickness, bool showEma200, System.Windows.Media.Brush ema200Color, int ema200Thickness, bool showEmaLabels, bool showRibbon, System.Windows.Media.Brush ribbonBullColor, System.Windows.Media.Brush ribbonBearColor, int ribbonOpacity, bool showLowVolumeCandles, int volumePeriod, double volumeThreshold, bool showSignals, int signalFontSize, int signalOffsetTicks, bool playAlertSound, bool showPriceLevels, double levelSpacing, System.Windows.Media.Brush levelColor, bool showBiasLabel)
+		public IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU()
 		{
-			return IQ1348LegendsEnhancedGPU(Input, showEma13, ema13BullColor, ema13BearColor, ema13Thickness, showEma48, ema48Color, ema48Thickness, showEma200, ema200Color, ema200Thickness, showEmaLabels, showRibbon, ribbonBullColor, ribbonBearColor, ribbonOpacity, showLowVolumeCandles, volumePeriod, volumeThreshold, showSignals, signalFontSize, signalOffsetTicks, playAlertSound, showPriceLevels, levelSpacing, levelColor, showBiasLabel);
+			return IQ1348LegendsEnhancedGPU(Input);
 		}
 
-		public IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(ISeries<double> input, bool showEma13, System.Windows.Media.Brush ema13BullColor, System.Windows.Media.Brush ema13BearColor, int ema13Thickness, bool showEma48, System.Windows.Media.Brush ema48Color, int ema48Thickness, bool showEma200, System.Windows.Media.Brush ema200Color, int ema200Thickness, bool showEmaLabels, bool showRibbon, System.Windows.Media.Brush ribbonBullColor, System.Windows.Media.Brush ribbonBearColor, int ribbonOpacity, bool showLowVolumeCandles, int volumePeriod, double volumeThreshold, bool showSignals, int signalFontSize, int signalOffsetTicks, bool playAlertSound, bool showPriceLevels, double levelSpacing, System.Windows.Media.Brush levelColor, bool showBiasLabel)
+		public IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(ISeries<double> input)
 		{
 			if (cacheIQ1348LegendsEnhancedGPU != null)
 				for (int idx = 0; idx < cacheIQ1348LegendsEnhancedGPU.Length; idx++)
-					if (cacheIQ1348LegendsEnhancedGPU[idx] != null && cacheIQ1348LegendsEnhancedGPU[idx].ShowEma13 == showEma13 && cacheIQ1348LegendsEnhancedGPU[idx].Ema13BullColor == ema13BullColor && cacheIQ1348LegendsEnhancedGPU[idx].Ema13BearColor == ema13BearColor && cacheIQ1348LegendsEnhancedGPU[idx].Ema13Thickness == ema13Thickness && cacheIQ1348LegendsEnhancedGPU[idx].ShowEma48 == showEma48 && cacheIQ1348LegendsEnhancedGPU[idx].Ema48Color == ema48Color && cacheIQ1348LegendsEnhancedGPU[idx].Ema48Thickness == ema48Thickness && cacheIQ1348LegendsEnhancedGPU[idx].ShowEma200 == showEma200 && cacheIQ1348LegendsEnhancedGPU[idx].Ema200Color == ema200Color && cacheIQ1348LegendsEnhancedGPU[idx].Ema200Thickness == ema200Thickness && cacheIQ1348LegendsEnhancedGPU[idx].ShowEmaLabels == showEmaLabels && cacheIQ1348LegendsEnhancedGPU[idx].ShowRibbon == showRibbon && cacheIQ1348LegendsEnhancedGPU[idx].RibbonBullColor == ribbonBullColor && cacheIQ1348LegendsEnhancedGPU[idx].RibbonBearColor == ribbonBearColor && cacheIQ1348LegendsEnhancedGPU[idx].RibbonOpacity == ribbonOpacity && cacheIQ1348LegendsEnhancedGPU[idx].ShowLowVolumeCandles == showLowVolumeCandles && cacheIQ1348LegendsEnhancedGPU[idx].VolumePeriod == volumePeriod && cacheIQ1348LegendsEnhancedGPU[idx].VolumeThreshold == volumeThreshold && cacheIQ1348LegendsEnhancedGPU[idx].ShowSignals == showSignals && cacheIQ1348LegendsEnhancedGPU[idx].SignalFontSize == signalFontSize && cacheIQ1348LegendsEnhancedGPU[idx].SignalOffsetTicks == signalOffsetTicks && cacheIQ1348LegendsEnhancedGPU[idx].PlayAlertSound == playAlertSound && cacheIQ1348LegendsEnhancedGPU[idx].ShowPriceLevels == showPriceLevels && cacheIQ1348LegendsEnhancedGPU[idx].LevelSpacing == levelSpacing && cacheIQ1348LegendsEnhancedGPU[idx].LevelColor == levelColor && cacheIQ1348LegendsEnhancedGPU[idx].ShowBiasLabel == showBiasLabel && cacheIQ1348LegendsEnhancedGPU[idx].EqualsInput(input))
+					if (cacheIQ1348LegendsEnhancedGPU[idx] != null && cacheIQ1348LegendsEnhancedGPU[idx].EqualsInput(input))
 						return cacheIQ1348LegendsEnhancedGPU[idx];
-			return CacheIndicator<IQ1348LegendsEnhancedGPU>(new IQ1348LegendsEnhancedGPU(){ ShowEma13 = showEma13, Ema13BullColor = ema13BullColor, Ema13BearColor = ema13BearColor, Ema13Thickness = ema13Thickness, ShowEma48 = showEma48, Ema48Color = ema48Color, Ema48Thickness = ema48Thickness, ShowEma200 = showEma200, Ema200Color = ema200Color, Ema200Thickness = ema200Thickness, ShowEmaLabels = showEmaLabels, ShowRibbon = showRibbon, RibbonBullColor = ribbonBullColor, RibbonBearColor = ribbonBearColor, RibbonOpacity = ribbonOpacity, ShowLowVolumeCandles = showLowVolumeCandles, VolumePeriod = volumePeriod, VolumeThreshold = volumeThreshold, ShowSignals = showSignals, SignalFontSize = signalFontSize, SignalOffsetTicks = signalOffsetTicks, PlayAlertSound = playAlertSound, ShowPriceLevels = showPriceLevels, LevelSpacing = levelSpacing, LevelColor = levelColor, ShowBiasLabel = showBiasLabel }, input, ref cacheIQ1348LegendsEnhancedGPU);
+			return CacheIndicator<IQ1348LegendsEnhancedGPU>(new IQ1348LegendsEnhancedGPU(), input, ref cacheIQ1348LegendsEnhancedGPU);
 		}
 	}
 }
@@ -885,14 +885,14 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
 	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
 	{
-		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(bool showEma13, System.Windows.Media.Brush ema13BullColor, System.Windows.Media.Brush ema13BearColor, int ema13Thickness, bool showEma48, System.Windows.Media.Brush ema48Color, int ema48Thickness, bool showEma200, System.Windows.Media.Brush ema200Color, int ema200Thickness, bool showEmaLabels, bool showRibbon, System.Windows.Media.Brush ribbonBullColor, System.Windows.Media.Brush ribbonBearColor, int ribbonOpacity, bool showLowVolumeCandles, int volumePeriod, double volumeThreshold, bool showSignals, int signalFontSize, int signalOffsetTicks, bool playAlertSound, bool showPriceLevels, double levelSpacing, System.Windows.Media.Brush levelColor, bool showBiasLabel)
+		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU()
 		{
-			return indicator.IQ1348LegendsEnhancedGPU(Input, showEma13, ema13BullColor, ema13BearColor, ema13Thickness, showEma48, ema48Color, ema48Thickness, showEma200, ema200Color, ema200Thickness, showEmaLabels, showRibbon, ribbonBullColor, ribbonBearColor, ribbonOpacity, showLowVolumeCandles, volumePeriod, volumeThreshold, showSignals, signalFontSize, signalOffsetTicks, playAlertSound, showPriceLevels, levelSpacing, levelColor, showBiasLabel);
+			return indicator.IQ1348LegendsEnhancedGPU(Input);
 		}
 
-		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(ISeries<double> input , bool showEma13, System.Windows.Media.Brush ema13BullColor, System.Windows.Media.Brush ema13BearColor, int ema13Thickness, bool showEma48, System.Windows.Media.Brush ema48Color, int ema48Thickness, bool showEma200, System.Windows.Media.Brush ema200Color, int ema200Thickness, bool showEmaLabels, bool showRibbon, System.Windows.Media.Brush ribbonBullColor, System.Windows.Media.Brush ribbonBearColor, int ribbonOpacity, bool showLowVolumeCandles, int volumePeriod, double volumeThreshold, bool showSignals, int signalFontSize, int signalOffsetTicks, bool playAlertSound, bool showPriceLevels, double levelSpacing, System.Windows.Media.Brush levelColor, bool showBiasLabel)
+		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(ISeries<double> input)
 		{
-			return indicator.IQ1348LegendsEnhancedGPU(input, showEma13, ema13BullColor, ema13BearColor, ema13Thickness, showEma48, ema48Color, ema48Thickness, showEma200, ema200Color, ema200Thickness, showEmaLabels, showRibbon, ribbonBullColor, ribbonBearColor, ribbonOpacity, showLowVolumeCandles, volumePeriod, volumeThreshold, showSignals, signalFontSize, signalOffsetTicks, playAlertSound, showPriceLevels, levelSpacing, levelColor, showBiasLabel);
+			return indicator.IQ1348LegendsEnhancedGPU(input);
 		}
 	}
 }
@@ -901,14 +901,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
 	{
-		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(bool showEma13, System.Windows.Media.Brush ema13BullColor, System.Windows.Media.Brush ema13BearColor, int ema13Thickness, bool showEma48, System.Windows.Media.Brush ema48Color, int ema48Thickness, bool showEma200, System.Windows.Media.Brush ema200Color, int ema200Thickness, bool showEmaLabels, bool showRibbon, System.Windows.Media.Brush ribbonBullColor, System.Windows.Media.Brush ribbonBearColor, int ribbonOpacity, bool showLowVolumeCandles, int volumePeriod, double volumeThreshold, bool showSignals, int signalFontSize, int signalOffsetTicks, bool playAlertSound, bool showPriceLevels, double levelSpacing, System.Windows.Media.Brush levelColor, bool showBiasLabel)
+		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU()
 		{
-			return indicator.IQ1348LegendsEnhancedGPU(Input, showEma13, ema13BullColor, ema13BearColor, ema13Thickness, showEma48, ema48Color, ema48Thickness, showEma200, ema200Color, ema200Thickness, showEmaLabels, showRibbon, ribbonBullColor, ribbonBearColor, ribbonOpacity, showLowVolumeCandles, volumePeriod, volumeThreshold, showSignals, signalFontSize, signalOffsetTicks, playAlertSound, showPriceLevels, levelSpacing, levelColor, showBiasLabel);
+			return indicator.IQ1348LegendsEnhancedGPU(Input);
 		}
 
-		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(ISeries<double> input , bool showEma13, System.Windows.Media.Brush ema13BullColor, System.Windows.Media.Brush ema13BearColor, int ema13Thickness, bool showEma48, System.Windows.Media.Brush ema48Color, int ema48Thickness, bool showEma200, System.Windows.Media.Brush ema200Color, int ema200Thickness, bool showEmaLabels, bool showRibbon, System.Windows.Media.Brush ribbonBullColor, System.Windows.Media.Brush ribbonBearColor, int ribbonOpacity, bool showLowVolumeCandles, int volumePeriod, double volumeThreshold, bool showSignals, int signalFontSize, int signalOffsetTicks, bool playAlertSound, bool showPriceLevels, double levelSpacing, System.Windows.Media.Brush levelColor, bool showBiasLabel)
+		public Indicators.IQ1348LegendsEnhancedGPU IQ1348LegendsEnhancedGPU(ISeries<double> input)
 		{
-			return indicator.IQ1348LegendsEnhancedGPU(input, showEma13, ema13BullColor, ema13BearColor, ema13Thickness, showEma48, ema48Color, ema48Thickness, showEma200, ema200Color, ema200Thickness, showEmaLabels, showRibbon, ribbonBullColor, ribbonBearColor, ribbonOpacity, showLowVolumeCandles, volumePeriod, volumeThreshold, showSignals, signalFontSize, signalOffsetTicks, playAlertSound, showPriceLevels, levelSpacing, levelColor, showBiasLabel);
+			return indicator.IQ1348LegendsEnhancedGPU(input);
 		}
 	}
 }
