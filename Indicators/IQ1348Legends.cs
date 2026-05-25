@@ -415,7 +415,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Brushes.Transparent, Brushes.Transparent, 0);
 
                     if (PlayAlertSound)
-                        Alert("CrossAlert_" + CurrentBar, Priority.Medium, "EMA Cross — Long signal",
+                        Alert("CrossAlertLong", Priority.Medium, "EMA Cross — Long signal",
                             NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
                             10, Brushes.Yellow, Brushes.Black);
                 }
@@ -432,7 +432,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Brushes.Transparent, Brushes.Transparent, 0);
 
                     if (PlayAlertSound)
-                        Alert("CrossAlert_" + CurrentBar, Priority.Medium, "EMA Cross — Short signal",
+                        Alert("CrossAlertShort", Priority.Medium, "EMA Cross — Short signal",
                             NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
                             10, Brushes.Yellow, Brushes.Black);
                 }
