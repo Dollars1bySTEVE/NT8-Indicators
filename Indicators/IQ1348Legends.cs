@@ -317,7 +317,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _ema48  = EMA(Close, 48);
                 _ema200 = EMA(Close, 200);
 
-                // Cache a single SimpleFont used by signal arrows/text.
+                // Cache a single SimpleFont used by signal arrows/text and bias label.
                 _signalFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9);
             }
         }
@@ -461,19 +461,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ShowBiasLabel)
             {
                 double biasY = High[0] + 10 * TickSize;
-                var    biasFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9);
                 if (Close[0] > ema200)
                     Draw.Text(this, "BiasLabel", false,
                         "ABOVE 200 \u25b2", 0, biasY, 0,
                         Brushes.LimeGreen,
-                        biasFont,
+                        _signalFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
                 else
                     Draw.Text(this, "BiasLabel", false,
                         "BELOW 200 \u25bc", 0, biasY, 0,
                         Brushes.Red,
-                        biasFont,
+                        _signalFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
             }
