@@ -35,6 +35,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         // or unset (null) so RemoveDrawObject is only called on a state transition.
         private bool? _lastRibbonBull;
 
+        // Cached EMA indicator instances (created in State.DataLoaded) to avoid
+        // re-instantiating EMA(...) on every bar during signal evaluation.
+        private Indicators.EMA _ema13;
+        private Indicators.EMA _ema48;
+        private Indicators.EMA _ema200;
+
+        // Cached SimpleFont for signal arrow/text rendering — reused per bar.
+        private NinjaTrader.Gui.Tools.SimpleFont _signalFont;
+
         // ════════════════════════════════════════════════════════════════════════
         #region Parameters — 1. EMA Lines
 
@@ -302,6 +311,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Plots[1].Width = Ema48Thickness;
                 Plots[2].Brush = Ema200Color;
                 Plots[2].Width = Ema200Thickness;
+
+                // Cache EMA instances to avoid per-bar allocation in OnBarUpdate.
+                _ema13  = EMA(Close, 13);
+                _ema48  = EMA(Close, 48);
+                _ema200 = EMA(Close, 200);
+
+                // Cache a single SimpleFont used by signal arrows/text.
+                _signalFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9);
             }
         }
 
@@ -319,9 +336,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             }
 
-            double ema13  = EMA(Close, 13)[0];
-            double ema48  = EMA(Close, 48)[0];
-            double ema200 = EMA(Close, 200)[0];
+            double ema13  = _ema13[0];
+            double ema48  = _ema48[0];
+            double ema200 = _ema200[0];
 
             // ── 1. EMA Lines ────────────────────────────────────────────────
             Values[0][0] = ShowEma13  ? ema13  : double.NaN;
@@ -386,14 +403,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ShowSignals)
             {
                 // Bullish cross: EMA13 crosses above EMA48
-                if (CrossAbove(EMA(Close, 13), EMA(Close, 48), 1))
+                if (CrossAbove(_ema13, _ema48, 1))
                 {
                     Draw.ArrowUp(this, "BullSignal_" + CurrentBar, false,
                         0, Low[0] - 2 * TickSize, Brushes.LimeGreen);
                     Draw.Text(this, "BullLabel_" + CurrentBar, false,
                         "Long \u25b2", 0, Low[0] - 4 * TickSize, 0,
                         Brushes.LimeGreen,
-                        new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9),
+                        _signalFont,
                         System.Windows.TextAlignment.Center,
                         Brushes.Transparent, Brushes.Transparent, 0);
 
@@ -403,14 +420,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                             10, Brushes.Yellow, Brushes.Black);
                 }
                 // Bearish cross: EMA13 crosses below EMA48
-                else if (CrossBelow(EMA(Close, 13), EMA(Close, 48), 1))
+                else if (CrossBelow(_ema13, _ema48, 1))
                 {
                     Draw.ArrowDown(this, "BearSignal_" + CurrentBar, false,
                         0, High[0] + 2 * TickSize, Brushes.Red);
                     Draw.Text(this, "BearLabel_" + CurrentBar, false,
                         "Short \u25bc", 0, High[0] + 4 * TickSize, 0,
                         Brushes.Red,
-                        new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9),
+                        _signalFont,
                         System.Windows.TextAlignment.Center,
                         Brushes.Transparent, Brushes.Transparent, 0);
 
