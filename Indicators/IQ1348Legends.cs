@@ -78,6 +78,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Static array — avoids a heap allocation on every bar close.
         private static readonly int[] _keyLevelOffsets = { -2, -1, 0, 1, 2, 3, 4 };
+        private const int RegionMaxBarsBack = 254;
+        private const float LabelTopMargin = 2f;
+        private const float LabelBottomPadding = 26f;
 
         // SharpDX resources.
         private SharpDX.Direct2D1.SolidColorBrush _ema13LabelBrushDx;
@@ -620,7 +623,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowRibbon && CurrentBar >= 200)
             {
-                int barsBack = Math.Max(0, Math.Min(CurrentBar - 200, 254));
+                int barsBack = Math.Max(0, Math.Min(CurrentBar - 200, RegionMaxBarsBack));
                 Brush outlineBrush = Brushes.Transparent;
                 Draw.Region(this, "IQ1348_RibbonBull", 0, barsBack,
                     _bullUpper, _bullLower, outlineBrush, RibbonBullColor, RibbonOpacity);
@@ -707,7 +710,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int k = 0; k < labels.Count; k++)
             {
                 float y = anchorY + (k - middleIndex) * minSpacing;
-                y = Math.Max(2f, Math.Min(rt.Size.Height - 26f, y));
+                y = Math.Max(LabelTopMargin, Math.Min(rt.Size.Height - LabelBottomPadding, y));
 
                 if (float.IsNaN(y) || float.IsInfinity(y))
                     continue;
