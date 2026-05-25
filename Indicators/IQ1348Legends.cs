@@ -422,17 +422,22 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 5. Horizontal Key Price Level Grid ──────────────────────────
+            int[] keyLevelOffsets = { -2, -1, 0, 1, 2, 3, 4 };
             if (ShowPriceLevels && LevelSpacing > 0)
             {
                 double baseLevel = Math.Floor(Close[0] / LevelSpacing) * LevelSpacing;
-                int[] offsets    = { -2, -1, 0, 1, 2, 3, 4 };
-                foreach (int offset in offsets)
+                foreach (int offset in keyLevelOffsets)
                 {
                     double level = baseLevel + offset * LevelSpacing;
-                    string tag   = $"KL_{level:F0}";
+                    string tag   = $"KL_{offset}";
                     Draw.HorizontalLine(this, tag, level, LevelColor,
                         DashStyleHelper.Solid, 1);
                 }
+            }
+            else
+            {
+                foreach (int offset in keyLevelOffsets)
+                    RemoveDrawObject($"KL_{offset}");
             }
 
             // ── 6. 200 EMA Macro Bias Label ─────────────────────────────────
