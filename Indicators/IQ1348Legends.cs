@@ -1,9 +1,8 @@
 // IQ 1348 Legends — NinjaTrader 8 indicator replicating the "13/48 Legends v8.0" system.
 // Three EMA lines (13, 48, 200), dynamic ribbon cloud, yellow low-volume candle filter,
-// crossover signal labels with alerts, horizontal key price level grid, 200 EMA bias label.
+// crossover signal labels with alerts, horizontal key price level grid, 200 EMA bias label,
+// EMA price labels on the right-hand axis.
 // Uses AddPlot() + Draw.Region() — no SharpDX GPU code required.
-// Template source: IQEma50Cloud.cs (ribbon/brush pattern), IQCandlesGPU.cs (BarBrushes).
-// Do NOT add top-level SharpDX using directives — qualify inline if ever needed.
 
 #region Using declarations
 using System;
@@ -31,22 +30,20 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class IQ1348Legends : Indicator
     {
-        // Tracks whether the ribbon was last drawn as bullish (true), bearish (false),
-        // or unset (null) so RemoveDrawObject is only called on a state transition.
         private bool? _lastRibbonBull;
 
-        // Cached EMA indicator instances (created in State.DataLoaded) to avoid
-        // re-instantiating EMA(...) on every bar during signal evaluation.
         private EMA _ema13;
         private EMA _ema48;
         private EMA _ema200;
 
-        // Cached SimpleFont for signal arrow/text rendering — reused per bar.
+        // Separate fonts — signal text is larger than bias label
         private NinjaTrader.Gui.Tools.SimpleFont _signalFont;
+        private NinjaTrader.Gui.Tools.SimpleFont _biasFont;
+        private NinjaTrader.Gui.Tools.SimpleFont _emaLabelFont;
 
-        // Static readonly array — avoids a heap allocation on every bar close tick.
         private static readonly int[] _keyLevelOffsets = { -2, -1, 0, 1, 2, 3, 4 };
 
+        // ═══════════════════════════════════════════════════════════════
         #region Parameters — 1. EMA Lines
 
         [NinjaScriptProperty]
@@ -112,8 +109,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "EMA 200 Thickness", Order = 9, GroupName = "1. EMA Lines")]
         public int Ema200Thickness { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Show EMA Labels", Order = 10, GroupName = "1. EMA Lines",
+            Description = "Show EMA 13 / EMA 48 / EMA 200 price labels on the right edge of the chart.")]
+        public bool ShowEmaLabels { get; set; }
+
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region Parameters — 2. Ribbon
 
         [NinjaScriptProperty]
@@ -152,6 +155,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region Parameters — 3. Volume Filter
 
         [NinjaScriptProperty]
@@ -173,6 +177,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region Parameters — 4. Signals
 
         [NinjaScriptProperty]
@@ -181,12 +186,25 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowSignals { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Play Alert Sound", Order = 2, GroupName = "4. Signals",
+        [Range(8, 32)]
+        [Display(Name = "Signal Font Size", Order = 2, GroupName = "4. Signals",
+            Description = "Font size for the Long/Short signal text labels. Default 14.")]
+        public int SignalFontSize { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Signal Offset (ticks)", Order = 3, GroupName = "4. Signals",
+            Description = "How many ticks below/above the bar the signal arrow and text appear.")]
+        public int SignalOffsetTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Play Alert Sound", Order = 4, GroupName = "4. Signals",
             Description = "Fire an alert sound on each EMA 13/48 crossover.")]
         public bool PlayAlertSound { get; set; }
 
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region Parameters — 5. Price Levels
 
         [NinjaScriptProperty]
@@ -213,22 +231,24 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region Parameters — 6. Info
 
         [NinjaScriptProperty]
         [Display(Name = "Show Bias Label", Order = 1, GroupName = "6. Info",
-            Description = "Show ABOVE/BELOW 200 EMA macro bias label.")]
+            Description = "Show ABOVE/BELOW 200 EMA macro bias label on the most recent bar.")]
         public bool ShowBiasLabel { get; set; }
 
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region OnStateChange
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Description              = "IQ 1348 Legends — 13/48/200 EMA strategy indicator with ribbon, signals, and volume filter.";
+                Description              = "IQ 1348 Legends — 13/48/200 EMA strategy indicator with ribbon, signals, volume filter, and EMA labels.";
                 Name                     = "IQ1348Legends";
                 Calculate                = Calculate.OnBarClose;
                 IsOverlay                = true;
@@ -237,8 +257,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DrawOnPricePanel         = true;
                 PaintPriceMarkers        = false;
                 IsSuspendedWhileInactive = false;
-                // NOTE: IsCustomBarColor is a Strategy-only property and does NOT exist
-                // on the Indicator base class. BarBrushes[] works in indicators without it.
                 MaximumBarsLookBack      = MaximumBarsLookBack.Infinite;
 
                 // 1. EMA Lines
@@ -262,6 +280,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Ema200Color     = ema200Brush;
                 Ema200Thickness = 1;
 
+                ShowEmaLabels = true;
+
                 // 2. Ribbon
                 ShowRibbon      = true;
                 var bullBrush   = new System.Windows.Media.SolidColorBrush(Colors.LimeGreen);
@@ -279,8 +299,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VolumeThreshold      = 0.7;
 
                 // 4. Signals
-                ShowSignals    = true;
-                PlayAlertSound = false;
+                ShowSignals      = true;
+                SignalFontSize   = 14;
+                SignalOffsetTicks = 6;
+                PlayAlertSound   = false;
 
                 // 5. Price Levels
                 ShowPriceLevels = true;
@@ -313,12 +335,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _ema48  = EMA(Close, 48);
                 _ema200 = EMA(Close, 200);
 
-                _signalFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9);
+                // Signal font — user-configurable size, bold for visibility
+                _signalFont  = new NinjaTrader.Gui.Tools.SimpleFont("Arial", SignalFontSize)  { Bold = true };
+                // Bias label — slightly smaller, not bold
+                _biasFont    = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 10);
+                // EMA labels on the right axis — compact
+                _emaLabelFont = new NinjaTrader.Gui.Tools.SimpleFont("Arial", 9) { Bold = true };
             }
         }
 
         #endregion
 
+        // ═══════════════════════════════════════════════════════════════
         #region OnBarUpdate
 
         protected override void OnBarUpdate()
@@ -334,12 +362,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             double ema48  = _ema48[0];
             double ema200 = _ema200[0];
 
-            // 1. EMA Lines
+            // ── 1. EMA Lines ────────────────────────────────────────────────
             Values[0][0] = ShowEma13  ? ema13  : double.NaN;
             Values[1][0] = ShowEma48  ? ema48  : double.NaN;
             Values[2][0] = ShowEma200 ? ema200 : double.NaN;
 
-            // 2. Ribbon anchor plots
+            // ── 2. Ribbon anchor plots ───────────────────────────────────────
             Values[3][0] = ema13;
             Values[4][0] = ema48;
 
@@ -376,7 +404,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            // 3. Yellow Low-Volume Candle Filter
+            // ── 3. Yellow Low-Volume Candle Filter ──────────────────────────
             if (ShowLowVolumeCandles && CurrentBar >= VolumePeriod)
             {
                 double avgVol = SMA(Volume, VolumePeriod)[0];
@@ -387,15 +415,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BarBrushes[0] = null;
             }
 
-            // 4. EMA Crossover Signals
+            // ── 4. EMA Crossover Signals ─────────────────────────────────────
             if (ShowSignals)
             {
+                double arrowOffset = SignalOffsetTicks * TickSize;
+                double textOffset  = SignalOffsetTicks * 2.5 * TickSize;
+
                 if (CrossAbove(_ema13, _ema48, 1))
                 {
                     Draw.ArrowUp(this, "BullSignal_" + CurrentBar, false,
-                        0, Low[0] - 2 * TickSize, Brushes.LimeGreen);
+                        0, Low[0] - arrowOffset, Brushes.LimeGreen);
                     Draw.Text(this, "BullLabel_" + CurrentBar, false,
-                        "Long \u25b2", 0, Low[0] - 4 * TickSize, 0,
+                        "LONG \u25b2", 0, Low[0] - textOffset, 0,
                         Brushes.LimeGreen, _signalFont,
                         System.Windows.TextAlignment.Center,
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -408,9 +439,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (CrossBelow(_ema13, _ema48, 1))
                 {
                     Draw.ArrowDown(this, "BearSignal_" + CurrentBar, false,
-                        0, High[0] + 2 * TickSize, Brushes.Red);
+                        0, High[0] + arrowOffset, Brushes.Red);
                     Draw.Text(this, "BearLabel_" + CurrentBar, false,
-                        "Short \u25bc", 0, High[0] + 4 * TickSize, 0,
+                        "SHORT \u25bc", 0, High[0] + textOffset, 0,
                         Brushes.Red, _signalFont,
                         System.Windows.TextAlignment.Center,
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -422,7 +453,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            // 5. Horizontal Key Price Level Grid
+            // ── 5. Horizontal Key Price Level Grid ──────────────────────────
             if (ShowPriceLevels && LevelSpacing > 0)
             {
                 double baseLevel = Math.Floor(Close[0] / LevelSpacing) * LevelSpacing;
@@ -439,26 +470,70 @@ namespace NinjaTrader.NinjaScript.Indicators
                     RemoveDrawObject("KL_" + offset.ToString());
             }
 
-            // 6. 200 EMA Macro Bias Label
+            // ── 6. 200 EMA Macro Bias Label (current bar only) ───────────────
             if (ShowBiasLabel)
             {
                 double biasY = High[0] + 10 * TickSize;
                 if (Close[0] > ema200)
                     Draw.Text(this, "BiasLabel", false,
                         "ABOVE 200 \u25b2", 0, biasY, 0,
-                        Brushes.LimeGreen, _signalFont,
+                        Brushes.LimeGreen, _biasFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
                 else
                     Draw.Text(this, "BiasLabel", false,
                         "BELOW 200 \u25bc", 0, biasY, 0,
-                        Brushes.Red, _signalFont,
+                        Brushes.Red, _biasFont,
                         System.Windows.TextAlignment.Left,
                         Brushes.Transparent, Brushes.Transparent, 0);
             }
             else
             {
                 RemoveDrawObject("BiasLabel");
+            }
+
+            // ── 7. EMA Price Labels on right edge (current bar only) ─────────
+            if (ShowEmaLabels)
+            {
+                // EMA 13 label
+                if (ShowEma13)
+                    Draw.Text(this, "EmaLabel13", false,
+                        "EMA13 " + ema13.ToString("F2"), 0, ema13, 0,
+                        Brushes.LimeGreen, _emaLabelFont,
+                        System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("EmaLabel13");
+
+                // EMA 48 label
+                if (ShowEma48)
+                    Draw.Text(this, "EmaLabel48", false,
+                        "EMA48 " + ema48.ToString("F2"), 0, ema48, 0,
+                        new System.Windows.Media.SolidColorBrush(
+                            System.Windows.Media.Color.FromRgb(31, 188, 211)),
+                        _emaLabelFont,
+                        System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("EmaLabel48");
+
+                // EMA 200 label
+                if (ShowEma200)
+                    Draw.Text(this, "EmaLabel200", false,
+                        "EMA200 " + ema200.ToString("F2"), 0, ema200, 0,
+                        new System.Windows.Media.SolidColorBrush(
+                            System.Windows.Media.Color.FromRgb(255, 80, 80)),
+                        _emaLabelFont,
+                        System.Windows.TextAlignment.Left,
+                        Brushes.Transparent, Brushes.Transparent, 0);
+                else
+                    RemoveDrawObject("EmaLabel200");
+            }
+            else
+            {
+                RemoveDrawObject("EmaLabel13");
+                RemoveDrawObject("EmaLabel48");
+                RemoveDrawObject("EmaLabel200");
             }
         }
 
