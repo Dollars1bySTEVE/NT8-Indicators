@@ -448,9 +448,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _signalBearBrushDx = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
                     new SharpDX.Color4(1f, 69f / 255f, 0f, 1f));
 
-                _mainTextFormat = new SharpDX.DirectWrite.TextFormat(NinjaTrader.Core.Globals.DirectWriteFactory, "Arial", 11f)
+                _mainTextFormat = new SharpDX.DirectWrite.TextFormat(
+                    NinjaTrader.Core.Globals.DirectWriteFactory,
+                    "Arial",
+                    SharpDX.DirectWrite.FontWeight.Bold,
+                    SharpDX.DirectWrite.FontStyle.Normal,
+                    SharpDX.DirectWrite.FontStretch.Normal,
+                    11f)
                 {
-                    FontWeight = SharpDX.DirectWrite.FontWeight.Bold,
                     TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading
                 };
 
@@ -687,7 +692,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderTarget.DrawText(
                     "EMA13  " + value.ToString("F2"),
                     _mainTextFormat,
-                    new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 24f),
+                    new SharpDX.RectangleF(x, y, 220f, 24f),
                     _ema13LabelBrushDx);
             }
 
@@ -698,7 +703,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderTarget.DrawText(
                     "EMA48  " + value.ToString("F2"),
                     _mainTextFormat,
-                    new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 24f),
+                    new SharpDX.RectangleF(x, y, 220f, 24f),
                     _ema48LabelBrushDx);
             }
 
@@ -709,7 +714,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderTarget.DrawText(
                     "EMA200 " + value.ToString("F2"),
                     _mainTextFormat,
-                    new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 24f),
+                    new SharpDX.RectangleF(x, y, 220f, 24f),
                     _ema200LabelBrushDx);
             }
         }
@@ -734,7 +739,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             RenderTarget.DrawText(
                 isBull ? "ABOVE 200 ▲" : "BELOW 200 ▼",
                 _mainTextFormat,
-                new SharpDX.Mathematics.Interop.RawRectangleF(x, y, x + 220f, y + 26f),
+                new SharpDX.RectangleF(x, y, 220f, 26f),
                 isBull ? _biasBullBrushDx : _biasBearBrushDx);
         }
 
@@ -796,7 +801,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderTarget.DrawText(
                     signal.IsBull ? "LONG ▲" : "SHORT ▼",
                     _signalTextFormat,
-                    new SharpDX.Mathematics.Interop.RawRectangleF(x - 80f, yText, x + 80f, yText + SignalFontSize + 12f),
+                    new SharpDX.RectangleF(x - 80f, yText, 160f, SignalFontSize + 12f),
                     signal.IsBull ? _signalBullBrushDx : _signalBearBrushDx);
             }
         }
@@ -841,10 +846,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _signalTextFormat = null;
             }
 
-            _signalTextFormat = new SharpDX.DirectWrite.TextFormat(NinjaTrader.Core.Globals.DirectWriteFactory,
-                "Arial", SignalFontSize)
+            _signalTextFormat = new SharpDX.DirectWrite.TextFormat(
+                NinjaTrader.Core.Globals.DirectWriteFactory,
+                "Arial",
+                SharpDX.DirectWrite.FontWeight.Bold,
+                SharpDX.DirectWrite.FontStyle.Normal,
+                SharpDX.DirectWrite.FontStretch.Normal,
+                SignalFontSize)
             {
-                FontWeight = SharpDX.DirectWrite.FontWeight.Bold,
                 TextAlignment = SharpDX.DirectWrite.TextAlignment.Center
             };
 
