@@ -539,7 +539,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowEma13 && CurrentBar >= 13)
             {
-                for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+                for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
                 {
                     int nextBar = barIdx + 1;
                     if (barIdx < 0 || nextBar >= Bars.Count)
@@ -578,7 +578,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (series == null || brush == null || RenderTarget == null)
                 return;
 
-            for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+            for (int barIdx = fromBar; barIdx <= toBar; barIdx++)
             {
                 int nextBar = barIdx + 1;
                 if (barIdx < 0 || nextBar >= Bars.Count)
