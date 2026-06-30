@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Prismatic Reversion Strategy</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            padding: 60px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 50px;
+            border-bottom: 3px solid #1a1a1a;
+            padding-bottom: 30px;
+        }
+        
+        h1 {
+            font-size: 2.8em;
+            color: #1a1a1a;
+            margin-bottom: 15px;
+            font-weight: 700;
+        }
+        
+        .subtitle {
+            font-size: 1.3em;
+            color: #555;
+            font-style: italic;
+        }
+        
+        h2 {
+            font-size: 1.8em;
+            color: #1a1a1a;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            border-left: 4px solid #1a1a1a;
+            padding-left: 15px;
+            page-break-after: avoid;
+        }
+        
+        h3 {
+            font-size: 1.3em;
+            color: #333;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            page-break-after: avoid;
+        }
+        
+        h4 {
+            font-size: 1.1em;
+            color: #444;
+            margin-top: 15px;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        
+        p {
+            margin-bottom: 15px;
+            text-align: justify;
+        }
+        
+        ul, ol {
+            margin-left: 30px;
+            margin-bottom: 15px;
+        }
+        
+        li {
+            margin-bottom: 10px;
+            text-align: justify;
+        }
+        
+        .section-intro {
+            background: #f9f9f9;
+            padding: 20px;
+            border-left: 4px solid #1a1a1a;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 25px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        thead {
+            background: #1a1a1a;
+            color: white;
+        }
+        
+        th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #1a1a1a;
+        }
+        
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        tbody tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+        
+        tbody tr:hover {
+            background: #f0f0f0;
+        }
+        
+        .highlight {
+            background: #fffacd;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+        
+        .code-snippet {
+            background: #f4f4f4;
+            border-left: 3px solid #1a1a1a;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            overflow-x: auto;
+            border-radius: 4px;
+        }
+        
+        .key-takeaway {
+            background: #e8f4f8;
+            border-left: 4px solid #0066cc;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        .key-takeaway strong {
+            color: #0066cc;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 30px;
+            border-top: 2px solid #1a1a1a;
+            color: #666;
+            font-style: italic;
+            font-size: 1.1em;
+        }
+        
+        .page-break {
+            page-break-after: always;
+        }
+        
+        @media print {
+            body {
+                background: white;
+            }
+            .container {
+                max-width: 100%;
+                box-shadow: none;
+                padding: 40px;
+            }
+            h2 {
+                page-break-after: avoid;
+            }
+            h3 {
+                page-break-after: avoid;
+            }
+            table {
+                page-break-inside: avoid;
+            }
+            .key-takeaway {
+                page-break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>The Prismatic Reversion Strategy</h1>
+            <p class="subtitle">A Complete Blueprint for Auction Market Theory & Liquidity Trading</p>
+        </div>
+
+        <!-- Section 1 -->
+        <h2>1. Core Philosophy: The "Wall" & The Trap</h2>
+        <p>The market is an auction mechanism seeking Fair Value.</p>
+
+        <h3>The Wall (POC)</h3>
+        <p>The Point of Control (POC) of the first 15 minutes of the Asia (6:00 PM ET), London (3:00 AM ET), and NY (8:00 AM ET) sessions represents the <span class="highlight">"consensus price"</span> where buyers and sellers were happiest.</p>
+
+        <h3>The Trap</h3>
+        <p>When price abandons this POC and later returns, it tests the consensus. Retail traders see patterns like "Double Tops" or "Breakouts" at these levels. You view them as liquidity pools to be swept.</p>
+
+        <h3>The Fuel</h3>
+        <p>A 4-Bar Reversal combined with a Liquidity Sweep confirms that the opposing side is trapped. Their panic (stop losses) fuels your directional move.</p>
+
+        <!-- Section 2 -->
+        <h2>2. The Setup Hierarchy (A+ vs. Standard)</h2>
+
+        <h3>The A+ Setup: 10 Micros (Aggressive)</h3>
+        <p>This is your "Go Big" scenario. All conditions must align:</p>
+        <ol>
+            <li><strong>Location:</strong> Price interacts with a Stacked POC (e.g., Asia POC + NY POC) or a Fibonacci Golden Pocket (0.618–0.786).</li>
+            <li><strong>Pattern:</strong> A 4-Bar Reversal forms (Gap Bar + Collecting Bars + Breakout).</li>
+            <li><strong>Confirmation:</strong> A Liquidity Sweep (taking out a recent high/low) occurs simultaneously, followed by a Failed Continuation (e.g., a Gravestone Doji or Inverted Hammer).</li>
+            <li><strong>Structure:</strong> Ideally, this forms a Breaker Block (a failed Order Block that flips role), trapping late entrants.</li>
+        </ol>
+
+        <h3>The Standard Setup: 3–5 Micros</h3>
+        <p>Any valid 4-Bar Reversal that lacks the full confluence of Stacked POCs, Fibonacci alignment, or a clear Sweep.</p>
+        <ul>
+            <li>Used to maintain market exposure without over-risking on lower-probability moves.</li>
+        </ul>
+
+        <!-- Section 3 -->
+        <h2>3. Position Sizing & Pyramiding Logic</h2>
+        <p>Your sizing is dynamic, scaling with confirmation and confluence.</p>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Phase</th>
+                    <th>Condition</th>
+                    <th>Action</th>
+                    <th>Size</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Initial Entry</strong></td>
+                    <td>Price hits 0.618–0.786 Fib + POC</td>
+                    <td>Enter Base Position</td>
+                    <td>5 Micros</td>
+                </tr>
+                <tr>
+                    <td><strong>Confirmation Add</strong></td>
+                    <td>Small Body/Big Wick candle prints at the zone</td>
+                    <td>Add to Winner</td>
+                    <td>+1 Micro</td>
+                </tr>
+                <tr>
+                    <td><strong>High Conviction Add</strong></td>
+                    <td>Breaker Block pattern confirms trapped liquidity</td>
+                    <td>Aggressive Add</td>
+                    <td>+5 Micros (Total: 10)</td>
+                </tr>
+                <tr>
+                    <td><strong>Momentum Add</strong></td>
+                    <td>Healthy pullback to 0.382 Fib in profit</td>
+                    <td>Ride Continuation</td>
+                    <td>+1 Micro</td>
+                </tr>
+                <tr>
+                    <td><strong>Standard A+</strong></td>
+                    <td>Direct 4-Bar Reversal + Sweep at POC (no pyramiding)</td>
+                    <td>Direct Entry</td>
+                    <td>10 Micros</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 4 -->
+        <h2>4. Execution & Risk Management</h2>
+
+        <h3>Entry Trigger</h3>
+        <ul>
+            <li><strong>Timeframe:</strong> Spot the "fight" on 5-second or 1-minute charts. Validate direction on 3m/5m/15m.</li>
+            <li><strong>Signal:</strong> Wait for the Directional Candle to close after the reversal pattern (e.g., the green candle after the Gravestone Doji). This confirms the trap is sprung.</li>
+        </ul>
+
+        <h3>Stop Loss (The "Wick" Rule)</h3>
+        <ul>
+            <li><strong>Placement:</strong> Always placed at the extreme wick of the 4-Bar Reversal signal bar (plus/minus 1 tick).</li>
+            <li><strong>Logic:</strong> If price breaks this wick, the reversal thesis is invalid, and the "trap" has failed.</li>
+        </ul>
+
+        <h3>Take Profit (Prismatic Targets)</h3>
+        <ul>
+            <li><strong>TP1 (1:1 or 0.382 Fib):</strong> Watch for stalling candle behavior (Dojis, long wicks against you). If seen, exit half or move stop to breakeven.</li>
+            <li><strong>TP2 (1:2 or 0.50 Fib):</strong> The standard target for mean reversion.</li>
+            <li><strong>Runner (Continuation):</strong> If the move is fueled by a Breaker Block or massive sweep, hold the remainder for the next POC or Fibonacci Extension (1.272/1.618).</li>
+        </ul>
+
+        <!-- Section 5 -->
+        <h2>5. Implementation in NinjaTrader 8 (C# Overview)</h2>
+        <p>To code this robustly, a custom NinjaScript strategy is required. Standard ATM strategies cannot handle the dynamic sizing and complex POC/Fib logic.</p>
+
+        <h3>Key Components to Code:</h3>
+
+        <h4>1. Session POC Calculator</h4>
+        <ul>
+            <li>Accumulate volume at price for the first 15 minutes of 18:00, 03:00, and 08:00 ET.</li>
+            <li>Store as <span class="highlight">asiaPoc</span>, <span class="highlight">londonPoc</span>, <span class="highlight">nyPoc</span>.</li>
+        </ul>
+
+        <h4>2. Dynamic Fibonacci</h4>
+        <ul>
+            <li>Identify Swing Highs/Lows using a <span class="highlight">Highest/Lowest</span> lookback.</li>
+            <li>Calculate levels: <span class="highlight">0.382, 0.50, 0.618, 0.786</span>.</li>
+        </ul>
+
+        <h4>3. Pattern Recognition</h4>
+        <ul>
+            <li><strong>4-Bar Reversal:</strong> Detect large range bar + 2 small inside bars + breakout.</li>
+            <li><strong>Candle Behavior:</strong> Code logic for "Small Body/Big Wick" <span class="code-snippet" style="display: inline;">Math.Abs(Close - Open) < Range * 0.3</span></li>
+            <li><strong>Breaker Block:</strong> Detect a failed Order Block (price closes through it) and subsequent retest.</li>
+        </ul>
+
+        <h4>4. Conviction Sizing Engine</h4>
+        <div class="code-snippet">
+int orderSize = 3;
+if (isAPlusSetup) // 4-Bar + Sweep + POC
+    orderSize = 10;
+if (isPyramidEntry) // Fib + POC
+    EnterLong(5); // then EnterLong(1), etc.
+        </div>
+
+        <!-- Section 6 -->
+        <h2>6. The "Takeaway" Workflow</h2>
+        <p>Execute your trades using this 6-step checklist:</p>
+        <ol>
+            <li><strong>Wait for the Sweep:</strong> Let the algorithms flush stops (e.g., NY Open sweeping London Low).</li>
+            <li><strong>Identify the Wall:</strong> Mark the Stacked POCs and Fibonacci Zones.</li>
+            <li><strong>Watch the Trap:</strong> Look for retail patterns (Double Tops) failing at these walls.</li>
+            <li><strong>Confirm with Candle Behavior:</strong> Wait for the Gravestone Doji or Failed Continuation.</li>
+            <li><strong>Execute with Conviction:</strong> Size up (10 Micros) when the 4-Bar Reversal confirms the trap.</li>
+            <li><strong>Manage Dynamically:</strong> Cut at 1:1 if stalling; ride 1:2+ if the "rocket" ignites.</li>
+        </ol>
+
+        <!-- Key Takeaways -->
+        <h2>Key Takeaways</h2>
+        
+        <div class="key-takeaway">
+            <strong>The Wall + The Trap = The Opportunity:</strong> POCs are liquidity magnets; reversals there are high-probability.
+        </div>
+
+        <div class="key-takeaway">
+            <strong>Confluence is King:</strong> Stacked POCs + Fibonacci + 4-Bar Reversals + Sweeps = A+ setups.
+        </div>
+
+        <div class="key-takeaway">
+            <strong>Size with Conviction:</strong> 3–5 Micros for standard setups; 10 Micros for A+ alignment.
+        </div>
+
+        <div class="key-takeaway">
+            <strong>The Wick Rule is Sacred:</strong> Your stop is the reversal bar's extreme. If it breaks, the thesis fails.
+        </div>
+
+        <div class="key-takeaway">
+            <strong>Prismatic Targets Lock in Profits:</strong> TP1 at 1:1, TP2 at 1:2, and ride the remainder to the next POC/Extension.
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>Trade well. Trade smart. Trade the auction.</p>
+        </div>
+    </div>
+
+    <script>
+        // Optional: Auto-open print dialog when loaded
+        // Uncomment the line below if you want it to automatically prompt to print/save as PDF
+        // window.print();
+    </script>
+</body>
+</html>
