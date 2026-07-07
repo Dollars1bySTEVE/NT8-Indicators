@@ -453,10 +453,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>
-        /// Caches CumulativeDelta values once per bar so dashboard and signal engine
-        /// both read from the same call (avoids repeated OrderFlow+ indicator lookups).
-        /// Wrapped in try/catch — if OF+ is not installed, cached values remain invalid
-        /// and all delta checks are silently skipped.
+        /// Caches a cumulative delta proxy once per bar so dashboard and signal engine
+        /// both read from the same value without depending on OrderFlow+ assemblies.
         /// </summary>
         private void CacheCumulativeDelta()
         {
@@ -504,7 +502,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!ShowLabels) return;
 
             string anchorPrefix = (SelectedAnchor == UltimateAnchorPeriod.DailyOpen) ? "D" : "W";
-            string priceFmt     = (TickSize < 0.01) ? "F4" : (TickSize < 0.1) ? "F2" : "F0";
+            string priceFmt     = GetPriceFormat();
 
             // Track last drawn Y price position for stagger logic
             double lastDrawnPrice = double.MinValue;
@@ -1028,11 +1026,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        /// <summary>Builds a fixed-point format string from the current instrument tick size.</summary>
+        private string GetPriceFormat()
+        {
+            string tickText = TickSize.ToString(CultureInfo.InvariantCulture).TrimEnd('0');
+            int decimalIndex = tickText.IndexOf('.');
+            int decimals = (decimalIndex >= 0) ? tickText.Length - decimalIndex - 1 : 0;
+            return "F" + decimals.ToString(CultureInfo.InvariantCulture);
+        }
+
         /// <summary>Formats a price to instrument tick precision.</summary>
         private string FormatPrice(double price)
         {
-            string fmt = (TickSize < 0.01) ? "F4" : (TickSize < 0.1) ? "F2" : "F0";
-            return price.ToString(fmt, CultureInfo.InvariantCulture);
+            return price.ToString(GetPriceFormat(), CultureInfo.InvariantCulture);
         }
 
         /// <summary>
