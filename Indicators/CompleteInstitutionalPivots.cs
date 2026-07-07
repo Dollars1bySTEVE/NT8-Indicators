@@ -534,7 +534,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowLevelName)  labelText = labelText + " | " + LevelNames[i];
 
                 // Use pre-built label brush (created once in DataLoaded — no allocations here).
-                // Opacity is already baked into _levelLabelBrush[i] alpha channel; pass 100 to avoid squaring it.
+                // Opacity is already baked into _levelLabelBrush[i] alpha channel, so pass 100
+                // (fully opaque) here to avoid applying it a second time.
                 Draw.Text(this, "Label_" + i, false, labelText,
                     LabelBarOffset,                 // bars to the right of the current bar
                     levelPrice,
@@ -1036,10 +1037,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>
-        /// Returns a day-type string for the dashboard.
-        /// When DayTypeFilter is set to RangeOnly or TrendOnly the dashboard reflects the
-        /// active filter setting (i.e., only that day type will produce signals).
-        /// When set to All, no classification is performed and "UNFILTERED" is shown.
+        /// Returns a day-type label string for the dashboard display only.
+        /// Note: SelectedDayTypeFilter does not filter signals — it only controls
+        /// the label shown in the dashboard. "Filter active" in the returned string
+        /// indicates the user has the filter set but is a display-only annotation.
+        /// When set to All, "UNFILTERED" is shown.
         /// </summary>
         private string GetDayTypeString()
         {
