@@ -533,7 +533,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowPriceValue) labelText = labelText + " " + priceStr;
                 if (ShowLevelName)  labelText = labelText + " | " + LevelNames[i];
 
-                // Use pre-built label brush (created once in DataLoaded — no allocations here)
+                // Use pre-built label brush (created once in DataLoaded — no allocations here).
+                // Opacity is already baked into _levelLabelBrush[i] alpha channel; pass 100 to avoid squaring it.
                 Draw.Text(this, "Label_" + i, false, labelText,
                     LabelBarOffset,                 // bars to the right of the current bar
                     levelPrice,
@@ -543,7 +544,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     System.Windows.TextAlignment.Left,
                     Brushes.Transparent,
                     Brushes.Transparent,
-                    LabelOpacity);
+                    100);
 
                 lastDrawnPrice = levelPrice;
             }
@@ -952,14 +953,24 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // ── Draw signal ───────────────────────────────────────────────
                 double arrowOffset = TickSize * ArrowOffsetTicks;
 
-                if (touchesBull)
+                if (score == 1)
+                {
+                    // Score 1 — small diamond marker (only if MinScoreToShowArrow == 1)
+                    if (touchesBull)
+                        Draw.Diamond(this, "Bull_" + j + "_" + CurrentBar, true, 0,
+                            Low[0] - arrowOffset, Score1MarkerColor);
+                    else
+                        Draw.Diamond(this, "Bear_" + j + "_" + CurrentBar, true, 0,
+                            High[0] + arrowOffset, Score1MarkerColor);
+                }
+                else if (touchesBull)
                 {
                     if (score >= 3)
                     {
                         Draw.ArrowUp(this, "Bull_" + j + "_" + CurrentBar, true,
                             0, Low[0] - arrowOffset, Score3BullArrowColor);
                     }
-                    else // score == 2 (MinScoreToShowArrow guaranteed by gate above)
+                    else // score == 2
                     {
                         Draw.ArrowUp(this, "Bull_" + j + "_" + CurrentBar, true,
                             0, Low[0] - arrowOffset, Score2ArrowColor);
@@ -972,23 +983,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Draw.ArrowDown(this, "Bear_" + j + "_" + CurrentBar, true,
                             0, High[0] + arrowOffset, Score3BearArrowColor);
                     }
-                    else
+                    else // score == 2
                     {
                         Draw.ArrowDown(this, "Bear_" + j + "_" + CurrentBar, true,
                             0, High[0] + arrowOffset, Score2ArrowColor);
                     }
-                }
-
-                // Score 1 — small diamond marker (only if MinScoreToShowArrow == 1)
-                // This path is reached when score >= MinScoreToShowArrow and score == 1
-                if (score == 1)
-                {
-                    if (touchesBull)
-                        Draw.Diamond(this, "Bull_" + j + "_" + CurrentBar, true, 0,
-                            Low[0] - arrowOffset, Score1MarkerColor);
-                    else
-                        Draw.Diamond(this, "Bear_" + j + "_" + CurrentBar, true, 0,
-                            High[0] + arrowOffset, Score1MarkerColor);
                 }
 
                 // ── Alert (realtime only, with cooldown) ──────────────────────
@@ -1067,8 +1066,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SolidColorBrush CloneBrush(Brush source)
         {
             var scb = source as SolidColorBrush;
-            if (scb == null) return new SolidColorBrush(Colors.White);
-            var clone = new SolidColorBrush(scb.Color);
+            var clone = new SolidColorBrush(scb != null ? scb.Color : Colors.White);
             clone.Freeze();
             return clone;
         }
@@ -1121,11 +1119,25 @@ namespace NinjaTrader.NinjaScript.Indicators
             Order = 4, GroupName = "02. Signal Configuration")]
         public Brush Score3BullArrowColor { get; set; }
 
+        [Browsable(false)]
+        public string Score3BullArrowColorSerializable
+        {
+            get { return Serialize.BrushToString(Score3BullArrowColor); }
+            set { Score3BullArrowColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [XmlIgnore]
         [Display(Name = "Score 3 Bear Arrow Color", Description = "Arrow color for score-3 bearish signals.",
             Order = 5, GroupName = "02. Signal Configuration")]
         public Brush Score3BearArrowColor { get; set; }
+
+        [Browsable(false)]
+        public string Score3BearArrowColorSerializable
+        {
+            get { return Serialize.BrushToString(Score3BearArrowColor); }
+            set { Score3BearArrowColor = Serialize.StringToBrush(value); }
+        }
 
         [NinjaScriptProperty]
         [XmlIgnore]
@@ -1133,11 +1145,25 @@ namespace NinjaTrader.NinjaScript.Indicators
             Order = 6, GroupName = "02. Signal Configuration")]
         public Brush Score2ArrowColor { get; set; }
 
+        [Browsable(false)]
+        public string Score2ArrowColorSerializable
+        {
+            get { return Serialize.BrushToString(Score2ArrowColor); }
+            set { Score2ArrowColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [XmlIgnore]
         [Display(Name = "Score 1 Marker Color", Description = "Diamond color for score-1 signals.",
             Order = 7, GroupName = "02. Signal Configuration")]
         public Brush Score1MarkerColor { get; set; }
+
+        [Browsable(false)]
+        public string Score1MarkerColorSerializable
+        {
+            get { return Serialize.BrushToString(Score1MarkerColor); }
+            set { Score1MarkerColor = Serialize.StringToBrush(value); }
+        }
 
         [NinjaScriptProperty]
         [Display(Name = "Arrow Offset (Ticks)", Description = "How many ticks above/below the bar to offset drawn arrows.",
@@ -1184,6 +1210,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Primary Color", Order = 2, GroupName = "04. Primary Levels (\u00b1100%)")]
         public Brush PrimaryColor { get; set; }
 
+        [Browsable(false)]
+        public string PrimaryColorSerializable
+        {
+            get { return Serialize.BrushToString(PrimaryColor); }
+            set { PrimaryColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [Range(0, 100)]
         [Display(Name = "Primary Opacity", Order = 3, GroupName = "04. Primary Levels (\u00b1100%)")]
@@ -1212,6 +1245,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [Display(Name = "Structural Color", Order = 2, GroupName = "05. Structural Levels (\u00b150%)")]
         public Brush StructuralColor { get; set; }
+
+        [Browsable(false)]
+        public string StructuralColorSerializable
+        {
+            get { return Serialize.BrushToString(StructuralColor); }
+            set { StructuralColor = Serialize.StringToBrush(value); }
+        }
 
         [NinjaScriptProperty]
         [Range(0, 100)]
@@ -1242,6 +1282,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Fractional Color", Order = 2, GroupName = "06. Fractional Levels (\u00b137.5%, \u00b125%)")]
         public Brush FractionalColor { get; set; }
 
+        [Browsable(false)]
+        public string FractionalColorSerializable
+        {
+            get { return Serialize.BrushToString(FractionalColor); }
+            set { FractionalColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [Range(0, 100)]
         [Display(Name = "Fractional Opacity", Order = 3, GroupName = "06. Fractional Levels (\u00b137.5%, \u00b125%)")]
@@ -1271,6 +1318,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Scalp Color", Order = 2, GroupName = "07. Scalp Levels (\u00b112.5%)")]
         public Brush ScalpColor { get; set; }
 
+        [Browsable(false)]
+        public string ScalpColorSerializable
+        {
+            get { return Serialize.BrushToString(ScalpColor); }
+            set { ScalpColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [Range(0, 100)]
         [Display(Name = "Scalp Opacity", Order = 3, GroupName = "07. Scalp Levels (\u00b112.5%)")]
@@ -1299,6 +1353,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [XmlIgnore]
         [Display(Name = "Anchor Color", Order = 2, GroupName = "08. Anchor Line")]
         public Brush AnchorColor { get; set; }
+
+        [Browsable(false)]
+        public string AnchorColorSerializable
+        {
+            get { return Serialize.BrushToString(AnchorColor); }
+            set { AnchorColor = Serialize.StringToBrush(value); }
+        }
 
         [NinjaScriptProperty]
         [Range(0, 100)]
@@ -1380,15 +1441,36 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Dashboard Text Color", Order = 6, GroupName = "10. Dashboard")]
         public Brush DashboardTextColor { get; set; }
 
+        [Browsable(false)]
+        public string DashboardTextColorSerializable
+        {
+            get { return Serialize.BrushToString(DashboardTextColor); }
+            set { DashboardTextColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [XmlIgnore]
         [Display(Name = "Dashboard Background Color", Order = 7, GroupName = "10. Dashboard")]
         public Brush DashboardBackgroundColor { get; set; }
 
+        [Browsable(false)]
+        public string DashboardBackgroundColorSerializable
+        {
+            get { return Serialize.BrushToString(DashboardBackgroundColor); }
+            set { DashboardBackgroundColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [XmlIgnore]
         [Display(Name = "Dashboard Border Color", Order = 8, GroupName = "10. Dashboard")]
         public Brush DashboardBorderColor { get; set; }
+
+        [Browsable(false)]
+        public string DashboardBorderColorSerializable
+        {
+            get { return Serialize.BrushToString(DashboardBorderColor); }
+            set { DashboardBorderColor = Serialize.StringToBrush(value); }
+        }
 
         [NinjaScriptProperty]
         [Range(0, 100)]
@@ -1461,7 +1543,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool RTHOnly { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Day Type Filter", Description = "Filter signals by day type (Range/Trend). Requires OrderFlow+ for classification.",
+        [Display(Name = "Day Type Filter", Description = "Controls the day-type label shown in the dashboard (Range/Trend). Signal filtering by day type is not implemented; this setting affects display only.",
             Order = 2, GroupName = "12. Session Filters")]
         public DayTypeFilter SelectedDayTypeFilter { get; set; }
 
