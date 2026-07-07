@@ -494,8 +494,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (!showLine) continue;
 
-                // Use pre-built Stroke (created once in DataLoaded — no allocations here)
-                Draw.HorizontalLine(this, "Level_" + i, targetLevels[i], _levelStroke[i]);
+                // Use pre-built Stroke components (Draw.HorizontalLine takes Brush, DashStyleHelper, int width)
+                Draw.HorizontalLine(this, "Level_" + i, targetLevels[i],
+                    _levelLineBrush[i],
+                    _levelStroke[i].DashStyleHelper,
+                    _levelStroke[i].Width);
             }
         }
 
