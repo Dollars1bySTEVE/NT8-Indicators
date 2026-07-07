@@ -253,8 +253,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Tier: Structural (+50%)
                 AddPlot(new Stroke(Brushes.Orange, 1), PlotStyle.Line, "Level_1_Upper50");
                 // Tier: Fractional (+37.5%, +25%)
-                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Dash, "Level_2_Upper375");
-                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Dash, "Level_3_Upper25");
+                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Line, "Level_2_Upper375");
+                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Line, "Level_3_Upper25");
                 // Tier: Scalp (+12.5%)
                 AddPlot(new Stroke(Brushes.Cyan,   1), PlotStyle.Dot,  "Level_4_Upper125");
                 // Tier: Anchor (0%)
@@ -262,8 +262,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Tier: Scalp (-12.5%)
                 AddPlot(new Stroke(Brushes.Cyan,   1), PlotStyle.Dot,  "Level_6_Lower125");
                 // Tier: Fractional (-25%, -37.5%)
-                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Dash, "Level_7_Lower25");
-                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Dash, "Level_8_Lower375");
+                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Line, "Level_7_Lower25");
+                AddPlot(new Stroke(Brushes.Yellow, 1), PlotStyle.Line, "Level_8_Lower375");
                 // Tier: Structural (-50%)
                 AddPlot(new Stroke(Brushes.Orange, 1), PlotStyle.Line, "Level_9_Lower50");
                 // Tier: Primary (-100%)
@@ -441,6 +441,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 vwapNumerator   = 0;
                 vwapDenominator = 0;
+                cachedDeltaPrev = 0;
+                cachedDeltaClose = 0;
             }
 
             double typicalPrice = (High[0] + Low[0] + Close[0]) / 3.0;
@@ -466,15 +468,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             try
             {
-                var cd = CumulativeDelta(BarsArray[0], CumulativeDeltaType.BidAsk, CumulativeDeltaCalculationMode.CloseBar, 0);
-                if (cd != null && CurrentBar > 0)
-                {
-                    cachedDeltaClose = cd.DeltaClose[0];
-                    cachedDeltaPrev  = cd.DeltaClose[1];
-                    cachedDeltaValid = true;
-                }
+                double priorDelta = cachedDeltaClose;
+                double barDelta   = (Close[0] >= Open[0]) ? Volume[0] : -Volume[0];
+                cachedDeltaPrev   = priorDelta;
+                cachedDeltaClose  = priorDelta + barDelta;
+                cachedDeltaValid = true;
             }
-            catch { /* OrderFlow+ not installed — delta checks will be skipped */ }
+            catch { cachedDeltaValid = false; }
         }
 
         #endregion
@@ -495,8 +495,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Use pre-built Stroke (created once in DataLoaded — no allocations here)
                 Draw.HorizontalLine(this, "Level_" + i, false,
                     targetLevels[i],
-                    _levelStroke[i],
-                    true);
+                    _levelStroke[i]);
             }
         }
 
@@ -505,7 +504,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!ShowLabels) return;
 
             string anchorPrefix = (SelectedAnchor == UltimateAnchorPeriod.DailyOpen) ? "D" : "W";
-            string priceFmt     = string.Format("N{0}", Instrument.MasterInstrument.PriceFormat);
+            string priceFmt     = (TickSize < 0.01) ? "F4" : (TickSize < 0.1) ? "F2" : "F0";
 
             // Track last drawn Y price position for stagger logic
             double lastDrawnPrice = double.MinValue;
@@ -1032,8 +1031,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Formats a price to instrument tick precision.</summary>
         private string FormatPrice(double price)
         {
-            int decimals = Instrument?.MasterInstrument?.PriceFormat ?? 2;
-            return price.ToString("N" + decimals, CultureInfo.InvariantCulture);
+            string fmt = (TickSize < 0.01) ? "F4" : (TickSize < 0.1) ? "F2" : "F0";
+            return price.ToString(fmt, CultureInfo.InvariantCulture);
         }
 
         /// <summary>
