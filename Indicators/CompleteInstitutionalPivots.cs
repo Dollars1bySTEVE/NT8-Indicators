@@ -65,6 +65,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // ── Cached sound file name (null-safe, .wav-guaranteed) ──────────────
         private string      alertSoundFile      = "Alert1.wav";
+        private string      priceFormat         = "F2";
 
         // ── Performance: brushes created once in DataLoaded ──────────────────
         private SolidColorBrush _primaryBrush;
@@ -280,6 +281,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     : (SoundFileName.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)
                         ? SoundFileName
                         : SoundFileName + ".wav");
+                priceFormat = BuildPriceFormat();
 
                 // ── Create brushes ONCE (performance rule) ───────────────────
                 _primaryBrush    = CloneBrush(PrimaryColor);
@@ -467,6 +469,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             try
             {
                 double priorDelta = cachedDeltaClose;
+                // Approximation only: treat volume as positive on up-close bars and
+                // negative on down-close bars so the feature works without OrderFlow+.
                 double barDelta   = (Close[0] >= Open[0]) ? Volume[0] : -Volume[0];
                 cachedDeltaPrev   = priorDelta;
                 cachedDeltaClose  = priorDelta + barDelta;
@@ -502,7 +506,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!ShowLabels) return;
 
             string anchorPrefix = (SelectedAnchor == UltimateAnchorPeriod.DailyOpen) ? "D" : "W";
-            string priceFmt     = GetPriceFormat();
+            string priceFmt     = priceFormat;
 
             // Track last drawn Y price position for stagger logic
             double lastDrawnPrice = double.MinValue;
@@ -1027,18 +1031,24 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Builds a fixed-point format string from the current instrument tick size.</summary>
-        private string GetPriceFormat()
+        private string BuildPriceFormat()
         {
-            string tickText = TickSize.ToString(CultureInfo.InvariantCulture).TrimEnd('0');
-            int decimalIndex = tickText.IndexOf('.');
-            int decimals = (decimalIndex >= 0) ? tickText.Length - decimalIndex - 1 : 0;
+            double tick = TickSize;
+            int decimals = 0;
+
+            while (decimals < 8 && Math.Abs(tick - Math.Round(tick)) > 1e-9)
+            {
+                tick *= 10;
+                decimals++;
+            }
+
             return "F" + decimals.ToString(CultureInfo.InvariantCulture);
         }
 
         /// <summary>Formats a price to instrument tick precision.</summary>
         private string FormatPrice(double price)
         {
-            return price.ToString(GetPriceFormat(), CultureInfo.InvariantCulture);
+            return price.ToString(priceFormat, CultureInfo.InvariantCulture);
         }
 
         /// <summary>
