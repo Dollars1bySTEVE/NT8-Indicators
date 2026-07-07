@@ -495,9 +495,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!showLine) continue;
 
                 // Use pre-built Stroke (created once in DataLoaded — no allocations here)
-                Draw.HorizontalLine(this, "Level_" + i, false,
-                    targetLevels[i],
-                    _levelStroke[i]);
+                Draw.HorizontalLine(this, "Level_" + i, targetLevels[i], _levelStroke[i]);
             }
         }
 
