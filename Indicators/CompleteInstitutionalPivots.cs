@@ -1031,19 +1031,22 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Builds a fixed-point format string from the current instrument tick size.</summary>
-        private string BuildPriceFormat()
-        {
-            double tick = TickSize;
-            int decimals = 0;
+private string BuildPriceFormat()
+{
+    double tick = Math.Abs(TickSize);
+    if (tick <= 0 || double.IsNaN(tick) || double.IsInfinity(tick))
+        return "F2";
 
-            while (decimals < 8 && Math.Abs(tick - Math.Round(tick)) > 1e-9)
-            {
-                tick *= 10;
-                decimals++;
-            }
+    int decimals = 0;
 
-            return "F" + decimals.ToString(CultureInfo.InvariantCulture);
-        }
+    while (decimals < 8 && Math.Abs(tick - Math.Round(tick)) > 1e-9)
+    {
+        tick *= 10;
+        decimals++;
+    }
+
+    return "F" + decimals.ToString(CultureInfo.InvariantCulture);
+}
 
         /// <summary>Formats a price to instrument tick precision.</summary>
         private string FormatPrice(double price)
