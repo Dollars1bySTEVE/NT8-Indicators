@@ -21,49 +21,52 @@ using NinjaTrader.Core.FloatingPoint;
 using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
+#region Enums (declared outside all namespaces for auto-generated code compatibility)
+
+// NinjaTrader 8 requires custom enums to be declared OUTSIDE all namespaces
+// so the auto-generated partial class code can resolve them.
+// See: forum.ninjatrader.com threads #1182932, #95909, #1046853
+public enum SessionType
+{
+	Asia,
+	London,
+	NewYork
+}
+
+public enum FeatureDisplay
+{
+	ShowSessionBox,
+	ShowPOC,
+	ShowOpeningRange,
+	ShowPivots,
+	ShowVolumeProfile,
+	ShowBOSCHoCH,
+	ShowHistoricalSessions,
+	ShowAlerts
+}
+
+public enum AlertTrigger
+{
+	POCTouch,
+	DOMCluster,
+	BOSCHoCH,
+	AllThree,
+	None
+}
+
+public enum DayLabelOption
+{
+	HiddenAll,
+	CurrentDayOnly,
+	Last7Days,
+	Last14Days
+}
+
+#endregion
+
 //This namespace holds Indicators in this folder and is required. Do not change it.
 namespace NinjaTrader.NinjaScript.Indicators
 {
-	#region Enums (declared outside indicator class for auto-generated code compatibility)
-	
-	public enum SessionType
-	{
-		Asia,
-		London,
-		NewYork
-	}
-
-	public enum FeatureDisplay
-	{
-		ShowSessionBox,
-		ShowPOC,
-		ShowOpeningRange,
-		ShowPivots,
-		ShowVolumeProfile,
-		ShowBOSCHoCH,
-		ShowHistoricalSessions,
-		ShowAlerts
-	}
-
-	public enum AlertTrigger
-	{
-		POCTouch,
-		DOMCluster,
-		BOSCHoCH,
-		AllThree,
-		None
-	}
-
-	public enum DayLabelOption
-	{
-		HiddenAll,
-		CurrentDayOnly,
-		Last7Days,
-		Last14Days
-	}
-
-	#endregion
-
 	public class InstitutionalSessionFramework : Indicator
 	{
 		#region Private Classes — Data Structures
