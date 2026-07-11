@@ -181,10 +181,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private SessionData currentSessionData;
 		private SessionType lastDetectedSessionType = SessionType.Asia;
 		private DateTime lastSessionChangeTime = DateTime.MinValue;
+		private DateTime currentSessionStartTime = DateTime.MinValue;
 
 		// ── Opening range tracking ───────────────────────────────────────
 		private DateTime openingRangeStartTime = DateTime.MinValue;
 		private bool openingRangeComplete = false;
+		private int openingRangeStartBar = -1;
 
 		// ── POC calculation state ────────────────────────────────────────
 		private Dictionary<double, double> priceVolumeBins; // price level -> cumulative volume
@@ -194,10 +196,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private List<SmartMoneyEvent> detectedEvents;
 		private List<double> swingHighs;
 		private List<double> swingLows;
+		private int lastSwingDetectionBar = -1;
 
 		// ── DOM/Level 2 state ────────────────────────────────────────────
 		private DateTime lastDOMPoll = DateTime.MinValue;
 		private const double DOMPollThrottleSeconds = 1.0;
+
+		// ── Alert state ──────────────────────────────────────────────────
+		private int lastAlertBar = -999;
 
 		// ── Rendering state ─────────────────────────────────────────────
 		private SharpDX.Direct2D1.SolidColorBrush dxAsiaSessionBrush;
@@ -586,11 +592,417 @@ namespace NinjaTrader.NinjaScript.Indicators
 		{
 			if (CurrentBar < 2) return;
 
-			// Placeholder: Session detection will go here
-			// Placeholder: POC calculation will go here
-			// Placeholder: Smart Money detection will go here
-			// Placeholder: DOM polling will go here
-			// Placeholder: Historical tracking will go here
+			// ── Step 1: Detect session boundaries ─────────────────────────
+			DetectSessionBoundaries();
+
+			// ── Step 2: Update current session OHLC ──────────────────────
+			UpdateCurrentSessionOHLC();
+
+			// ── Step 3: Track opening range ──────────────────────────────
+			TrackOpeningRange();
+
+			// ── Step 4: Calculate POC ───────────────────────────────────
+			CalculatePOC();
+
+			// ── Step 5: Detect Smart Money events (BOS/CHoCH) ────────────
+			DetectSmartMoneyEvents();
+
+			// ── Step 6: Poll Level 2 DOM (throttled) ─────────────────────
+			PollDOMClusters();
+
+			// ── Step 7: Manage historical rolling data ───────────────────
+			ManageHistoricalSessions();
+		}
+
+		#endregion
+
+		#region Core Logic — Session Detection
+
+		/// <summary>
+		/// Detects session boundaries using SessionIterator and maintains active session data.
+		/// Sessions: Asia (5 PM - 2 AM), London (3 AM - 12 PM), NY (9:30 AM - 4 PM)
+		/// </summary>
+		private void DetectSessionBoundaries()
+		{
+			DateTime currentTime = Time[0];
+			TimeSpan currentTimeOfDay = currentTime.TimeOfDay;
+
+			// Determine which session we're currently in based on time of day (ET)
+			SessionType detectedSession = GetCurrentSession(currentTimeOfDay);
+
+			// Check if session has changed
+			if (lastDetectedSessionType != detectedSession || currentSessionStartTime == DateTime.MinValue)
+			{
+				// Session transition detected or first initialization
+				if (currentSessionData != null && !currentSessionData.IsComplete)
+				{
+					// Finalize previous session
+					currentSessionData.IsComplete = true;
+					currentSessionData.EndTime = Time[1];
+					currentSessionData.EndBar = CurrentBar - 1;
+
+					// Store in active sessions
+					string sessionKey = BuildSessionKey(currentSessionData.SessionDate, currentSessionData.SessionType);
+					if (!activeSessions.ContainsKey(sessionKey))
+						activeSessions[sessionKey] = currentSessionData;
+
+					// Add to historical tracking
+					AddToHistoricalSessions(currentSessionData);
+				}
+
+				// Create new session
+				currentSessionData = new SessionData
+				{
+					SessionType = detectedSession,
+					SessionDate = currentTime.Date,
+					StartTime = currentTime,
+					StartBar = CurrentBar,
+					OpenPrice = Open[0],
+					HighPrice = High[0],
+					LowPrice = Low[0],
+					IsComplete = false,
+					IsHistorical = false
+				};
+
+				lastDetectedSessionType = detectedSession;
+				currentSessionStartTime = currentTime;
+				openingRangeStartTime = currentTime;
+				openingRangeStartBar = CurrentBar;
+				openingRangeComplete = false;
+				priceVolumeBins.Clear();
+			}
+		}
+
+		/// <summary>
+		/// Determines the current session based on time of day (Eastern Time).
+		/// </summary>
+		private SessionType GetCurrentSession(TimeSpan timeOfDay)
+		{
+			// Globex sessions in ET:
+			// Asia:   5 PM (17:00) - 2 AM (02:00) next day
+			// London: 3 AM (03:00) - 12 PM (12:00)
+			// NY:     9:30 AM (09:30) - 4 PM (16:00)
+
+			if (timeOfDay >= new TimeSpan(17, 0, 0) || timeOfDay < new TimeSpan(2, 0, 0))
+				return SessionType.Asia;
+			else if (timeOfDay >= new TimeSpan(3, 0, 0) && timeOfDay < new TimeSpan(12, 0, 0))
+				return SessionType.London;
+			else if (timeOfDay >= new TimeSpan(9, 30, 0) && timeOfDay < new TimeSpan(16, 0, 0))
+				return SessionType.NewYork;
+			else
+				// Gap time: 2 AM - 3 AM or 12 PM - 9:30 AM or 4 PM - 5 PM
+				return lastDetectedSessionType; // Return last known session
+		}
+
+		#endregion
+
+		#region Core Logic — Update Session OHLC
+
+		/// <summary>
+		/// Updates the current session's High, Low, Close and accumulates volume metrics.
+		/// </summary>
+		private void UpdateCurrentSessionOHLC()
+		{
+			if (currentSessionData == null) return;
+
+			currentSessionData.HighPrice = Math.Max(currentSessionData.HighPrice, High[0]);
+			currentSessionData.LowPrice = Math.Min(currentSessionData.LowPrice, Low[0]);
+			currentSessionData.ClosePrice = Close[0];
+
+			currentSessionData.TotalVolume += Volume[0];
+			if (Close[0] >= Open[0])
+				currentSessionData.UpVolume += Volume[0];
+			else
+				currentSessionData.DownVolume += Volume[0];
+		}
+
+		#endregion
+
+		#region Core Logic — Opening Range Tracking
+
+		/// <summary>
+		/// Tracks the opening range (first N minutes) of the current session.
+		/// </summary>
+		private void TrackOpeningRange()
+		{
+			if (currentSessionData == null || openingRangeComplete) return;
+
+			OpeningRange orng = currentSessionData.OpeningRange;
+
+			// Initialize opening range if not set
+			if (orng.StartBar == 0)
+			{
+				orng.StartBar = openingRangeStartBar;
+				orng.StartTime = openingRangeStartTime;
+				orng.OpenPrice = Open[0];
+				orng.HighPrice = High[0];
+				orng.LowPrice = Low[0];
+			}
+
+			// Update high/low
+			orng.HighPrice = Math.Max(orng.HighPrice, High[0]);
+			orng.LowPrice = Math.Min(orng.LowPrice, Low[0]);
+
+			// Check if opening range duration is complete
+			double secondsElapsed = (Time[0] - openingRangeStartTime).TotalSeconds;
+			if (secondsElapsed >= OpeningRangeDurationSeconds)
+			{
+				orng.EndBar = CurrentBar;
+				orng.IsComplete = true;
+				openingRangeComplete = true;
+			}
+		}
+
+		#endregion
+
+		#region Core Logic — POC Calculation
+
+		/// <summary>
+		/// Calculates Point of Control using volume-weighted price clustering.
+		/// Standard institutional method: bin prices by resolution, find highest volume level.
+		/// </summary>
+		private void CalculatePOC()
+		{
+			if (currentSessionData == null) return;
+
+			// Bin the current bar's price/volume into clusters
+			double binPrice = Math.Round(Close[0] / pocCalculationResolution) * pocCalculationResolution;
+
+			if (!priceVolumeBins.ContainsKey(binPrice))
+				priceVolumeBins[binPrice] = 0;
+
+			priceVolumeBins[binPrice] += Volume[0];
+
+			// Find the price level with highest cumulative volume (POC)
+			double pocPrice = binPrice;
+			double maxVolume = priceVolumeBins[binPrice];
+
+			foreach (var kvp in priceVolumeBins)
+			{
+				if (kvp.Value > maxVolume)
+				{
+					maxVolume = kvp.Value;
+					pocPrice = kvp.Key;
+				}
+			}
+
+			// Update current session POC
+			currentSessionData.POC.POCPrice = pocPrice;
+			currentSessionData.POC.POCVolume = maxVolume;
+			currentSessionData.POC.IsCalculated = true;
+			currentSessionData.POC.BarIndex = CurrentBar;
+
+			// Clean up old bins (keep only recent ones to prevent memory bloat)
+			if (priceVolumeBins.Count > 1000)
+			{
+				var oldestEntries = priceVolumeBins.OrderBy(x => x.Key).Take(100).Select(x => x.Key).ToList();
+				foreach (var key in oldestEntries)
+					priceVolumeBins.Remove(key);
+			}
+		}
+
+		#endregion
+
+		#region Core Logic — Smart Money (BOS/CHoCH) Detection
+
+		/// <summary>
+		/// Detects swing points and identifies Break of Structure (BOS) and Change of Character (CHoCH) events.
+		/// </summary>
+		private void DetectSmartMoneyEvents()
+		{
+			if (!ShowSmartMoneyEvents || CurrentBar < SwingStrength * 2 + 1) return;
+
+			// ── Detect swing points (highs and lows) ─────────────────────
+			DetectSwingPoints();
+
+			// ── Analyze swing sequences for BOS/CHoCH ────────────────────
+			if (swingHighs.Count >= 2 || swingLows.Count >= 2)
+			{
+				AnalyzeStructureBreaks();
+			}
+		}
+
+		/// <summary>
+		/// Identifies swing highs and lows based on SwingStrength parameter.
+		/// </summary>
+		private void DetectSwingPoints()
+		{
+			if (CurrentBar <= SwingStrength)
+				return;
+
+			int lookbackBar = CurrentBar - SwingStrength;
+
+			// Check for swing high
+			double potentialSwingHigh = High[SwingStrength];
+			bool isSwingHigh = true;
+
+			for (int i = 1; i <= SwingStrength; i++)
+			{
+				if (High[i] >= potentialSwingHigh || High[SwingStrength - i] >= potentialSwingHigh)
+				{
+					isSwingHigh = false;
+					break;
+				}
+			}
+
+			if (isSwingHigh && (swingHighs.Count == 0 || Math.Abs(swingHighs.Last() - potentialSwingHigh) > TickSize))
+			{
+				swingHighs.Add(potentialSwingHigh);
+				lastSwingDetectionBar = CurrentBar;
+			}
+
+			// Check for swing low
+			double potentialSwingLow = Low[SwingStrength];
+			bool isSwingLow = true;
+
+			for (int i = 1; i <= SwingStrength; i++)
+			{
+				if (Low[i] <= potentialSwingLow || Low[SwingStrength - i] <= potentialSwingLow)
+				{
+					isSwingLow = false;
+					break;
+				}
+			}
+
+			if (isSwingLow && (swingLows.Count == 0 || Math.Abs(swingLows.Last() - potentialSwingLow) > TickSize))
+			{
+				swingLows.Add(potentialSwingLow);
+				lastSwingDetectionBar = CurrentBar;
+			}
+
+			// Prune old swings (keep last 20)
+			if (swingHighs.Count > 20) swingHighs.RemoveAt(0);
+			if (swingLows.Count > 20) swingLows.RemoveAt(0);
+		}
+
+		/// <summary>
+		/// Analyzes swing sequences to detect BOS (Break of Structure) and CHoCH (Change of Character).
+		/// </summary>
+		private void AnalyzeStructureBreaks()
+		{
+			// Simplified BOS/CHoCH detection:
+			// BOS = Price breaks prior swing high/low in same trend direction
+			// CHoCH = Price breaks prior swing + trend reverses
+
+			if (swingHighs.Count < 2 && swingLows.Count < 2) return;
+
+			double lastHighSwing = swingHighs.Count >= 1 ? swingHighs.Last() : 0;
+			double lastLowSwing = swingLows.Count >= 1 ? swingLows.Last() : 0;
+
+			// Check for bullish BOS: price closes above last swing high with confirmation
+			bool bullishBOS = Close[0] > lastHighSwing && Close[1] <= lastHighSwing;
+			if (bullishBOS && HasConfirmedBreakAbove(lastHighSwing))
+			{
+				detectedEvents.Add(new SmartMoneyEvent
+				{
+					Type = SmartMoneyEvent.EventType.BOS,
+					Direction = SmartMoneyEvent.EventDirection.Bullish,
+					Price = lastHighSwing,
+					StartBar = CurrentBar - ConfirmationBars,
+					EndBar = CurrentBar,
+					EventTime = Time[0],
+					ConfirmationScore = 2
+				});
+			}
+
+			// Check for bearish BOS: price closes below last swing low with confirmation
+			bool bearishBOS = Close[0] < lastLowSwing && Close[1] >= lastLowSwing;
+			if (bearishBOS && HasConfirmedBreakBelow(lastLowSwing))
+			{
+				detectedEvents.Add(new SmartMoneyEvent
+				{
+					Type = SmartMoneyEvent.EventType.BOS,
+					Direction = SmartMoneyEvent.EventDirection.Bearish,
+					Price = lastLowSwing,
+					StartBar = CurrentBar - ConfirmationBars,
+					EndBar = CurrentBar,
+					EventTime = Time[0],
+					ConfirmationScore = 2
+				});
+			}
+
+			// Prune old events (keep last 50)
+			if (detectedEvents.Count > 50)
+				detectedEvents.RemoveAt(0);
+		}
+
+		private bool HasConfirmedBreakAbove(double price)
+		{
+			int consecutive = 0;
+			for (int i = 0; i < ConfirmationBars && i < CurrentBar; i++)
+			{
+				if (Close[i] > price) consecutive++;
+			}
+			return consecutive >= ConfirmationBars;
+		}
+
+		private bool HasConfirmedBreakBelow(double price)
+		{
+			int consecutive = 0;
+			for (int i = 0; i < ConfirmationBars && i < CurrentBar; i++)
+			{
+				if (Close[i] < price) consecutive++;
+			}
+			return consecutive >= ConfirmationBars;
+		}
+
+		#endregion
+
+		#region Core Logic — DOM Polling (Level 2)
+
+		/// <summary>
+		/// Throttled polling of Level 2 DOM data at key price levels.
+		/// Placeholder: Real implementation requires OnMarketDepth() subscription.
+		/// </summary>
+		private void PollDOMClusters()
+		{
+			if (!EnableAudioAlerts || (DateTime.Now - lastDOMPoll).TotalSeconds < DOMPollThrottleSeconds)
+				return;
+
+			lastDOMPoll = DateTime.Now;
+
+			// Placeholder: DOM integration would go here
+			// Real implementation:
+			// - Subscribe to OnMarketDepth() in the indicator
+			// - Cache bid/ask depth at POC, opening range boundaries, etc.
+			// - Use for confirmation scoring
+		}
+
+		#endregion
+
+		#region Core Logic — Historical Sessions Management
+
+		/// <summary>
+		/// Manages rolling 14-day historical session data storage.
+		/// </summary>
+		private void ManageHistoricalSessions()
+		{
+			// Historical data is added when sessions complete (in DetectSessionBoundaries)
+		}
+
+		/// <summary>
+		/// Adds completed session to historical rolling storage (14-day max per session type).
+		/// </summary>
+		private void AddToHistoricalSessions(SessionData sessionData)
+		{
+			string historyKey = sessionData.SessionType.ToString();
+
+			if (!historicalSessions.ContainsKey(historyKey))
+				historicalSessions[historyKey] = new List<SessionData>();
+
+			historicalSessions[historyKey].Add(sessionData);
+
+			// Maintain rolling 14-day window
+			if (historicalSessions[historyKey].Count > LookbackDays)
+				historicalSessions[historyKey].RemoveAt(0);
+		}
+
+		/// <summary>
+		/// Builds a session key for storage (e.g., "20260711_Asia").
+		/// </summary>
+		private string BuildSessionKey(DateTime date, SessionType sessionType)
+		{
+			return string.Format("{0:yyyyMMdd}_{1}", date, sessionType);
 		}
 
 		#endregion
@@ -649,7 +1061,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		#endregion
 
-		#region Rendering (Placeholder)
+		#region Rendering (Placeholder for Phase 3)
 
 		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
 		{
