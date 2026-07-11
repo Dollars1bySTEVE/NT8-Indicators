@@ -320,6 +320,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 		[Display(Name = "Confirmation Bars", Order = 3, GroupName = "05. Smart Money")]
 		public int ConfirmationBars { get; set; }
 
+		[NinjaScriptProperty]
+		[Display(Name = "Enable DOM Polling", Order = 4, GroupName = "05. Smart Money")]
+		public bool EnableDOMPolling { get; set; }
+
 		#endregion
 
 		#region Properties — 06. Historical Sessions
@@ -550,6 +554,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				ShowSmartMoneyEvents = true;
 				SwingStrength = 3;
 				ConfirmationBars = 1;
+				EnableDOMPolling = true;
 
 				// ── 06. Historical Sessions ─────────────────────────────────
 				ShowHistoricalSessions = true;
@@ -719,14 +724,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 			// London: 3 AM (03:00) - 12 PM (12:00)
 			// NY:     9:30 AM (09:30) - 4 PM (16:00)
 
+			// NY takes precedence during the London/NY overlap (9:30 AM - 12 PM ET)
 			if (timeOfDay >= new TimeSpan(17, 0, 0) || timeOfDay < new TimeSpan(2, 0, 0))
 				return SessionType.Asia;
-			else if (timeOfDay >= new TimeSpan(3, 0, 0) && timeOfDay < new TimeSpan(12, 0, 0))
-				return SessionType.London;
 			else if (timeOfDay >= new TimeSpan(9, 30, 0) && timeOfDay < new TimeSpan(16, 0, 0))
 				return SessionType.NewYork;
+			else if (timeOfDay >= new TimeSpan(3, 0, 0) && timeOfDay < new TimeSpan(12, 0, 0))
+				return SessionType.London;
 			else
-				// Gap time: 2 AM - 3 AM or 12 PM - 9:30 AM or 4 PM - 5 PM
+				// Gap time: 2 AM - 3 AM or 4 PM - 5 PM
 				return lastDetectedSessionType; // Return last known session
 		}
 
@@ -831,8 +837,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 			// Clean up old bins (keep only recent ones to prevent memory bloat)
 			if (priceVolumeBins.Count > 1000)
 			{
-				var oldestEntries = priceVolumeBins.OrderBy(x => x.Key).Take(100).Select(x => x.Key).ToList();
-				foreach (var key in oldestEntries)
+				var lowestVolumeEntries = priceVolumeBins.OrderBy(x => x.Value).Take(100).Select(x => x.Key).ToList();
+				foreach (var key in lowestVolumeEntries)
 					priceVolumeBins.Remove(key);
 			}
 		}
@@ -863,7 +869,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		/// </summary>
 		private void DetectSwingPoints()
 		{
-			if (CurrentBar <= SwingStrength)
+			if (CurrentBar < SwingStrength * 2)
 				return;
 
 			int lookbackBar = CurrentBar - SwingStrength;
@@ -874,7 +880,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			for (int i = 1; i <= SwingStrength; i++)
 			{
-				if (High[i] >= potentialSwingHigh || High[SwingStrength - i] >= potentialSwingHigh)
+				if (High[SwingStrength + i] >= potentialSwingHigh || High[SwingStrength - i] >= potentialSwingHigh)
 				{
 					isSwingHigh = false;
 					break;
@@ -893,7 +899,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			for (int i = 1; i <= SwingStrength; i++)
 			{
-				if (Low[i] <= potentialSwingLow || Low[SwingStrength - i] <= potentialSwingLow)
+				if (Low[SwingStrength + i] <= potentialSwingLow || Low[SwingStrength - i] <= potentialSwingLow)
 				{
 					isSwingLow = false;
 					break;
@@ -992,7 +998,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		/// </summary>
 		private void PollDOMClusters()
 		{
-			if (!EnableAudioAlerts || (DateTime.Now - lastDOMPoll).TotalSeconds < DOMPollThrottleSeconds)
+			if (!EnableDOMPolling || (DateTime.Now - lastDOMPoll).TotalSeconds < DOMPollThrottleSeconds)
 				return;
 
 			lastDOMPoll = DateTime.Now;
@@ -1211,6 +1217,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			try
 			{
+				// Session brushes are used for the opening range box fill (see RenderOpeningRangeBox)
 				dxAsiaSessionBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, ToColor4(AsiaSessionColor, OpeningRangeOpacity / 100f));
 				dxLondonSessionBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, ToColor4(LondonSessionColor, OpeningRangeOpacity / 100f));
 				dxNYSessionBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, ToColor4(NYSessionColor, OpeningRangeOpacity / 100f));
@@ -1410,7 +1417,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private void RenderSmartMoneyEvents(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
 			ChartScale chartScale)
 		{
-			foreach (var evt in detectedEvents.TakeLast(5)) // Show last 5 events only
+			foreach (var evt in detectedEvents.Skip(Math.Max(0, detectedEvents.Count - 5))) // Show last 5 events only
 			{
 				float yPrice = chartScale.GetYByValue(evt.Price);
 				float xStart = chartControl.GetXByBarIndex(ChartBars, evt.StartBar);
@@ -1439,7 +1446,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private void RenderSignalArrows(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
 			ChartScale chartScale)
 		{
-			foreach (var signal in recentSignals.TakeLast(3)) // Show last 3 signals
+			foreach (var signal in recentSignals.Skip(Math.Max(0, recentSignals.Count - 3))) // Show last 3 signals
 			{
 				float xSignal = chartControl.GetXByBarIndex(ChartBars, signal.BarIndex);
 				float ySignal = chartScale.GetYByValue(signal.Price);
@@ -1617,11 +1624,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 		{
 			System.Windows.Media.Color c = ((System.Windows.Media.SolidColorBrush)wpfBrush).Color;
 			return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
-		}
-
-		private string BuildSessionKey(DateTime date, SessionType sessionType)
-		{
-			return string.Format("{0:yyyyMMdd}_{1}", date, sessionType);
 		}
 
 		#endregion
