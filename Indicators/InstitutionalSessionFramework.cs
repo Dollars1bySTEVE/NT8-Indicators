@@ -170,6 +170,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 			public int ConfirmationScore { get; set; } // 0-3
 		}
 
+		/// <summary>
+		/// Represents a signal event with confirmation score.
+		/// </summary>
+		private class SignalEvent
+		{
+			public DateTime EventTime { get; set; }
+			public int BarIndex { get; set; }
+			public double Price { get; set; }
+			public int Score { get; set; } // 0-3
+			public bool IsBullish { get; set; }
+			public string Reason { get; set; }
+		}
+
 		#endregion
 
 		#region Private Fields — Core State
@@ -202,8 +215,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private DateTime lastDOMPoll = DateTime.MinValue;
 		private const double DOMPollThrottleSeconds = 1.0;
 
-		// ── Alert state ──────────────────────────────────────────────────
+		// ── Signal/Alert state ───────────────────────────────────────────
 		private int lastAlertBar = -999;
+		private List<SignalEvent> recentSignals;
 
 		// ── Rendering state ─────────────────────────────────────────────
 		private SharpDX.Direct2D1.SolidColorBrush dxAsiaSessionBrush;
@@ -214,7 +228,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private SharpDX.Direct2D1.SolidColorBrush dxBearishBrush;
 		private SharpDX.Direct2D1.SolidColorBrush dxLabelBrush;
 		private SharpDX.Direct2D1.SolidColorBrush dxPanelBgBrush;
+		private SharpDX.Direct2D1.SolidColorBrush dxHistoricalBrush;
+		private SharpDX.Direct2D1.StrokeStyle dxDashStrokeStyle;
 		private SharpDX.DirectWrite.TextFormat dxTextFormat;
+		private SharpDX.DirectWrite.TextFormat dxSmallTextFormat;
 		private bool dxResourcesCreated = false;
 
 		#endregion
@@ -346,6 +363,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 		[Display(Name = "Alert Cooldown (bars)", Order = 4, GroupName = "07. Alerts & Notifications")]
 		public int AlertCooldownBars { get; set; }
 
+		[NinjaScriptProperty]
+		[Range(0, 3)]
+		[Display(Name = "Minimum Alert Score (0-3)", Order = 5, GroupName = "07. Alerts & Notifications")]
+		public int MinimumAlertScore { get; set; }
+
 		#endregion
 
 		#region Properties — 08. Appearance — Colors
@@ -436,6 +458,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 		[NinjaScriptProperty]
 		[Display(Name = "Show Pivot Labels", Order = 3, GroupName = "09. Appearance — Fonts & Labels")]
 		public bool ShowPivotLabels { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, 3)]
+		[Display(Name = "Pivot Line Width", Order = 4, GroupName = "09. Appearance — Fonts & Labels")]
+		public int HistoricalLineWidth { get; set; }
 
 		#endregion
 
@@ -535,6 +562,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				EnableAudioAlerts = true;
 				AlertSoundFile = "Alert1.wav";
 				AlertCooldownBars = 20;
+				MinimumAlertScore = 2; // Require score 2 or higher
 
 				// ── 08. Appearance — Colors ─────────────────────────────────
 				AsiaSessionColor = Brushes.Purple;
@@ -549,6 +577,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				LabelFontSize = 10;
 				ShowSessionLabels = true;
 				ShowPivotLabels = true;
+				HistoricalLineWidth = 1;
 
 				// ── 10. Dashboard ────────────────────────────────────────────
 				ShowDashboard = true;
@@ -571,6 +600,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				swingHighs = new List<double>();
 				swingLows = new List<double>();
 				priceVolumeBins = new Dictionary<double, double>();
+				recentSignals = new List<SignalEvent>();
 
 				// Initialize session iterator for boundary detection
 				storedSession = new SessionIterator(Bars);
@@ -612,6 +642,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			// ── Step 7: Manage historical rolling data ───────────────────
 			ManageHistoricalSessions();
+
+			// ── Step 8: Calculate confirmation score + generate signals ──
+			CalculateConfirmationScore();
+
+			// ── Step 9: Trigger alerts if threshold met ──────────────────
+			TriggerAlerts();
 		}
 
 		#endregion
@@ -1007,6 +1043,166 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		#endregion
 
+		#region Core Logic — Confirmation Scoring
+
+		/// <summary>
+		/// Calculates confirmation score (0-3) based on POC touch, DOM clusters, and BOS/CHoCH.
+		/// Score 0: No confirmation
+		/// Score 1: One confirmation factor
+		/// Score 2: Two confirmation factors  
+		/// Score 3: All three factors (or BOS/CHoCH + high conviction)
+		/// </summary>
+		private void CalculateConfirmationScore()
+		{
+			if (currentSessionData == null || !currentSessionData.POC.IsCalculated) return;
+
+			int score = 0;
+			string reason = "";
+
+			// ── Factor 1: POC Touch (wick rejection at POC) ──────────────
+			if (ShowPOCLine && CheckPOCTouchWithWickRejection())
+			{
+				score++;
+				reason += "POC-Touch ";
+			}
+
+			// ── Factor 2: DOM Cluster (strong resistance/support) ───────
+			if (CheckDOMCluster())
+			{
+				score++;
+				reason += "DOM-Cluster ";
+			}
+
+			// ── Factor 3: BOS/CHoCH (smart money structure break) ────────
+			if (ShowSmartMoneyEvents && CheckRecentSmartMoneyEvent())
+			{
+				score++;
+				reason += "BOS/CHoCH ";
+			}
+
+			// Record signal if score meets threshold
+			if (score >= MinimumAlertScore)
+			{
+				bool isBullish = Close[0] > Open[0];
+				recentSignals.Add(new SignalEvent
+				{
+					EventTime = Time[0],
+					BarIndex = CurrentBar,
+					Price = Close[0],
+					Score = score,
+					IsBullish = isBullish,
+					Reason = reason
+				});
+
+				// Prune old signals (keep last 100)
+				if (recentSignals.Count > 100)
+					recentSignals.RemoveAt(0);
+			}
+		}
+
+		/// <summary>
+		/// Checks if price touched POC with wick rejection (score +1).
+		/// </summary>
+		private bool CheckPOCTouchWithWickRejection()
+		{
+			double pocPrice = currentSessionData.POC.POCPrice;
+			double tolerance = TickSize * 2; // Within 2 ticks of POC
+
+			// Check if current bar wicked into POC
+			bool touchedPOC = (High[0] >= pocPrice - tolerance && High[0] <= pocPrice + tolerance) ||
+							  (Low[0] >= pocPrice - tolerance && Low[0] <= pocPrice + tolerance);
+
+			if (!touchedPOC) return false;
+
+			// Check for wick rejection (close away from POC)
+			bool rejection = Math.Abs(Close[0] - pocPrice) > TickSize * 3;
+			return rejection;
+		}
+
+		/// <summary>
+		/// Checks for strong DOM clustering at current price (placeholder).
+		/// Real implementation requires OnMarketDepth() integration.
+		/// </summary>
+		private bool CheckDOMCluster()
+		{
+			// Placeholder: would check bid/ask depth
+			// For now, return false (requires Level 2 implementation)
+			return false;
+		}
+
+		/// <summary>
+		/// Checks if recent BOS/CHoCH event aligns with current price action.
+		/// </summary>
+		private bool CheckRecentSmartMoneyEvent()
+		{
+			if (detectedEvents.Count == 0) return false;
+
+			// Check if latest event is recent (within last 5 bars)
+			var recentEvent = detectedEvents.Last();
+			if (CurrentBar - recentEvent.EndBar > 5) return false;
+
+			// Check if price is in alignment with event direction
+			bool aligned = (recentEvent.Direction == SmartMoneyEvent.EventDirection.Bullish && Close[0] > recentEvent.Price) ||
+						   (recentEvent.Direction == SmartMoneyEvent.EventDirection.Bearish && Close[0] < recentEvent.Price);
+
+			return aligned;
+		}
+
+		#endregion
+
+		#region Core Logic — Alert Triggering
+
+		/// <summary>
+		/// Triggers alerts based on confirmation score and user preferences.
+		/// </summary>
+		private void TriggerAlerts()
+		{
+			if (SelectedAlertTrigger == AlertTrigger.None) return;
+			if (recentSignals.Count == 0) return;
+
+			SignalEvent lastSignal = recentSignals.Last();
+
+			// Check cooldown to prevent alert spam
+			if (CurrentBar - lastAlertBar < AlertCooldownBars) return;
+
+			// Determine if alert should fire based on trigger type
+			bool shouldAlert = false;
+			switch (SelectedAlertTrigger)
+			{
+				case AlertTrigger.POCTouch:
+					shouldAlert = lastSignal.Reason.Contains("POC-Touch");
+					break;
+				case AlertTrigger.DOMCluster:
+					shouldAlert = lastSignal.Reason.Contains("DOM-Cluster");
+					break;
+				case AlertTrigger.BOSCHoCH:
+					shouldAlert = lastSignal.Reason.Contains("BOS/CHoCH");
+					break;
+				case AlertTrigger.AllThree:
+					shouldAlert = lastSignal.Score >= MinimumAlertScore;
+					break;
+			}
+
+			if (shouldAlert && EnableAudioAlerts)
+			{
+				try
+				{
+					PlaySound(AlertSoundFile);
+					lastAlertBar = CurrentBar;
+
+					// Log alert
+					string direction = lastSignal.IsBullish ? "BULLISH" : "BEARISH";
+					Log(string.Format("ALERT: {0} Signal (Score: {1}) - {2}", direction, lastSignal.Score, lastSignal.Reason), LogLevel.Information);
+				}
+				catch (Exception ex)
+				{
+					Log("Error triggering alert: " + ex.Message, LogLevel.Error);
+				}
+			}
+		}
+
+		#endregion
+
 		#region SharpDX Resource Management
 
 		private void CreateSharpDXResources(SharpDX.Direct2D1.RenderTarget renderTarget)
@@ -1023,6 +1219,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 				dxBearishBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, ToColor4(BearishSignalColor, 1f));
 				dxLabelBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, ToColor4(LabelTextColor, 1f));
 				dxPanelBgBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, new SharpDX.Color4(0f, 0f, 0f, DashboardOpacity / 100f));
+				dxHistoricalBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, ToColor4(LabelTextColor, HistoricalSessionOpacity / 100f));
+
+				// Create dash stroke style for historical lines
+				SharpDX.Direct2D1.StrokeStyleProperties strokeProps = new SharpDX.Direct2D1.StrokeStyleProperties();
+				strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dash;
+				dxDashStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(renderTarget.Factory, strokeProps);
 
 				dxTextFormat = new SharpDX.DirectWrite.TextFormat(
 					NinjaTrader.Core.Globals.DirectWriteFactory,
@@ -1031,6 +1233,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 					SharpDX.DirectWrite.FontStyle.Normal,
 					SharpDX.DirectWrite.FontStretch.Normal,
 					LabelFontSize);
+
+				dxSmallTextFormat = new SharpDX.DirectWrite.TextFormat(
+					NinjaTrader.Core.Globals.DirectWriteFactory,
+					"Arial",
+					SharpDX.DirectWrite.FontWeight.Normal,
+					SharpDX.DirectWrite.FontStyle.Normal,
+					SharpDX.DirectWrite.FontStretch.Normal,
+					LabelFontSize - 2);
 
 				dxResourcesCreated = true;
 			}
@@ -1050,7 +1260,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (dxBearishBrush != null) { dxBearishBrush.Dispose(); dxBearishBrush = null; }
 			if (dxLabelBrush != null) { dxLabelBrush.Dispose(); dxLabelBrush = null; }
 			if (dxPanelBgBrush != null) { dxPanelBgBrush.Dispose(); dxPanelBgBrush = null; }
+			if (dxHistoricalBrush != null) { dxHistoricalBrush.Dispose(); dxHistoricalBrush = null; }
+			if (dxDashStrokeStyle != null) { dxDashStrokeStyle.Dispose(); dxDashStrokeStyle = null; }
 			if (dxTextFormat != null) { dxTextFormat.Dispose(); dxTextFormat = null; }
+			if (dxSmallTextFormat != null) { dxSmallTextFormat.Dispose(); dxSmallTextFormat = null; }
 			dxResourcesCreated = false;
 		}
 
@@ -1061,29 +1274,354 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		#endregion
 
-		#region Rendering (Placeholder for Phase 3)
+		#region GPU Rendering — OnRender
 
 		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
 		{
 			base.OnRender(chartControl, chartScale);
 
-			// Rendering logic will be implemented in Phase 3
-			// - Session boxes
-			// - POC lines + labels
-			// - Pivot lines + labels
-			// - BOS/CHoCH markers
-			// - Historical session overlays
-			// - Dashboard panel
+			SharpDX.Direct2D1.RenderTarget renderTarget = RenderTarget;
+			if (renderTarget == null || activeSessions == null || activeSessions.Count == 0)
+				return;
+
+			if (!dxResourcesCreated)
+				CreateSharpDXResources(renderTarget);
+
+			int firstBar = ChartBars.FromIndex;
+			int lastBar = ChartBars.ToIndex;
+
+			// ── Render historical sessions first (background layer) ──────
+			if (ShowHistoricalSessions)
+				RenderHistoricalSessions(renderTarget, chartControl, chartScale, firstBar, lastBar);
+
+			// ── Render current session elements ──────────────────────────
+			if (currentSessionData != null)
+			{
+				// Opening range box
+				if (ShowOpeningRangeBox && currentSessionData.OpeningRange.IsComplete)
+					RenderOpeningRangeBox(renderTarget, chartControl, chartScale, currentSessionData);
+
+				// POC line + label
+				if (ShowPOCLine && currentSessionData.POC.IsCalculated)
+					RenderPOCLine(renderTarget, chartControl, chartScale, currentSessionData);
+
+				// Pivot levels (session high/low)
+				if (ShowPivotPoints)
+					RenderPivotLevels(renderTarget, chartControl, chartScale, currentSessionData);
+
+				// BOS/CHoCH markers
+				if (ShowSmartMoneyEvents && detectedEvents.Count > 0)
+					RenderSmartMoneyEvents(renderTarget, chartControl, chartScale);
+
+				// Signal arrows (high confidence levels)
+				RenderSignalArrows(renderTarget, chartControl, chartScale);
+			}
+
+			// ── Render dashboard panel (top layer) ────────────────────────
+			if (ShowDashboard && currentSessionData != null)
+				RenderDashboard(renderTarget, chartControl, chartScale, currentSessionData);
 		}
 
 		#endregion
 
-		#region Helpers
+		#region Rendering — Opening Range Box
+
+		private void RenderOpeningRangeBox(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl, 
+			ChartScale chartScale, SessionData sessionData)
+		{
+			OpeningRange orng = sessionData.OpeningRange;
+			if (orng.StartBar <= 0 || orng.EndBar <= 0) return;
+
+			float xStart = chartControl.GetXByBarIndex(ChartBars, orng.StartBar);
+			float xEnd = chartControl.GetXByBarIndex(ChartBars, orng.EndBar);
+			float yHigh = chartScale.GetYByValue(orng.HighPrice);
+			float yLow = chartScale.GetYByValue(orng.LowPrice);
+
+			SharpDX.Direct2D1.SolidColorBrush boxBrush = GetSessionBrush(sessionData.SessionType);
+			if (boxBrush != null)
+			{
+				rt.FillRectangle(new SharpDX.RectangleF(xStart, yHigh, xEnd - xStart, yLow - yHigh), boxBrush);
+			}
+
+			// Label
+			if (ShowSessionLabels)
+			{
+				string label = string.Format("{0} OR", sessionData.SessionType.ToString().Substring(0, 1));
+				SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+					NinjaTrader.Core.Globals.DirectWriteFactory, label, dxSmallTextFormat, 100f, 20f);
+				rt.DrawTextLayout(new SharpDX.Vector2(xStart + 2, yHigh - 18), layout, dxLabelBrush);
+				layout.Dispose();
+			}
+		}
+
+		#endregion
+
+		#region Rendering — POC Line
+
+		private void RenderPOCLine(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
+			ChartScale chartScale, SessionData sessionData)
+		{
+			if (sessionData.POC.POCPrice <= 0) return;
+
+			float yPOC = chartScale.GetYByValue(sessionData.POC.POCPrice);
+			float xStart = chartControl.GetXByBarIndex(ChartBars, Math.Max(sessionData.StartBar, ChartBars.FromIndex));
+			float xEnd = chartControl.GetXByBarIndex(ChartBars, Math.Min(sessionData.EndBar > 0 ? sessionData.EndBar : CurrentBar, ChartBars.ToIndex));
+
+			// POC line
+			rt.DrawLine(new SharpDX.Vector2(xStart, yPOC), new SharpDX.Vector2(xEnd, yPOC), 
+				dxPOCBrush, 2, dxDashStrokeStyle);
+
+			// Label
+			if (ShowPOCLabel)
+			{
+				string label = string.Format("POC: {0:F2}", sessionData.POC.POCPrice);
+				SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+					NinjaTrader.Core.Globals.DirectWriteFactory, label, dxSmallTextFormat, 150f, 20f);
+				rt.DrawTextLayout(new SharpDX.Vector2(xEnd + 4, yPOC - 10), layout, dxLabelBrush);
+				layout.Dispose();
+			}
+		}
+
+		#endregion
+
+		#region Rendering — Pivot Levels
+
+		private void RenderPivotLevels(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
+			ChartScale chartScale, SessionData sessionData)
+		{
+			// Session High
+			float yHigh = chartScale.GetYByValue(sessionData.HighPrice);
+			float xStart = chartControl.GetXByBarIndex(ChartBars, Math.Max(sessionData.StartBar, ChartBars.FromIndex));
+			float xEnd = chartControl.GetXByBarIndex(ChartBars, Math.Min(sessionData.EndBar > 0 ? sessionData.EndBar : CurrentBar, ChartBars.ToIndex));
+
+			rt.DrawLine(new SharpDX.Vector2(xStart, yHigh), new SharpDX.Vector2(xEnd, yHigh),
+				dxBullishBrush, PivotLineWidth);
+
+			// Session Low
+			float yLow = chartScale.GetYByValue(sessionData.LowPrice);
+			rt.DrawLine(new SharpDX.Vector2(xStart, yLow), new SharpDX.Vector2(xEnd, yLow),
+				dxBearishBrush, PivotLineWidth);
+		}
+
+		#endregion
+
+		#region Rendering — Smart Money Events
+
+		private void RenderSmartMoneyEvents(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
+			ChartScale chartScale)
+		{
+			foreach (var evt in detectedEvents.TakeLast(5)) // Show last 5 events only
+			{
+				float yPrice = chartScale.GetYByValue(evt.Price);
+				float xStart = chartControl.GetXByBarIndex(ChartBars, evt.StartBar);
+				float xEnd = chartControl.GetXByBarIndex(ChartBars, evt.EndBar);
+
+				SharpDX.Direct2D1.SolidColorBrush eventBrush = evt.Direction == SmartMoneyEvent.EventDirection.Bullish 
+					? dxBullishBrush : dxBearishBrush;
+
+				// Draw event marker
+				rt.DrawLine(new SharpDX.Vector2(xStart, yPrice), new SharpDX.Vector2(xEnd, yPrice),
+					eventBrush, 1, dxDashStrokeStyle);
+
+				// Label
+				string label = evt.Type == SmartMoneyEvent.EventType.BOS ? "BOS" : "CHoCH";
+				SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+					NinjaTrader.Core.Globals.DirectWriteFactory, label, dxSmallTextFormat, 50f, 15f);
+				rt.DrawTextLayout(new SharpDX.Vector2(xEnd + 2, yPrice - 12), layout, eventBrush);
+				layout.Dispose();
+			}
+		}
+
+		#endregion
+
+		#region Rendering — Signal Arrows
+
+		private void RenderSignalArrows(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
+			ChartScale chartScale)
+		{
+			foreach (var signal in recentSignals.TakeLast(3)) // Show last 3 signals
+			{
+				float xSignal = chartControl.GetXByBarIndex(ChartBars, signal.BarIndex);
+				float ySignal = chartScale.GetYByValue(signal.Price);
+
+				SharpDX.Direct2D1.SolidColorBrush arrowBrush = signal.IsBullish ? dxBullishBrush : dxBearishBrush;
+
+				// Draw arrow (simple circle marker for now)
+				SharpDX.RectangleF arrowRect = new SharpDX.RectangleF(xSignal - 8, ySignal - 8, 16, 16);
+				rt.DrawRectangle(arrowRect, arrowBrush, 2);
+
+				// Score label
+				string scoreLabel = string.Format("S{0}", signal.Score);
+				SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+					NinjaTrader.Core.Globals.DirectWriteFactory, scoreLabel, dxSmallTextFormat, 30f, 15f);
+				rt.DrawTextLayout(new SharpDX.Vector2(xSignal - 6, ySignal - 6), layout, arrowBrush);
+				layout.Dispose();
+			}
+		}
+
+		#endregion
+
+		#region Rendering — Historical Sessions
+
+		private void RenderHistoricalSessions(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
+			ChartScale chartScale, int firstBar, int lastBar)
+		{
+			if (historicalSessions == null || historicalSessions.Count == 0) return;
+
+			int sessionsDrawn = 0;
+			foreach (var sessionList in historicalSessions.Values)
+			{
+				foreach (var historicalSession in sessionList.Reverse<SessionData>())
+				{
+					if (sessionsDrawn >= LookbackDays) return;
+
+					// Filter based on day label option
+					if (!ShouldShowHistoricalSession(historicalSession)) continue;
+
+					if (historicalSession.EndBar < firstBar || historicalSession.StartBar > lastBar)
+						continue;
+
+					// Draw POC line for historical session (faded)
+					if (historicalSession.POC.IsCalculated)
+					{
+						float yPOC = chartScale.GetYByValue(historicalSession.POC.POCPrice);
+						float xStart = chartControl.GetXByBarIndex(ChartBars, Math.Max(historicalSession.StartBar, firstBar));
+						float xEnd = chartControl.GetXByBarIndex(ChartBars, Math.Min(historicalSession.EndBar, lastBar));
+
+						rt.DrawLine(new SharpDX.Vector2(xStart, yPOC), new SharpDX.Vector2(xEnd, yPOC),
+							dxHistoricalBrush, HistoricalLineWidth, dxDashStrokeStyle);
+
+						// Day label
+						if (HistoricalDayLabels != DayLabelOption.HiddenAll)
+						{
+							string dayName = historicalSession.SessionDate.ToString("ddd");
+							SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+								NinjaTrader.Core.Globals.DirectWriteFactory, dayName, dxSmallTextFormat, 40f, 15f);
+							rt.DrawTextLayout(new SharpDX.Vector2(xStart + 2, yPOC + 2), layout, dxHistoricalBrush);
+							layout.Dispose();
+						}
+					}
+
+					sessionsDrawn++;
+				}
+			}
+		}
+
+		private bool ShouldShowHistoricalSession(SessionData session)
+		{
+			if (HistoricalDayLabels == DayLabelOption.HiddenAll) return false;
+			if (HistoricalDayLabels == DayLabelOption.CurrentDayOnly)
+				return session.SessionDate == DateTime.Today;
+
+			int daysDiff = (int)(DateTime.Today - session.SessionDate).TotalDays;
+			if (HistoricalDayLabels == DayLabelOption.Last7Days)
+				return daysDiff >= 0 && daysDiff <= 7;
+			if (HistoricalDayLabels == DayLabelOption.Last14Days)
+				return daysDiff >= 0 && daysDiff <= 14;
+
+			return false;
+		}
+
+		#endregion
+
+		#region Rendering — Dashboard Panel
+
+		private void RenderDashboard(SharpDX.Direct2D1.RenderTarget rt, ChartControl chartControl,
+			ChartScale chartScale, SessionData sessionData)
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.AppendLine("=== INSTITUTIONAL SESSION FRAMEWORK ===");
+			sb.AppendLine();
+			sb.AppendFormat("Session: {0}\n", sessionData.SessionType);
+			sb.AppendFormat("OHLC: {0:F2} / {1:F2} / {2:F2} / {3:F2}\n",
+				sessionData.OpenPrice, sessionData.HighPrice, sessionData.LowPrice, sessionData.ClosePrice);
+			sb.AppendFormat("Range: {0:F2} | Volume: {1:F0}\n",
+				sessionData.HighPrice - sessionData.LowPrice, sessionData.TotalVolume);
+
+			if (sessionData.POC.IsCalculated)
+				sb.AppendFormat("POC: {0:F2} (Vol: {1:F0})\n", sessionData.POC.POCPrice, sessionData.POC.POCVolume);
+
+			if (sessionData.OpeningRange.IsComplete)
+				sb.AppendFormat("OR: {0:F2} - {1:F2}\n", sessionData.OpeningRange.LowPrice, sessionData.OpeningRange.HighPrice);
+
+			if (recentSignals.Count > 0)
+			{
+				SignalEvent lastSignal = recentSignals.Last();
+				sb.AppendFormat("Last Signal: Score {0} ({1})\n", lastSignal.Score, lastSignal.Reason.Trim());
+			}
+
+			string dashboardText = sb.ToString();
+			SharpDX.DirectWrite.TextLayout layout = new SharpDX.DirectWrite.TextLayout(
+				NinjaTrader.Core.Globals.DirectWriteFactory,
+				dashboardText, dxTextFormat, 300f, 250f);
+
+			float textWidth = layout.Metrics.Width + 16f;
+			float textHeight = layout.Metrics.Height + 16f;
+			float padding = 8f;
+			float margin = 10f;
+
+			float panelX = GetDashboardX(chartControl, textWidth, margin);
+			float panelY = GetDashboardY(chartControl, textHeight, margin);
+
+			// Panel background
+			rt.FillRectangle(new SharpDX.RectangleF(panelX, panelY, textWidth, textHeight), dxPanelBgBrush);
+
+			// Panel border
+			rt.DrawRectangle(new SharpDX.RectangleF(panelX, panelY, textWidth, textHeight), dxLabelBrush, 1);
+
+			// Text
+			rt.DrawTextLayout(new SharpDX.Vector2(panelX + padding, panelY + padding), layout, dxLabelBrush);
+			layout.Dispose();
+		}
+
+		private float GetDashboardX(ChartControl chartControl, float panelWidth, float margin)
+		{
+			switch (DashboardPosition)
+			{
+				case TextPosition.TopRight:
+				case TextPosition.BottomRight:
+					return (float)chartControl.Width - panelWidth - margin;
+				default:
+					return margin;
+			}
+		}
+
+		private float GetDashboardY(ChartControl chartControl, float panelHeight, float margin)
+		{
+			switch (DashboardPosition)
+			{
+				case TextPosition.BottomLeft:
+				case TextPosition.BottomRight:
+					return (float)chartControl.Height - panelHeight - margin;
+				default:
+					return margin;
+			}
+		}
+
+		#endregion
+
+		#region Helper Methods
+
+		private SharpDX.Direct2D1.SolidColorBrush GetSessionBrush(SessionType sessionType)
+		{
+			switch (sessionType)
+			{
+				case SessionType.Asia: return dxAsiaSessionBrush;
+				case SessionType.London: return dxLondonSessionBrush;
+				case SessionType.NewYork: return dxNYSessionBrush;
+				default: return dxLabelBrush;
+			}
+		}
 
 		private SharpDX.Color4 ToColor4(System.Windows.Media.Brush wpfBrush, float alpha)
 		{
 			System.Windows.Media.Color c = ((System.Windows.Media.SolidColorBrush)wpfBrush).Color;
 			return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, alpha);
+		}
+
+		private string BuildSessionKey(DateTime date, SessionType sessionType)
+		{
+			return string.Format("{0:yyyyMMdd}_{1}", date, sessionType);
 		}
 
 		#endregion
