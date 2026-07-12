@@ -222,6 +222,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Label render widths — must match the RectangleF width arg passed to DrawText
         private const float PocLabelWidth  = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
         private const float LevelLabelWidth = 200f; // General labels "RD H / Psy H / LWH …"
+        private const double ClusterMatchToleranceFactor = 0.001;
+        private const double ClusterZonePaddingTickFactor = 2.0;
+        private const double ClusterZonePaddingMaxPoints = 2.0;
+        private const double ClusterZonePaddingPercent = 0.10;
 
         // Cached ET date of the most-recently-processed bar (used in OnRender for age checks)
         private DateTime _latestBarEtDate = DateTime.MinValue;
@@ -853,7 +857,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Preserve the alert-fired flag from the previous frame's matching zone so a
                     // resting price doesn't re-trigger the alert on every recompute.
                     bool fired = false;
-                    double tol = Math.Max(TickSize / 2.0, Math.Max(1e-9, ClusterZoneWidthPoints * 0.001));
+                    double tol = Math.Max(TickSize / 2.0, Math.Max(1e-9, ClusterZoneWidthPoints * ClusterMatchToleranceFactor));
                     foreach (KLClusterZone oldZone in _clusterZones)
                     {
                         if (Math.Abs(oldZone.MinPrice - groupMin) < tol &&
@@ -1289,7 +1293,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             List<KLClusterZone> zones = _clusterZones;
             if (zones == null || zones.Count == 0) return;
 
-            double pad = Math.Max(TickSize * 2.0, Math.Min(2.0, ClusterZoneWidthPoints * 0.10));
+            double pad = Math.Max(TickSize * ClusterZonePaddingTickFactor,
+                Math.Min(ClusterZonePaddingMaxPoints, ClusterZoneWidthPoints * ClusterZonePaddingPercent));
 
             for (int i = 0; i < zones.Count; i++)
             {
@@ -1768,10 +1773,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// (Sunday-anchored week start, matching the week-rollover convention used elsewhere).</summary>
         private static string GetSessionDateLabel(DateTime sessionDate, DateTime currentBarDate)
         {
-            DateTime entryWeekStart   = sessionDate.AddDays(-(int)sessionDate.DayOfWeek);
-            DateTime currentWeekStart = currentBarDate.AddDays(-(int)currentBarDate.DayOfWeek);
+            DateTime entryWeekStart   = GetSundayAnchoredWeekStart(sessionDate);
+            DateTime currentWeekStart = GetSundayAnchoredWeekStart(currentBarDate);
             string   dayAbbrev        = GetWeekdayAbbrev(sessionDate.DayOfWeek);
             return entryWeekStart < currentWeekStart ? "Pr" + dayAbbrev : dayAbbrev;
+        }
+
+        private static DateTime GetSundayAnchoredWeekStart(DateTime date)
+        {
+            return date.Date.AddDays(-(int)date.DayOfWeek);
         }
 
         private SharpDX.Direct2D1.SolidColorBrush GetPocBrush(int sessionId)
