@@ -61,7 +61,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int      StartBarIndex;
             public double   POCPrice;
             public bool     IsComplete;
+            public double   CurrentBinSize;   // effective volume-bucket width (auto-coarsens under LimitPocBins)
             public Dictionary<double, double> VolumeProfile = new Dictionary<double, double>();
+        }
+
+        /// <summary>One detected POC cluster zone (group of nearby session POCs).</summary>
+        private class KLClusterZone
+        {
+            public double MinPrice;
+            public double MaxPrice;
+            public int    Count;
+            public bool   AlertFired;
         }
 
         /// <summary>One session Open/Close entry (one per session per day).</summary>
@@ -104,7 +114,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private static TimeZoneInfo SafeFindEtZone()
         {
             try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
-            catch (Exception) { return TimeZoneInfo.CreateCustomTimeZone("ET-Fallback", TimeSpan.FromHours(-5), "ET-Fallback", "ET-Fallback"); }
+            catch (Exception)
+            {
+                try { return TimeZoneInfo.FindSystemTimeZoneById("America/New_York"); }
+                catch (Exception) { return TimeZoneInfo.CreateCustomTimeZone("ET-Fallback", TimeSpan.FromHours(-5), "ET-Fallback", "ET-Fallback"); }
+            }
         }
 
         private DateTime BarTimeEt()
@@ -135,12 +149,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double   _psyWeekHigh, _psyWeekLow;
         private double   _psyMonthHigh, _psyMonthLow;
 
+        // Cached rounded Psy levels — recomputed once per bar in OnBarUpdate instead of every
+        // OnRender frame (these values are invariant for the life of the current bar).
+        private double   _cachedDPsyH, _cachedDPsyL;
+        private double   _cachedWPsyH, _cachedWPsyL;
+        private double   _cachedMPsyH, _cachedMPsyL;
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — RD Range Daily
 
         private Queue<double> _rdRanges;
         private double        _rdValue, _rdHigh, _rdLow;
+        private double        _rdDayOpen;       // today's Open[0], anchor used when UseOnlyCompletedDaysForRD is true
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -149,6 +170,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private KLPocEntry[] _activePocSessions; // index: 0=Asia,1=London,2=NY
         private List<KLPocEntry> _pocList;
         private readonly object  _sessionLock = new object();
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Private fields — POC Clusters
+
+        private List<KLClusterZone> _clusterZones = new List<KLClusterZone>();
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -180,6 +207,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private long   _wallAskSize;
         private bool   _level2Available;
 
+        // Running size totals — updated incrementally in OnMarketDepth so DetectOrderBookWalls
+        // no longer needs a full summation pass over the book on every event.
+        private long   _bidSizeSum;
+        private long   _askSizeSum;
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — SharpDX resources
@@ -190,6 +222,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Label render widths — must match the RectangleF width arg passed to DrawText
         private const float PocLabelWidth  = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
         private const float LevelLabelWidth = 200f; // General labels "RD H / Psy H / LWH …"
+        private const double ClusterMatchToleranceFactor = 0.001;
+        private const double ClusterZonePaddingTickFactor = 2.0;
+        private const double ClusterZonePaddingMaxPoints = 2.0;
+        private const double ClusterZonePaddingPercent = 0.10;
 
         // Cached ET date of the most-recently-processed bar (used in OnRender for age checks)
         private DateTime _latestBarEtDate = DateTime.MinValue;
@@ -228,8 +264,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush _dxLondonOcBrush;
         private SharpDX.Direct2D1.SolidColorBrush _dxNyOcBrush;
 
-        // Label collision avoidance — cleared per OnRender frame
-        private readonly HashSet<int> _usedLabelYPositions = new HashSet<int>();
+        // POC Cluster zone shading brush
+        private SharpDX.Direct2D1.SolidColorBrush _dxClusterBrush;
+
+        // Label collision avoidance — cleared per OnRender frame, bucketed by screen region so
+        // left-anchored and right-anchored labels only collide against their own bucket.
+        private readonly HashSet<int> _usedLabelYLeft  = new HashSet<int>();
+        private readonly HashSet<int> _usedLabelYRight = new HashSet<int>();
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -239,6 +280,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
+                // 1a. Session Windows (ET) — Asia 18:00→03:00, London 03:00→11:30, NY 08:00→16:00
+                AsiaStartHour   = 18; AsiaStartMin   = 0;
+                AsiaEndHour     = 3;  AsiaEndMin     = 0;
+                LondonStartHour = 3;  LondonStartMin = 0;
+                LondonEndHour   = 11; LondonEndMin   = 30;
+                NyStartHour     = 8;  NyStartMin     = 0;
+                NyEndHour       = 16; NyEndMin       = 0;
+
                 // 1a. Session POCs — Asia
                 ShowAsiaPoc         = true;
                 AsiaPocColor        = Brushes.Crimson;
@@ -267,8 +316,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PocExtensionDays  = 7;
                 PocBinMultiplier  = 1;
                 FadeOlderPocs     = true;
+                LimitPocBins      = 500;
 
-                // 1b. Session Opens/Closes — Asia
+                // 1c. POC Clusters
+                ShowPocClusters        = true;
+                ClusterZoneWidthPoints = 35.0;
+                ClusterMinPocCount     = 2;
+                ClusterColor           = Brushes.Gold;
+                ClusterOpacity         = 15;
+                ShowClusterLabels      = true;
+                ClusterAudioAlert      = false;
+
+                // 1b. Session Opens/Closes — Asia (kept for serialization compatibility only;
+                // Asia no longer renders Open/Close — see IsOcSessionEnabled)
                 ShowAsiaOC          = true;
                 ShowAsiaOCOpen      = true;
                 ShowAsiaOCClose     = true;
@@ -314,6 +374,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RdThickness     = 1;
                 ShowRdLabels    = true;
                 RdLength        = 15;
+                UseOnlyCompletedDaysForRD = false;
 
                 // 3. Psy Levels
                 ShowDailyPsy          = true;
@@ -373,6 +434,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LabelFontSize    = 11;
                 GlobalShowLabels = true;
                 LabelAnchor      = IQKLLabelAnchor.LineStart;
+                ExtendLinesToRightEdge = true;
 
                 // Indicator meta
                 Name               = "IQKeyLevelsGPU";
@@ -399,6 +461,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _activeOcSessions  = new KLSessionOC[3];
                 _bidBook           = new Dictionary<double, KLBookLevel>();
                 _askBook           = new Dictionary<double, KLBookLevel>();
+                _clusterZones      = new List<KLClusterZone>();
+                _bidSizeSum        = 0;
+                _askSizeSum        = 0;
 
                 _currentMonth = -1;
             }
@@ -436,6 +501,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     _dayHigh    = High[0];
                     _dayLow     = Low[0];
                     _currentDay = barTime.Date;
+                    _rdDayOpen  = Open[0];
 
                     _psyDayHigh = High[0];
                     _psyDayLow  = Low[0];
@@ -504,20 +570,47 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // ── Hourly open tracking ──────────────────────────────────────
                 UpdateHourlyOpens(barEt);
+
+                // ── Cache rounded Psy levels once per bar (invariant until next bar) ──
+                double psyStep = PsyRoundIncrement * TickSize;
+                if (psyStep > 0)
+                {
+                    _cachedDPsyH = Math.Ceiling(_psyDayHigh   / psyStep) * psyStep;
+                    _cachedDPsyL = Math.Floor(_psyDayLow      / psyStep) * psyStep;
+                    _cachedWPsyH = Math.Ceiling(_psyWeekHigh  / psyStep) * psyStep;
+                    _cachedWPsyL = Math.Floor(_psyWeekLow     / psyStep) * psyStep;
+                    _cachedMPsyH = Math.Ceiling(_psyMonthHigh / psyStep) * psyStep;
+                    _cachedMPsyL = Math.Floor(_psyMonthLow    / psyStep) * psyStep;
+                }
+
+                // ── POC cluster zones — recomputed once per bar (first tick only) ──
+                RecomputePocClusters(barEt);
             }
 
             // ── RD high/low recalculate every tick (uses current day stats) ──
             if (_rdRanges.Count > 0)
             {
                 _rdValue = _rdRanges.Average();
-                double rdSlack = (_rdValue - (_dayHigh - _dayLow)) / 2.0;
-                _rdHigh = _dayHigh + rdSlack;
-                _rdLow  = _dayLow  - rdSlack;
+                if (UseOnlyCompletedDaysForRD)
+                {
+                    double half = _rdValue / 2.0;
+                    _rdHigh = _rdDayOpen + half;
+                    _rdLow  = _rdDayOpen - half;
+                }
+                else
+                {
+                    double rdSlack = (_rdValue - (_dayHigh - _dayLow)) / 2.0;
+                    _rdHigh = _dayHigh + rdSlack;
+                    _rdLow  = _dayLow  - rdSlack;
+                }
             }
 
             // Update live hourly open end bar
             if (_currentHourlyOpen != null)
                 _currentHourlyOpen.EndBarIndex = CurrentBar;
+
+            // ── POC cluster audio alert — checked every tick for responsiveness ──
+            CheckClusterAlerts(Close[0]);
         }
 
         #endregion
@@ -550,7 +643,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                             SessionStart = sStart,
                             SessionEnd   = sEnd,
                             StartBarIndex = CurrentBar,
-                            IsComplete   = false
+                            IsComplete   = false,
+                            CurrentBinSize = TickSize * Math.Max(1, PocBinMultiplier)
                         };
                         _activePocSessions[id] = entry;
                         lock (_sessionLock)
@@ -567,18 +661,23 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     var sess = _activePocSessions[id];
 
-                    // Accumulate volume at typical price bucketed to bin size
+                    // Accumulate volume at typical price bucketed to the session's current bin size
                     double barVol = Volume[0];
                     if (barVol > 0)
                     {
                         double tp     = (High[0] + Low[0] + Close[0]) / 3.0;
-                        double binSz  = TickSize * Math.Max(1, PocBinMultiplier);
-                        double bucket = Math.Round(tp / binSz) * binSz;
+                        double bucket = Math.Round(tp / sess.CurrentBinSize) * sess.CurrentBinSize;
 
                         if (sess.VolumeProfile.ContainsKey(bucket))
                             sess.VolumeProfile[bucket] += barVol;
                         else
                             sess.VolumeProfile[bucket]  = barVol;
+
+                        // Performance guard: if the profile grows past the configured bin cap,
+                        // auto-coarsen by doubling the bin size and re-bucketing existing data
+                        // instead of dropping it.
+                        if (sess.VolumeProfile.Count > LimitPocBins)
+                            CoarsenVolumeProfile(sess);
                     }
 
                     // Recalculate POC
@@ -594,6 +693,23 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
+        }
+
+        /// <summary>Doubles a session's volume-profile bin size and re-buckets existing entries,
+        /// keeping data intact while bounding dictionary growth (LimitPocBins).</summary>
+        private void CoarsenVolumeProfile(KLPocEntry sess)
+        {
+            sess.CurrentBinSize *= 2.0;
+            var coarsened = new Dictionary<double, double>();
+            foreach (var kv in sess.VolumeProfile)
+            {
+                double bucket = Math.Round(kv.Key / sess.CurrentBinSize) * sess.CurrentBinSize;
+                if (coarsened.ContainsKey(bucket))
+                    coarsened[bucket] += kv.Value;
+                else
+                    coarsened[bucket]  = kv.Value;
+            }
+            sess.VolumeProfile = coarsened;
         }
 
         private void FinalizePocSession(KLPocEntry entry)
@@ -616,44 +732,72 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void GetPocSessionWindow(int sessionId, DateTime barEt, out DateTime start, out DateTime end)
         {
-            DateTime today = barEt.Date;
             switch (sessionId)
             {
-                case 0: GetCrossMidnightWindow(barEt, 19, 4, out start, out end); break;   // Asia   19:00→04:00 ET
+                case 0:
+                    GetConfigurableWindow(barEt, AsiaStartHour, AsiaStartMin, AsiaEndHour, AsiaEndMin, out start, out end);
+                    break;
                 case 1:
-                    start = today.AddHours(3);
-                    // When EndLondonAtNyOpen is enabled, London POC profile accumulates only until NY open (09:30)
-                    end = EndLondonAtNyOpen
-                        ? today.AddHours(9).AddMinutes(30)
-                        : today.AddHours(11).AddMinutes(30);
-                    break;  // London 03:00→09:30 or 11:30 ET
-                case 2: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16); break;  // NY     09:30→16:00 ET
-                default: start = today; end = today; break;
+                    GetConfigurableWindow(barEt, LondonStartHour, LondonStartMin, LondonEndHour, LondonEndMin, out start, out end);
+                    // When EndLondonAtNyOpen is enabled, London's POC profile accumulates only until
+                    // the configured NY session start instead of the configured London session end.
+                    // Anchor the NY open to the session start's date and roll forward a day when it
+                    // lands at/before the start (cross-midnight London windows), so end > start.
+                    if (EndLondonAtNyOpen)
+                    {
+                        end = start.Date.AddHours(NyStartHour).AddMinutes(NyStartMin);
+                        if (end <= start) end = end.AddDays(1);
+                    }
+                    break;
+                case 2:
+                    GetConfigurableWindow(barEt, NyStartHour, NyStartMin, NyEndHour, NyEndMin, out start, out end);
+                    break;
+                default:
+                    start = barEt.Date; end = barEt.Date; break;
             }
         }
 
-        // Session OC window always uses the canonical session times (London always ends at 11:30,
-        // regardless of EndLondonAtNyOpen which only affects the POC profile accumulation).
-        private static void GetOcSessionWindow(int sessionId, DateTime barEt, out DateTime start, out DateTime end)
+        // Session OC window always uses the canonical configured session times (London always ends
+        // at LondonEndHour/Min, regardless of EndLondonAtNyOpen which only affects the POC profile).
+        private void GetOcSessionWindow(int sessionId, DateTime barEt, out DateTime start, out DateTime end)
         {
-            DateTime today = barEt.Date;
             switch (sessionId)
             {
-                case 0: GetCrossMidnightWindow(barEt, 19, 4, out start, out end); break;   // Asia   19:00→04:00 ET
-                case 1: start = today.AddHours(3); end = today.AddHours(11).AddMinutes(30); break;  // London 03:00→11:30 ET
-                case 2: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16); break;  // NY     09:30→16:00 ET
-                default: start = today; end = today; break;
+                case 0: GetConfigurableWindow(barEt, AsiaStartHour, AsiaStartMin, AsiaEndHour, AsiaEndMin, out start, out end); break;
+                case 1: GetConfigurableWindow(barEt, LondonStartHour, LondonStartMin, LondonEndHour, LondonEndMin, out start, out end); break;
+                case 2: GetConfigurableWindow(barEt, NyStartHour, NyStartMin, NyEndHour, NyEndMin, out start, out end); break;
+                default: start = barEt.Date; end = barEt.Date; break;
             }
         }
 
-        private static void GetCrossMidnightWindow(DateTime barEt, int startHour, int endHour,
+        /// <summary>
+        /// Resolves a configurable ET session window for the bar's calendar date. Handles both
+        /// same-day windows (start &lt;= end, e.g. London 03:00-11:30) and cross-midnight windows
+        /// (end &lt;= start, e.g. Asia 18:00-03:00) generically, including the Sunday 18:00 ET
+        /// weekend rollover — the window is always anchored to the bar's own ET calendar date, so
+        /// a Sunday-evening bar correctly opens a session that spans into Monday.
+        /// </summary>
+        private static void GetConfigurableWindow(DateTime barEt, int startHour, int startMin, int endHour, int endMin,
             out DateTime start, out DateTime end)
         {
-            DateTime today = barEt.Date;
-            if (barEt.TimeOfDay >= TimeSpan.FromHours(startHour))
-            { start = today.AddHours(startHour);             end = today.AddDays(1).AddHours(endHour); }
+            DateTime today   = barEt.Date;
+            TimeSpan startTod = new TimeSpan(startHour, startMin, 0);
+            TimeSpan endTod   = new TimeSpan(endHour, endMin, 0);
+
+            if (startTod < endTod)
+            {
+                // Same calendar day window
+                start = today.Add(startTod);
+                end   = today.Add(endTod);
+            }
             else
-            { start = today.AddDays(-1).AddHours(startHour); end = today.AddHours(endHour); }
+            {
+                // Cross-midnight window (covers startTod == endTod as a full 24h wrap too)
+                if (barEt.TimeOfDay >= startTod)
+                { start = today.Add(startTod);             end = today.AddDays(1).Add(endTod); }
+                else
+                { start = today.AddDays(-1).Add(startTod); end = today.Add(endTod); }
+            }
         }
 
         private bool IsPocSessionEnabled(int sessionId)
@@ -663,12 +807,107 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private bool IsOcSessionEnabled(int sessionId)
         {
-            switch (sessionId) { case 0: return ShowAsiaOC; case 1: return ShowLondonOC; case 2: return ShowNyOC; default: return false; }
+            // Asia keeps ONLY its POC — Open/Close is intentionally disabled here regardless of
+            // the legacy ShowAsiaOC* properties (retained solely for workspace/template deserialization).
+            switch (sessionId) { case 0: return false; case 1: return ShowLondonOC; case 2: return ShowNyOC; default: return false; }
         }
 
         private string GetPocSessionName(int sessionId)
         {
             switch (sessionId) { case 0: return "Asia"; case 1: return "London"; case 2: return "NY"; default: return ""; }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region POC Cluster helpers
+
+        private void RecomputePocClusters(DateTime barEt)
+        {
+            if (!ShowPocClusters)
+            {
+                if (_clusterZones.Count > 0) _clusterZones = new List<KLClusterZone>();
+                return;
+            }
+
+            List<KLPocEntry> snapshot;
+            lock (_sessionLock) { snapshot = _pocList.ToList(); }
+
+            DateTime etToday = barEt.Date;
+            var prices = new List<double>();
+            foreach (KLPocEntry e in snapshot)
+            {
+                if (e.POCPrice == 0) continue;
+                int daysOld = (etToday - e.SessionDate).Days;
+                if (daysOld < 0 || daysOld >= PocExtensionDays) continue;
+                prices.Add(e.POCPrice);
+            }
+            prices.Sort();
+
+            var newZones = new List<KLClusterZone>();
+            int idx = 0;
+            while (idx < prices.Count)
+            {
+                int    j        = idx;
+                double groupMin = prices[idx];
+                double groupMax = prices[idx];
+                while (j + 1 < prices.Count && (prices[j + 1] - groupMin) <= ClusterZoneWidthPoints)
+                {
+                    j++;
+                    groupMax = prices[j];
+                }
+
+                int count = j - idx + 1;
+                if (count >= ClusterMinPocCount)
+                {
+                    // Preserve the alert-fired flag from the previous frame's matching zone so a
+                    // resting price doesn't re-trigger the alert on every recompute.
+                    bool fired = false;
+                    double tol = Math.Max(TickSize / 2.0, Math.Max(1e-9, ClusterZoneWidthPoints * ClusterMatchToleranceFactor));
+                    foreach (KLClusterZone oldZone in _clusterZones)
+                    {
+                        if (Math.Abs(oldZone.MinPrice - groupMin) < tol &&
+                            Math.Abs(oldZone.MaxPrice - groupMax) < tol)
+                        { fired = oldZone.AlertFired; break; }
+                    }
+                    newZones.Add(new KLClusterZone { MinPrice = groupMin, MaxPrice = groupMax, Count = count, AlertFired = fired });
+                }
+                idx = j + 1;
+            }
+
+            _clusterZones = newZones;
+        }
+
+        /// <summary>Fires a one-shot audio alert the first time price enters a cluster zone, and
+        /// resets the fired flag once price leaves it. Alerts only during State.Realtime to avoid
+        /// spamming during historical load/replay.</summary>
+        private void CheckClusterAlerts(double price)
+        {
+            // Snapshot the list reference: RecomputePocClusters can replace _clusterZones between
+            // the count check and the index access, which could otherwise throw or drop updates.
+            List<KLClusterZone> zones = _clusterZones;
+            if (!ClusterAudioAlert || zones.Count == 0) return;
+
+            for (int i = 0; i < zones.Count; i++)
+            {
+                KLClusterZone z = zones[i];
+                bool inside = price >= z.MinPrice && price <= z.MaxPrice;
+                if (inside)
+                {
+                    if (!z.AlertFired)
+                    {
+                        z.AlertFired = true;
+                        if (State == State.Realtime)
+                            Alert("IQKL_Cluster_" + i, Priority.Low,
+                                "IQKeyLevelsGPU: Price entered POC Cluster ×" + z.Count,
+                                NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10,
+                                ClusterColor, Brushes.Black);
+                    }
+                }
+                else
+                {
+                    z.AlertFired = false;
+                }
+            }
         }
 
         #endregion
@@ -839,15 +1078,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             // never observes torn/inconsistent wall state
             lock (_sessionLock)
             {
+                long oldSize = 0;
+                KLBookLevel existing;
+                book.TryGetValue(price, out existing);
+                if (existing != null) oldSize = existing.Size;
+
                 switch (e.Operation)
                 {
                     case Operation.Add:
                     case Operation.Update:
-                        if (!book.ContainsKey(price)) book[price] = new KLBookLevel { Price = price };
-                        book[price].Size = size;
+                        if (existing == null) { existing = new KLBookLevel { Price = price }; book[price] = existing; }
+                        existing.Size = size;
+                        // Running sum updated incrementally instead of re-summing the whole book.
+                        if (isBid) _bidSizeSum += size - oldSize; else _askSizeSum += size - oldSize;
                         break;
                     case Operation.Remove:
-                        if (book.ContainsKey(price)) book.Remove(price);
+                        if (existing != null)
+                        {
+                            book.Remove(price);
+                            if (isBid) _bidSizeSum -= oldSize; else _askSizeSum -= oldSize;
+                        }
                         break;
                 }
 
@@ -859,9 +1109,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (book.Count == 0) return;
 
-            double avg = 0;
-            foreach (var kv in book) avg += kv.Value.Size;
-            avg /= book.Count;
+            long   sizeSum = isBid ? _bidSizeSum : _askSizeSum;
+            double avg     = (double)sizeSum / book.Count;
 
             long   wallSize  = 0;
             double wallPrice = 0;
@@ -906,12 +1155,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             if (!dxReady) return;
 
-            // Clear label collision set for this frame
-            _usedLabelYPositions.Clear();
+            // Clear label collision buckets for this frame (left-anchored / right-anchored)
+            _usedLabelYLeft.Clear();
+            _usedLabelYRight.Clear();
 
             var rt   = RenderTarget;
             float rtW = (float)chartControl.ActualWidth;
             float rtH = (float)chartControl.ActualHeight;
+
+            // ── 0. POC Cluster zones (shaded background, drawn first) ────────
+            try { if (ShowPocClusters) RenderPocClusters(chartControl, chartScale, rtW); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQKeyLevelsGPU: SharpDX error RenderPocClusters: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQKeyLevelsGPU: RenderPocClusters [" + ex.GetType().Name + "]: " + ex.Message); }
 
             // ── 1. Session POCs ───────────────────────────────────────────────
             try { RenderSessionPocs(chartControl, chartScale, rtW); }
@@ -955,6 +1210,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderSessionPocs(ChartControl cc, ChartScale cs, float rtW)
         {
+            if (!RenderPrereqsOk()) return;
+
             List<KLPocEntry> snapshot;
             lock (_sessionLock) { snapshot = _pocList.ToList(); }
 
@@ -964,6 +1221,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             DateTime etToday = _latestBarEtDate != DateTime.MinValue
                 ? _latestBarEtDate
                 : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone).Date;
+
+            float lastBarX = cc.GetXByBarIndex(ChartBars, ChartBars.ToIndex);
 
             // Forward iteration: oldest entries first (rendered below), newest last (on top)
             for (int i = 0; i < snapshot.Count; i++)
@@ -997,10 +1256,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 try
                 {
-                    // C1 fix: clamp xStart to visible area and extend xEnd to right edge
+                    // C1 fix: clamp xStart to visible area; extend xEnd to right edge unless disabled
                     int clampedStart = Math.Max(ChartBars.FromIndex, entry.StartBarIndex);
                     float xStart = cc.GetXByBarIndex(ChartBars, clampedStart);
-                    float xEnd   = rtW; // always extend to chart right edge
+                    float xEnd   = ExtendLinesToRightEdge ? rtW : Math.Max(xStart, lastBarX);
                     float yPoc   = cs.GetYByValue(entry.POCPrice);
 
                     if (!float.IsNaN(yPoc) && !float.IsInfinity(yPoc) && xStart <= xEnd)
@@ -1010,17 +1269,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                         // C2 fix: only draw label when line is actually visible
                         if (showLabel && _dxLabelFormat != null)
                         {
-                            string label = string.Format("{0} POC {1}/{2} {3}",
+                            string label = string.Format("{0} POC {1} {2}",
                                 entry.SessionName,
-                                entry.SessionDate.Month,
-                                entry.SessionDate.Day,
+                                GetSessionDateLabel(entry.SessionDate, etToday),
                                 Instrument.MasterInstrument.FormatPrice(entry.POCPrice));
 
                             // D: label anchor support
                             float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
                                 ? xEnd - (PocLabelWidth + 4f)
                                 : xStart + 4f;
-                            float labelY = GetNonCollidingLabelY(yPoc - 14f);
+                            labelX = ClampLabelX(labelX, rtW, PocLabelWidth);
+                            float labelY = GetNonCollidingLabelY(yPoc - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                             RenderTarget.DrawText(label, _dxLabelFormat,
                                 new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), pocBrush);
                         }
@@ -1033,8 +1292,43 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        /// <summary>Renders semi-transparent shaded rectangles for detected POC cluster zones,
+        /// and optional "POC Cluster ×N" labels.</summary>
+        private void RenderPocClusters(ChartControl cc, ChartScale cs, float rtW)
+        {
+            if (!RenderPrereqsOk() || _dxClusterBrush == null) return;
+
+            List<KLClusterZone> zones = _clusterZones;
+            if (zones == null || zones.Count == 0) return;
+
+            double pad = Math.Max(TickSize * ClusterZonePaddingTickFactor,
+                Math.Min(ClusterZonePaddingMaxPoints, ClusterZoneWidthPoints * ClusterZonePaddingPercent));
+
+            for (int i = 0; i < zones.Count; i++)
+            {
+                KLClusterZone z = zones[i];
+                float yTop    = cs.GetYByValue(z.MaxPrice + pad);
+                float yBottom = cs.GetYByValue(z.MinPrice - pad);
+                if (float.IsNaN(yTop) || float.IsNaN(yBottom) || float.IsInfinity(yTop) || float.IsInfinity(yBottom))
+                    continue;
+
+                var rect = new SharpDX.RectangleF(0f, Math.Min(yTop, yBottom), rtW, Math.Abs(yBottom - yTop));
+                RenderTarget.FillRectangle(rect, _dxClusterBrush);
+
+                if (GlobalShowLabels && ShowClusterLabels && _dxLabelFormat != null)
+                {
+                    string label = string.Format("POC Cluster ×{0}", z.Count);
+                    float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
+                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, false);
+                    RenderTarget.DrawText(label, _dxLabelFormat,
+                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxClusterBrush);
+                }
+            }
+        }
+
         private void RenderRdBands(ChartControl cc, ChartScale cs, float rtW)
         {
+            if (!RenderPrereqsOk()) return;
             if (_dxRdBrush == null || _rdHigh == 0 || _rdLow == 0) return;
 
             float yH = cs.GetYByValue(_rdHigh);
@@ -1047,7 +1341,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     string label = string.Format("RD H {0}", Instrument.MasterInstrument.FormatPrice(_rdHigh));
                     float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
-                    float labelY = GetNonCollidingLabelY(yH - 14f);
+                    labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
+                    float labelY = GetNonCollidingLabelY(yH - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                     RenderTarget.DrawText(label, _dxLabelFormat,
                         new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
@@ -1060,7 +1355,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     string label = string.Format("RD L {0}", Instrument.MasterInstrument.FormatPrice(_rdLow));
                     float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
-                    float labelY = GetNonCollidingLabelY(yL - 14f);
+                    labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
+                    float labelY = GetNonCollidingLabelY(yL - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                     RenderTarget.DrawText(label, _dxLabelFormat,
                         new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
@@ -1069,18 +1365,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderPsyLevels(ChartControl cc, ChartScale cs, float rtW)
         {
-            double psyStep = PsyRoundIncrement * TickSize;
-            if (psyStep <= 0) return;
+            if (!RenderPrereqsOk()) return;
 
-            // Daily Psy
+            // Daily Psy — uses values cached once per bar in OnBarUpdate
             if (ShowDailyPsy && _dxDailyPsyBrush != null && _psyDayHigh > 0)
             {
-                double dPsyH = Math.Ceiling(_psyDayHigh / psyStep) * psyStep;
-                double dPsyL = Math.Floor(_psyDayLow   / psyStep) * psyStep;
-                RenderSingleLine(cc, cs, rtW, dPsyH, _dxDailyPsyBrush,
+                RenderSingleLine(cc, cs, rtW, _cachedDPsyH, _dxDailyPsyBrush,
                     GlobalShowLabels && ShowDailyPsyLabels ? "DPsy H" : "", GlobalShowLabels && ShowDailyPsyLabels,
                     0f, DailyPsyLineStyle, 1f);
-                RenderSingleLine(cc, cs, rtW, dPsyL, _dxDailyPsyBrush,
+                RenderSingleLine(cc, cs, rtW, _cachedDPsyL, _dxDailyPsyBrush,
                     GlobalShowLabels && ShowDailyPsyLabels ? "DPsy L" : "", GlobalShowLabels && ShowDailyPsyLabels,
                     0f, DailyPsyLineStyle, 1f);
             }
@@ -1088,12 +1381,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Weekly Psy
             if (ShowWeeklyPsy && _dxWeeklyPsyBrush != null && _psyWeekHigh > 0)
             {
-                double wPsyH = Math.Ceiling(_psyWeekHigh / psyStep) * psyStep;
-                double wPsyL = Math.Floor(_psyWeekLow   / psyStep) * psyStep;
-                RenderSingleLine(cc, cs, rtW, wPsyH, _dxWeeklyPsyBrush,
+                RenderSingleLine(cc, cs, rtW, _cachedWPsyH, _dxWeeklyPsyBrush,
                     GlobalShowLabels && ShowWeeklyPsyLabels ? "WPsy H" : "", GlobalShowLabels && ShowWeeklyPsyLabels,
                     0f, WeeklyPsyLineStyle, 1f);
-                RenderSingleLine(cc, cs, rtW, wPsyL, _dxWeeklyPsyBrush,
+                RenderSingleLine(cc, cs, rtW, _cachedWPsyL, _dxWeeklyPsyBrush,
                     GlobalShowLabels && ShowWeeklyPsyLabels ? "WPsy L" : "", GlobalShowLabels && ShowWeeklyPsyLabels,
                     0f, WeeklyPsyLineStyle, 1f);
             }
@@ -1101,12 +1392,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Monthly Psy
             if (ShowMonthlyPsy && _dxMonthlyPsyBrush != null && _psyMonthHigh > 0)
             {
-                double mPsyH = Math.Ceiling(_psyMonthHigh / psyStep) * psyStep;
-                double mPsyL = Math.Floor(_psyMonthLow   / psyStep) * psyStep;
-                RenderSingleLine(cc, cs, rtW, mPsyH, _dxMonthlyPsyBrush,
+                RenderSingleLine(cc, cs, rtW, _cachedMPsyH, _dxMonthlyPsyBrush,
                     GlobalShowLabels && ShowMonthlyPsyLabels ? "MPsy H" : "", GlobalShowLabels && ShowMonthlyPsyLabels,
                     0f, MonthlyPsyLineStyle, 1f);
-                RenderSingleLine(cc, cs, rtW, mPsyL, _dxMonthlyPsyBrush,
+                RenderSingleLine(cc, cs, rtW, _cachedMPsyL, _dxMonthlyPsyBrush,
                     GlobalShowLabels && ShowMonthlyPsyLabels ? "MPsy L" : "", GlobalShowLabels && ShowMonthlyPsyLabels,
                     0f, MonthlyPsyLineStyle, 1f);
             }
@@ -1114,6 +1403,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderWeeklyMonthlyHiLo(ChartControl cc, ChartScale cs, float rtW)
         {
+            if (!RenderPrereqsOk()) return;
+
             // Last Week Hi/Lo
             if (ShowLastWeek && _dxWeekHlBrush != null && _lastWeekHigh > 0)
             {
@@ -1139,7 +1430,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderHourlyOpens(ChartControl cc, ChartScale cs, float rtW)
         {
-            if (_dxHourlyOpenBrush == null) return;
+            if (!RenderPrereqsOk() || _dxHourlyOpenBrush == null) return;
 
             List<KLHourlyOpen> snapshot;
             lock (_sessionLock) { snapshot = _hourlyOpens.ToList(); }
@@ -1172,7 +1463,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // renders alongside its label; for completed hours clamp to last visible bar.
                 // Note: label is anchored at xEnd - (LevelLabelWidth + 2f), so extending to rtW
                 // ensures the label always has a corresponding visible line segment.
-                float xEnd = (ho == _currentHourlyOpen)
+                float xEnd = (ho == _currentHourlyOpen && ExtendLinesToRightEdge)
                     ? rtW
                     : cc.GetXByBarIndex(ChartBars, Math.Min(lastBar, endBar));
                 float yOpen  = cs.GetYByValue(ho.OpenPrice);
@@ -1188,15 +1479,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                     string label = string.Format("HO {0:D2}:00 {1}", ho.Hour,
                         Instrument.MasterInstrument.FormatPrice(ho.OpenPrice));
                     // Hourly open labels always at line end (natural position near current time)
-                    float labelY = GetNonCollidingLabelY(yOpen - 14f);
+                    float labelX = ClampLabelX(xEnd - (LevelLabelWidth + 2f), rtW, LevelLabelWidth);
+                    float labelY = GetNonCollidingLabelY(yOpen - 14f, true);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(xEnd - (LevelLabelWidth + 2f), labelY, LevelLabelWidth, 16f), _dxHourlyOpenBrush);
+                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxHourlyOpenBrush);
                 }
             }
         }
 
         private void RenderWallLines(ChartControl cc, ChartScale cs, float rtW)
         {
+            if (!RenderPrereqsOk()) return;
+
             // Snapshot wall state under lock — OnMarketDepth mutates these on the data thread
             double wallBidPrice, wallAskPrice;
             long   wallBidSize, wallAskSize;
@@ -1217,9 +1511,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (GlobalShowLabels && ShowWallLabels && _dxLabelFormat != null)
                     {
                         string label = string.Format("BID WALL x{0}", wallBidSize);
-                        float labelY = GetNonCollidingLabelY(yBid - 14f);
+                        float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
+                        float labelY = GetNonCollidingLabelY(yBid - 14f, false);
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(4f, labelY, LevelLabelWidth, 16f), _dxWallBidBrush);
+                            new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxWallBidBrush);
                     }
                 }
             }
@@ -1233,9 +1528,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (GlobalShowLabels && ShowWallLabels && _dxLabelFormat != null)
                     {
                         string label = string.Format("ASK WALL x{0}", wallAskSize);
-                        float labelY = GetNonCollidingLabelY(yAsk - 14f);
+                        float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
+                        float labelY = GetNonCollidingLabelY(yAsk - 14f, false);
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(4f, labelY, LevelLabelWidth, 16f), _dxWallAskBrush);
+                            new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxWallAskBrush);
                     }
                 }
             }
@@ -1259,7 +1555,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
                     ? rtW - (LevelLabelWidth + 4f)
                     : xStart + 4f;
-                float labelY = GetNonCollidingLabelY(y - 14f);
+                labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
+                float labelY = GetNonCollidingLabelY(y - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                 RenderTarget.DrawText(text, _dxLabelFormat,
                     new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), brush);
             }
@@ -1268,6 +1565,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Render the Session Open/Close lines and their labels.</summary>
         private void RenderSessionOC(ChartControl cc, ChartScale cs, float rtW)
         {
+            if (!RenderPrereqsOk()) return;
+
             List<KLSessionOC> snapshot;
             lock (_sessionLock) { snapshot = _ocList.ToList(); }
 
@@ -1276,6 +1575,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             DateTime etToday = _latestBarEtDate != DateTime.MinValue
                 ? _latestBarEtDate
                 : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone).Date;
+
+            float lastBarX = cc.GetXByBarIndex(ChartBars, ChartBars.ToIndex);
 
             for (int i = 0; i < snapshot.Count; i++)
             {
@@ -1296,6 +1597,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 bool  showLabel  = GlobalShowLabels && GetOcShowLabels(entry.SessionId);
                 bool  showOpen   = GetOcShowOpen(entry.SessionId);
                 bool  showClose  = GetOcShowClose(entry.SessionId);
+                string dateLabel = GetSessionDateLabel(entry.SessionDate, etToday);
 
                 float savedOpacity = ocBrush.Opacity;
                 if (FadeOlderOC && daysOld > 0)
@@ -1311,7 +1613,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         int clampedOpenStart = Math.Max(ChartBars.FromIndex, entry.OpenBarIndex);
                         float xOpenStart = cc.GetXByBarIndex(ChartBars, clampedOpenStart);
-                        float xOpenEnd   = rtW;
+                        float xOpenEnd   = ExtendLinesToRightEdge ? rtW : Math.Max(xOpenStart, lastBarX);
                         float yOpen      = cs.GetYByValue(entry.OpenPrice);
 
                         if (!float.IsNaN(yOpen) && !float.IsInfinity(yOpen) && xOpenStart <= xOpenEnd)
@@ -1320,15 +1622,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                             if (showLabel && _dxLabelFormat != null)
                             {
-                                string label = string.Format("{0} Open {1}/{2} {3}",
+                                string label = string.Format("{0} Open {1} {2}",
                                     entry.SessionName,
-                                    entry.SessionDate.Month,
-                                    entry.SessionDate.Day,
+                                    dateLabel,
                                     Instrument.MasterInstrument.FormatPrice(entry.OpenPrice));
                                 float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
                                     ? xOpenEnd - (PocLabelWidth + 4f)
                                     : xOpenStart + 4f;
-                                float labelY = GetNonCollidingLabelY(yOpen - 14f);
+                                labelX = ClampLabelX(labelX, rtW, PocLabelWidth);
+                                float labelY = GetNonCollidingLabelY(yOpen - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                                 RenderTarget.DrawText(label, _dxLabelFormat,
                                     new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
                             }
@@ -1343,7 +1645,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         {
                             int clampedCloseStart = Math.Max(ChartBars.FromIndex, entry.CloseBarIndex);
                             float xCloseStart = cc.GetXByBarIndex(ChartBars, clampedCloseStart);
-                            float xCloseEnd   = rtW;
+                            float xCloseEnd   = ExtendLinesToRightEdge ? rtW : Math.Max(xCloseStart, lastBarX);
                             float yClose      = cs.GetYByValue(entry.ClosePrice);
 
                             if (!float.IsNaN(yClose) && !float.IsInfinity(yClose) && xCloseStart <= xCloseEnd)
@@ -1352,15 +1654,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                                 if (showLabel && _dxLabelFormat != null)
                                 {
-                                    string label = string.Format("{0} Close {1}/{2} {3}",
+                                    string label = string.Format("{0} Close {1} {2}",
                                         entry.SessionName,
-                                        entry.SessionDate.Month,
-                                        entry.SessionDate.Day,
+                                        dateLabel,
                                         Instrument.MasterInstrument.FormatPrice(entry.ClosePrice));
                                     float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
                                         ? xCloseEnd - (PocLabelWidth + 4f)
                                         : xCloseStart + 4f;
-                                    float labelY = GetNonCollidingLabelY(yClose - 14f);
+                                    labelX = ClampLabelX(labelX, rtW, PocLabelWidth);
+                                    float labelY = GetNonCollidingLabelY(yClose - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                                     RenderTarget.DrawText(label, _dxLabelFormat,
                                         new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
                                 }
@@ -1416,22 +1718,78 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private float GetNonCollidingLabelY(float y, float labelHeight = 18f)
+        private float GetNonCollidingLabelY(float y, bool useRightBucket, float labelHeight = 18f)
         {
+            // Bucket by anchor region so left-anchored labels only collide with left-anchored
+            // labels, and right-edge / line-end labels only collide with their own bucket.
+            HashSet<int> bucket = useRightBucket ? _usedLabelYRight : _usedLabelYLeft;
+
             int yInt = (int)y;
             int step = (int)labelHeight;
             bool collision = true;
             while (collision)
             {
                 collision = false;
-                foreach (int used in _usedLabelYPositions)
+                foreach (int used in bucket)
                 {
                     if (Math.Abs(used - yInt) < step) { collision = true; break; }
                 }
                 if (collision) yInt += step;
             }
-            _usedLabelYPositions.Add(yInt);
+            bucket.Add(yInt);
             return (float)yInt;
+        }
+
+        /// <summary>Clamps a label's X position so its full width stays within the visible chart
+        /// area — prevents LineEnd-anchored labels from running off-screen near the right edge.</summary>
+        private static float ClampLabelX(float labelX, float rtW, float labelWidth)
+        {
+            const float margin = 2f;
+            float minX = margin;
+            float maxX = rtW - labelWidth - margin;
+            if (maxX < minX) maxX = minX; // chart narrower than the label itself
+            if (labelX < minX) return minX;
+            if (labelX > maxX) return maxX;
+            return labelX;
+        }
+
+        /// <summary>True when Bars/ChartBars/RenderTarget are all available — guards render
+        /// helpers against null references during replay/teardown edge cases.</summary>
+        private bool RenderPrereqsOk()
+        {
+            return Bars != null && ChartBars != null && RenderTarget != null;
+        }
+
+        /// <summary>"Mon.", "Tues.", "Wed.", "Thur.", "Fri.", "Sat.", "Sun."</summary>
+        private static string GetWeekdayAbbrev(DayOfWeek dow)
+        {
+            switch (dow)
+            {
+                case DayOfWeek.Monday:    return "Mon.";
+                case DayOfWeek.Tuesday:   return "Tues.";
+                case DayOfWeek.Wednesday: return "Wed.";
+                case DayOfWeek.Thursday:  return "Thur.";
+                case DayOfWeek.Friday:    return "Fri.";
+                case DayOfWeek.Saturday:  return "Sat.";
+                case DayOfWeek.Sunday:    return "Sun.";
+                default:                  return "";
+            }
+        }
+
+        /// <summary>Weekday-abbreviation label for a session date, prefixed "Pr" (e.g. "PrMon.")
+        /// when the session date falls in a prior week relative to the current bar's week
+        /// (Sunday-anchored week start, matching the week-rollover convention used elsewhere).</summary>
+        private static string GetSessionDateLabel(DateTime sessionDate, DateTime currentBarDate)
+        {
+            DateTime entryWeekStart   = GetSundayAnchoredWeekStart(sessionDate);
+            DateTime currentWeekStart = GetSundayAnchoredWeekStart(currentBarDate);
+            string   dayAbbrev        = GetWeekdayAbbrev(sessionDate.DayOfWeek);
+            return entryWeekStart < currentWeekStart ? "Pr" + dayAbbrev : dayAbbrev;
+        }
+
+        private static DateTime GetSundayAnchoredWeekStart(DateTime date)
+        {
+            return date.Date.AddDays(-(int)date.DayOfWeek);
         }
 
         private SharpDX.Direct2D1.SolidColorBrush GetPocBrush(int sessionId)
@@ -1500,6 +1858,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _dxLondonOcBrush = MakeBrush(rt, LondonOcColor, LondonOcOpacity / 100f);
                 _dxNyOcBrush     = MakeBrush(rt, NyOcColor,     NyOcOpacity     / 100f);
 
+                // POC Cluster zone shading
+                _dxClusterBrush = MakeBrush(rt, ClusterColor, ClusterOpacity / 100f);
+
                 dxReady = true;
             }
             catch (Exception ex)
@@ -1546,12 +1907,79 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref _dxAsiaOcBrush);
             DisposeRef(ref _dxLondonOcBrush);
             DisposeRef(ref _dxNyOcBrush);
+            DisposeRef(ref _dxClusterBrush);
         }
 
         private static void DisposeRef<T>(ref T resource) where T : class, IDisposable
         {
             if (resource != null) { resource.Dispose(); resource = null; }
         }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1a. Session Windows (ET)
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Asia Start Hour (ET)", Order = 1, GroupName = "1a. Session Windows (ET)",
+            Description = "Hour (0-23) the Asia session/POC window starts, Eastern Time.")]
+        public int AsiaStartHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Asia Start Min (ET)", Order = 2, GroupName = "1a. Session Windows (ET)")]
+        public int AsiaStartMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Asia End Hour (ET)", Order = 3, GroupName = "1a. Session Windows (ET)",
+            Description = "Hour (0-23) the Asia session/POC window ends, Eastern Time. End <= Start wraps past midnight.")]
+        public int AsiaEndHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Asia End Min (ET)", Order = 4, GroupName = "1a. Session Windows (ET)")]
+        public int AsiaEndMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "London Start Hour (ET)", Order = 5, GroupName = "1a. Session Windows (ET)")]
+        public int LondonStartHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "London Start Min (ET)", Order = 6, GroupName = "1a. Session Windows (ET)")]
+        public int LondonStartMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "London End Hour (ET)", Order = 7, GroupName = "1a. Session Windows (ET)")]
+        public int LondonEndHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "London End Min (ET)", Order = 8, GroupName = "1a. Session Windows (ET)")]
+        public int LondonEndMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "NY Start Hour (ET)", Order = 9, GroupName = "1a. Session Windows (ET)")]
+        public int NyStartHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "NY Start Min (ET)", Order = 10, GroupName = "1a. Session Windows (ET)")]
+        public int NyStartMin { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "NY End Hour (ET)", Order = 11, GroupName = "1a. Session Windows (ET)")]
+        public int NyEndHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "NY End Min (ET)", Order = 12, GroupName = "1a. Session Windows (ET)")]
+        public int NyEndMin { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1676,24 +2104,82 @@ namespace NinjaTrader.NinjaScript.Indicators
             Description = "Progressively reduce opacity of older POC lines (−12% per day back).")]
         public bool FadeOlderPocs { get; set; }
 
+        [NinjaScriptProperty]
+        [Range(50, 5000)]
+        [Display(Name = "Limit POC Bins", Order = 4, GroupName = "1. Session POCs — General",
+            Description = "Max volume-profile buckets per session before auto-coarsening (doubling bin size and re-bucketing) to bound memory/CPU use.")]
+        public int LimitPocBins { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1c. POC Clusters
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show POC Clusters", Order = 1, GroupName = "1c. POC Clusters",
+            Description = "Highlight zones where multiple session POCs cluster within a narrow price range.")]
+        public bool ShowPocClusters { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5.0, 200.0)]
+        [Display(Name = "Cluster Zone Width (points)", Order = 2, GroupName = "1c. POC Clusters",
+            Description = "Max price spread (in points) between the lowest and highest POC in a cluster group.")]
+        public double ClusterZoneWidthPoints { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(2, 5)]
+        [Display(Name = "Cluster Min POC Count", Order = 3, GroupName = "1c. POC Clusters",
+            Description = "Minimum number of POCs grouped within the zone width required to form a visible cluster zone.")]
+        public int ClusterMinPocCount { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Cluster Color", Order = 4, GroupName = "1c. POC Clusters")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush ClusterColor { get; set; }
+        [Browsable(false)]
+        public string ClusterColorSerializable
+        { get { return Serialize.BrushToString(ClusterColor); } set { ClusterColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Range(5, 50)]
+        [Display(Name = "Cluster Opacity %", Order = 5, GroupName = "1c. POC Clusters")]
+        public int ClusterOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Cluster Labels", Order = 6, GroupName = "1c. POC Clusters",
+            Description = "Toggle the \"POC Cluster ×N\" label drawn on each zone.")]
+        public bool ShowClusterLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Cluster Audio Alert", Order = 7, GroupName = "1c. POC Clusters",
+            Description = "Play an alert sound the first time price enters a cluster zone (real-time only).")]
+        public bool ClusterAudioAlert { get; set; }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Properties — 1b. Session Opens/Closes — Asia
+        // NOTE: Asia keeps ONLY its POC — these legacy properties are retained purely so existing
+        // saved workspaces/templates deserialize without error. They are hidden from the property
+        // grid ([Browsable(false)]) and ignored by all Open/Close logic and rendering
+        // (see IsOcSessionEnabled, which always returns false for Asia).
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Show Asia Open/Close", Order = 1, GroupName = "1b. Session Opens/Closes — Asia",
             Description = "Master toggle for Asia session Open and Close lines.")]
         public bool ShowAsiaOC { get; set; }
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Show Asia Open Lines", Order = 2, GroupName = "1b. Session Opens/Closes — Asia")]
         public bool ShowAsiaOCOpen { get; set; }
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Show Asia Close Lines", Order = 3, GroupName = "1b. Session Opens/Closes — Asia")]
         public bool ShowAsiaOCClose { get; set; }
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Asia OC Color", Order = 4, GroupName = "1b. Session Opens/Closes — Asia")]
         [XmlIgnore]
         public System.Windows.Media.Brush AsiaOcColor { get; set; }
@@ -1703,23 +2189,28 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 100)]
+        [Browsable(false)]
         [Display(Name = "Asia OC Opacity %", Order = 5, GroupName = "1b. Session Opens/Closes — Asia")]
         public int AsiaOcOpacity { get; set; }
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Asia Open Line Style", Order = 6, GroupName = "1b. Session Opens/Closes — Asia")]
         public IQKLLineStyle AsiaOcOpenStyle { get; set; }
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Asia Close Line Style", Order = 7, GroupName = "1b. Session Opens/Closes — Asia")]
         public IQKLLineStyle AsiaOcCloseStyle { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 5)]
+        [Browsable(false)]
         [Display(Name = "Asia OC Thickness", Order = 8, GroupName = "1b. Session Opens/Closes — Asia")]
         public int AsiaOcThickness { get; set; }
 
         [NinjaScriptProperty]
+        [Browsable(false)]
         [Display(Name = "Show Asia OC Labels", Order = 9, GroupName = "1b. Session Opens/Closes — Asia")]
         public bool ShowAsiaOCLabels { get; set; }
 
@@ -1772,7 +2263,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "End London Profile at NY Open", Order = 10, GroupName = "1b. Session Opens/Closes — London",
-            Description = "When enabled, London's volume-at-price profile stops accumulating at 09:30 ET (NY open) instead of 11:30 ET. London Close price is still stamped at 11:30 either way.")]
+            Description = "When enabled, London's volume-at-price profile stops accumulating at the configured NY session start instead of the configured London end. London Close price still uses the configured London end time.")]
         public bool EndLondonAtNyOpen { get; set; }
 
         #endregion
@@ -1876,6 +2367,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "RD Lookback Days", Order = 7, GroupName = "2. Range Daily",
             Description = "Number of prior trading days used to compute the average daily range.")]
         public int RdLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use Only Completed Days for RD", Order = 8, GroupName = "2. Range Daily",
+            Description = "When enabled, RD High/Low are anchored to today's Open using only the completed-day average range, ignoring today's still-developing high/low so the bands stay fixed intraday.")]
+        public bool UseOnlyCompletedDaysForRD { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -2155,6 +2651,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Label Anchor", Order = 3, GroupName = "7. General",
             Description = "LineStart: labels at line start (left edge). LineEnd: labels at line end (right edge, near current price).")]
         public IQKLLabelAnchor LabelAnchor { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Extend Lines to Right Edge", Order = 4, GroupName = "7. General",
+            Description = "When enabled (default), POC and Open/Close lines extend to the chart's right edge. When disabled, they render only out to the last printed bar.")]
+        public bool ExtendLinesToRightEdge { get; set; }
 
         #endregion
     }
