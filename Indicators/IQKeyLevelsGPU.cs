@@ -157,6 +157,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields — SharpDX resources
 
+        // Max POC entries = 3 sessions × 7 days (matches PocExtensionDays max)
+        private const int MaxPocListSize = 21;
+
+        // Cached ET date of the most-recently-processed bar (used in OnRender for age checks)
+        private DateTime _latestBarEtDate = DateTime.MinValue;
+
         private bool dxReady;
 
         private SharpDX.DirectWrite.Factory      _dxWriteFactory;
@@ -341,6 +347,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 DateTime barTime = Time[0];
                 DateTime barEt   = BarTimeEt();
+                _latestBarEtDate = barEt.Date;  // cache ET date for use in OnRender
 
                 // ── Day rollover ──────────────────────────────────────────────
                 if (barTime.Date != _currentDay)
@@ -471,11 +478,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         _activePocSessions[id] = entry;
                         lock (_sessionLock)
                         {
-                            // Prune entries > PocExtensionDays old
-                            DateTime cutoff = DateTime.Today.AddDays(-PocExtensionDays);
+                            // Prune entries older than PocExtensionDays using the bar's ET date
+                            DateTime cutoff = barEt.Date.AddDays(-PocExtensionDays);
                             for (int i = _pocList.Count - 1; i >= 0; i--)
                                 if (_pocList[i].SessionDate < cutoff) _pocList.RemoveAt(i);
-                            if (_pocList.Count >= 21) _pocList.RemoveAt(0);
+                            if (_pocList.Count >= MaxPocListSize) _pocList.RemoveAt(0);
                             _pocList.Add(entry);
                         }
                     }
@@ -738,14 +745,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (snapshot.Count == 0) return;
 
-            // Reverse order so newest is rendered last (on top)
+            // Use cached ET date for age calculations (avoids system-local DateTime.Today timezone issue)
+            DateTime etToday = _latestBarEtDate != DateTime.MinValue ? _latestBarEtDate : DateTime.UtcNow.Date;
+
+            // Forward iteration: oldest entries first (rendered below), newest last (on top)
             for (int i = 0; i < snapshot.Count; i++)
             {
                 KLPocEntry entry = snapshot[i];
                 if (entry.POCPrice == 0) continue;
 
-                // Extension days check — skip entries older than limit
-                int daysOld = (DateTime.Today - entry.SessionDate).Days;
+                // Extension days check — skip entries older than limit (using ET date)
+                int daysOld = (etToday - entry.SessionDate).Days;
                 if (daysOld > PocExtensionDays) continue;
 
                 SharpDX.Direct2D1.SolidColorBrush pocBrush = GetPocBrush(entry.SessionId);
