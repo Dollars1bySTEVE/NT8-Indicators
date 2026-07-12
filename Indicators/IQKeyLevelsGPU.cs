@@ -187,6 +187,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Max POC entries = 3 sessions × 7 days (matches PocExtensionDays max)
         private const int MaxPocListSize = 21;
 
+        // Label render widths — must match the RectangleF width arg passed to DrawText
+        private const float PocLabelWidth  = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
+        private const float LevelLabelWidth = 200f; // General labels "RD H / Psy H / LWH …"
+
         // Cached ET date of the most-recently-processed bar (used in OnRender for age checks)
         private DateTime _latestBarEtDate = DateTime.MinValue;
 
@@ -622,7 +626,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     end = EndLondonAtNyOpen
                         ? today.AddHours(9).AddMinutes(30)
                         : today.AddHours(11).AddMinutes(30);
-                    break;  // London 03:00→11:30 ET (or 09:30)
+                    break;  // London 03:00→09:30 or 11:30 ET
                 case 2: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16); break;  // NY     09:30→16:00 ET
                 default: start = today; end = today; break;
             }
@@ -1014,11 +1018,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                             // D: label anchor support
                             float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
-                                ? xEnd - 224f
+                                ? xEnd - (PocLabelWidth + 4f)
                                 : xStart + 4f;
                             float labelY = GetNonCollidingLabelY(yPoc - 14f);
                             RenderTarget.DrawText(label, _dxLabelFormat,
-                                new SharpDX.RectangleF(labelX, labelY, 220f, 16f), pocBrush);
+                                new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), pocBrush);
                         }
                     }
                 }
@@ -1042,10 +1046,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (GlobalShowLabels && ShowRdLabels && _dxLabelFormat != null)
                 {
                     string label = string.Format("RD H {0}", Instrument.MasterInstrument.FormatPrice(_rdHigh));
-                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - 204f : 4f;
+                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
                     float labelY = GetNonCollidingLabelY(yH - 14f);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(labelX, labelY, 200f, 16f), _dxRdBrush);
+                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
             }
 
@@ -1055,10 +1059,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (GlobalShowLabels && ShowRdLabels && _dxLabelFormat != null)
                 {
                     string label = string.Format("RD L {0}", Instrument.MasterInstrument.FormatPrice(_rdLow));
-                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - 204f : 4f;
+                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
                     float labelY = GetNonCollidingLabelY(yL - 14f);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(labelX, labelY, 200f, 16f), _dxRdBrush);
+                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
             }
         }
@@ -1166,6 +1170,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float xStart = cc.GetXByBarIndex(ChartBars, Math.Max(firstBar, ho.StartBarIndex));
                 // C2 fix: for the live (current) hour, extend line to chart right edge so it
                 // renders alongside its label; for completed hours clamp to last visible bar.
+                // Note: label is anchored at xEnd - (LevelLabelWidth + 2f), so extending to rtW
+                // ensures the label always has a corresponding visible line segment.
                 float xEnd = (ho == _currentHourlyOpen)
                     ? rtW
                     : cc.GetXByBarIndex(ChartBars, Math.Min(lastBar, endBar));
@@ -1184,7 +1190,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Hourly open labels always at line end (natural position near current time)
                     float labelY = GetNonCollidingLabelY(yOpen - 14f);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(xEnd - 202f, labelY, 200f, 16f), _dxHourlyOpenBrush);
+                        new SharpDX.RectangleF(xEnd - (LevelLabelWidth + 2f), labelY, LevelLabelWidth, 16f), _dxHourlyOpenBrush);
                 }
             }
         }
@@ -1213,7 +1219,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         string label = string.Format("BID WALL x{0}", wallBidSize);
                         float labelY = GetNonCollidingLabelY(yBid - 14f);
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxWallBidBrush);
+                            new SharpDX.RectangleF(4f, labelY, LevelLabelWidth, 16f), _dxWallBidBrush);
                     }
                 }
             }
@@ -1229,7 +1235,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         string label = string.Format("ASK WALL x{0}", wallAskSize);
                         float labelY = GetNonCollidingLabelY(yAsk - 14f);
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxWallAskBrush);
+                            new SharpDX.RectangleF(4f, labelY, LevelLabelWidth, 16f), _dxWallAskBrush);
                     }
                 }
             }
@@ -1251,11 +1257,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 string text = string.Format("{0} {1}", label, Instrument.MasterInstrument.FormatPrice(price));
                 // D: label anchor — LineEnd places label at right edge, LineStart at left
                 float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
-                    ? rtW - 204f
+                    ? rtW - (LevelLabelWidth + 4f)
                     : xStart + 4f;
                 float labelY = GetNonCollidingLabelY(y - 14f);
                 RenderTarget.DrawText(text, _dxLabelFormat,
-                    new SharpDX.RectangleF(labelX, labelY, 200f, 16f), brush);
+                    new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), brush);
             }
         }
 
@@ -1320,11 +1326,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                                     entry.SessionDate.Day,
                                     Instrument.MasterInstrument.FormatPrice(entry.OpenPrice));
                                 float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
-                                    ? xOpenEnd - 224f
+                                    ? xOpenEnd - (PocLabelWidth + 4f)
                                     : xOpenStart + 4f;
                                 float labelY = GetNonCollidingLabelY(yOpen - 14f);
                                 RenderTarget.DrawText(label, _dxLabelFormat,
-                                    new SharpDX.RectangleF(labelX, labelY, 220f, 16f), ocBrush);
+                                    new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
                             }
                         }
                     }
@@ -1352,11 +1358,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                                         entry.SessionDate.Day,
                                         Instrument.MasterInstrument.FormatPrice(entry.ClosePrice));
                                     float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
-                                        ? xCloseEnd - 224f
+                                        ? xCloseEnd - (PocLabelWidth + 4f)
                                         : xCloseStart + 4f;
                                     float labelY = GetNonCollidingLabelY(yClose - 14f);
                                     RenderTarget.DrawText(label, _dxLabelFormat,
-                                        new SharpDX.RectangleF(labelX, labelY, 220f, 16f), ocBrush);
+                                        new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
                                 }
                             }
                         }
