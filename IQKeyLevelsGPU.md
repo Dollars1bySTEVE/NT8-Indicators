@@ -76,8 +76,9 @@ Automatically detects zones where several session POCs (across sessions/days) la
 | Cluster Min POC Count | 2 | Minimum POCs required to form a zone (2–5) |
 | Cluster Color | Gold | Shading + label color |
 | Cluster Opacity % | 15 | Rectangle fill opacity (5–50) |
-| Show Cluster Labels | `true` | Toggle `"POC Cluster ×3"` label |
+| Show Cluster Labels | `true` | Toggle cluster label drawn on each zone. When enabled, the label shows count + price range + session composition: `"POC Cluster ×4  29800.75–29829.25  (A,L,N)"` |
 | Cluster Audio Alert | `false` | Play a one-shot alert sound the first time price enters a zone; resets when price leaves. Fires only in `State.Realtime` (never during historical load/replay). |
+| Suppress POC Labels In Clusters | `true` | When enabled (default), individual session POC labels are hidden for any POC that belongs to a rendered cluster zone. The cluster label carries all relevant information, eliminating label pile-up inside the zone. Disable to restore individual POC labels regardless of cluster membership. |
 
 ---
 
@@ -247,7 +248,10 @@ Maintains bid and ask order-book dictionaries via `OnMarketDepth`, with a runnin
 - All SharpDX resources (brushes, text formats) created in `CreateDXResources`, disposed in `DisposeDXResources` and `OnRenderTargetChanged`, with the try/catch SharpDXException recovery pattern.
 - Session POC list bounded to 21 entries (3 sessions × 7 days); Session OC list also bounded to 21 entries; hourly opens list bounded to 200 entries; collections read in `OnRender` via lock-snapshot pattern (`lock(_sessionLock) { snapshot = list.ToList(); }`).
 - Render helpers guard against `Bars`/`ChartBars`/`RenderTarget` being null (e.g. during replay/teardown) before touching chart geometry.
-- Label Y-positions use per-frame collision avoidance (`GetNonCollidingLabelY`), now bucketed into **two independent HashSets** — one for left-anchored labels, one for right-anchored — so labels only collide against others in the same screen region; both buckets are cleared once per `OnRender` frame.
+- **Right-edge width**: `OnRender` uses `RenderTarget.Size.Width` (the actual GPU drawing-surface width) for `rtW`, matching the pattern in `IQMainGPU` / `IQMainUltimate`. This ensures POC/OC lines and cluster rectangles always extend to the true right edge of the render surface regardless of DPI scaling or price-axis geometry. Age checks always use `_latestBarEtDate` (the last bar's ET date, cached in `OnBarUpdate`) rather than `DateTime.Now`/`Today`, so weekend viewing does not prematurely expire or mis-age lines.
+- Label Y-positions use per-frame collision avoidance (`GetNonCollidingLabelY`), bucketed into **two independent HashSets** — one for left-anchored labels (`LineStart`), one for right-anchored (`LineEnd`) — cleared exactly once per `OnRender` frame and shared across **all** render helpers so labels from different features (clusters, POCs, opens/closes) displace each other correctly. Cluster labels now respect `LabelAnchor` for bucket selection, consistent with POC and OC labels.
+- Label X-positions are clamped via `ClampLabelX` with the correct `rtW`, preventing right-side labels from bleeding into the price axis area.
+- `_pocPricesInClusters` is a per-frame `HashSet<double>` populated by `RenderPocClusters` (called first in `OnRender`) and consumed by `RenderSessionPocs` to suppress individual POC labels for clustered POCs when `SuppressPocLabelsInClusters = true`.
 - Each session POC volume profile tracks its own effective bin size (`CurrentBinSize`), which auto-doubles and re-buckets existing data whenever the profile exceeds `LimitPocBins`, instead of dropping data or growing unbounded.
 - `DetectOrderBookWalls` uses a running bid/ask size sum maintained incrementally in `OnMarketDepth`, avoiding a full re-summation of the book on every event.
 - All color properties follow the `[XmlIgnore]` + `...Serializable` string pattern used across this repository.
