@@ -693,7 +693,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         /// <summary>Doubles a session's volume-profile bin size and re-buckets existing entries,
         /// keeping data intact while bounding dictionary growth (LimitPocBins).</summary>
-        private static void CoarsenVolumeProfile(KLPocEntry sess)
+        private void CoarsenVolumeProfile(KLPocEntry sess)
         {
             sess.CurrentBinSize *= 2.0;
             var coarsened = new Dictionary<double, double>();
@@ -853,7 +853,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Preserve the alert-fired flag from the previous frame's matching zone so a
                     // resting price doesn't re-trigger the alert on every recompute.
                     bool fired = false;
-                    double tol = Math.Max(TickSize / 2.0, 1e-9);
+                    double tol = Math.Max(TickSize / 2.0, Math.Max(1e-9, ClusterZoneWidthPoints * 0.001));
                     foreach (KLClusterZone oldZone in _clusterZones)
                     {
                         if (Math.Abs(oldZone.MinPrice - groupMin) < tol &&
@@ -1267,7 +1267,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 ? xEnd - (PocLabelWidth + 4f)
                                 : xStart + 4f;
                             labelX = ClampLabelX(labelX, rtW, PocLabelWidth);
-                            float labelY = GetNonCollidingLabelY(yPoc - 14f, labelX, rtW);
+                            float labelY = GetNonCollidingLabelY(yPoc - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                             RenderTarget.DrawText(label, _dxLabelFormat,
                                 new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), pocBrush);
                         }
@@ -1289,7 +1289,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             List<KLClusterZone> zones = _clusterZones;
             if (zones == null || zones.Count == 0) return;
 
-            double pad = TickSize * 2.0;
+            double pad = Math.Max(TickSize * 2.0, Math.Min(2.0, ClusterZoneWidthPoints * 0.10));
 
             for (int i = 0; i < zones.Count; i++)
             {
@@ -1306,7 +1306,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     string label = string.Format("POC Cluster ×{0}", z.Count);
                     float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, labelX, rtW);
+                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, false);
                     RenderTarget.DrawText(label, _dxLabelFormat,
                         new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxClusterBrush);
                 }
@@ -1329,7 +1329,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     string label = string.Format("RD H {0}", Instrument.MasterInstrument.FormatPrice(_rdHigh));
                     float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
                     labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(yH - 14f, labelX, rtW);
+                    float labelY = GetNonCollidingLabelY(yH - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                     RenderTarget.DrawText(label, _dxLabelFormat,
                         new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
@@ -1343,7 +1343,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     string label = string.Format("RD L {0}", Instrument.MasterInstrument.FormatPrice(_rdLow));
                     float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
                     labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(yL - 14f, labelX, rtW);
+                    float labelY = GetNonCollidingLabelY(yL - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                     RenderTarget.DrawText(label, _dxLabelFormat,
                         new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
@@ -1467,7 +1467,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Instrument.MasterInstrument.FormatPrice(ho.OpenPrice));
                     // Hourly open labels always at line end (natural position near current time)
                     float labelX = ClampLabelX(xEnd - (LevelLabelWidth + 2f), rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(yOpen - 14f, labelX, rtW);
+                    float labelY = GetNonCollidingLabelY(yOpen - 14f, true);
                     RenderTarget.DrawText(label, _dxLabelFormat,
                         new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxHourlyOpenBrush);
                 }
@@ -1499,7 +1499,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         string label = string.Format("BID WALL x{0}", wallBidSize);
                         float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
-                        float labelY = GetNonCollidingLabelY(yBid - 14f, labelX, rtW);
+                        float labelY = GetNonCollidingLabelY(yBid - 14f, false);
                         RenderTarget.DrawText(label, _dxLabelFormat,
                             new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxWallBidBrush);
                     }
@@ -1516,7 +1516,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         string label = string.Format("ASK WALL x{0}", wallAskSize);
                         float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
-                        float labelY = GetNonCollidingLabelY(yAsk - 14f, labelX, rtW);
+                        float labelY = GetNonCollidingLabelY(yAsk - 14f, false);
                         RenderTarget.DrawText(label, _dxLabelFormat,
                             new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxWallAskBrush);
                     }
@@ -1543,7 +1543,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     ? rtW - (LevelLabelWidth + 4f)
                     : xStart + 4f;
                 labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
-                float labelY = GetNonCollidingLabelY(y - 14f, labelX, rtW);
+                float labelY = GetNonCollidingLabelY(y - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                 RenderTarget.DrawText(text, _dxLabelFormat,
                     new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), brush);
             }
@@ -1617,7 +1617,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                     ? xOpenEnd - (PocLabelWidth + 4f)
                                     : xOpenStart + 4f;
                                 labelX = ClampLabelX(labelX, rtW, PocLabelWidth);
-                                float labelY = GetNonCollidingLabelY(yOpen - 14f, labelX, rtW);
+                                float labelY = GetNonCollidingLabelY(yOpen - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                                 RenderTarget.DrawText(label, _dxLabelFormat,
                                     new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
                             }
@@ -1649,7 +1649,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                         ? xCloseEnd - (PocLabelWidth + 4f)
                                         : xCloseStart + 4f;
                                     labelX = ClampLabelX(labelX, rtW, PocLabelWidth);
-                                    float labelY = GetNonCollidingLabelY(yClose - 14f, labelX, rtW);
+                                    float labelY = GetNonCollidingLabelY(yClose - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
                                     RenderTarget.DrawText(label, _dxLabelFormat,
                                         new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
                                 }
@@ -1705,11 +1705,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private float GetNonCollidingLabelY(float y, float labelX, float rtW, float labelHeight = 18f)
+        private float GetNonCollidingLabelY(float y, bool useRightBucket, float labelHeight = 18f)
         {
-            // Bucket by screen region so left-anchored and right-anchored labels only
-            // collide against labels within their own half of the chart.
-            HashSet<int> bucket = labelX < rtW / 2f ? _usedLabelYLeft : _usedLabelYRight;
+            // Bucket by anchor region so left-anchored labels only collide with left-anchored
+            // labels, and right-edge / line-end labels only collide with their own bucket.
+            HashSet<int> bucket = useRightBucket ? _usedLabelYRight : _usedLabelYLeft;
 
             int yInt = (int)y;
             int step = (int)labelHeight;

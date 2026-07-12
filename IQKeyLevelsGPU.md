@@ -142,7 +142,7 @@ Rolling-average daily range projected as RD High and RD Low around today's devel
 | RD Thickness | 1 | Line width |
 | Show RD Labels | `true` | "RD H / RD L + price" labels |
 | RD Lookback Days | 15 | Number of prior days in the rolling average (5–50) |
-| Use Only Completed Days for RD | `false` | When enabled, today's developing range is excluded from the **average** used for RD projection; the bands still project from today's current high/low, preserving the usual RD behavior while using only completed prior days in the average. |
+| Use Only Completed Days for RD | `false` | When enabled, RD High/Low are anchored symmetrically around today's Open using only the completed-day average range, so the bands stay fixed intraday instead of reacting to the developing day's range. |
 
 ---
 
