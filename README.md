@@ -354,6 +354,22 @@ Consider starring the repository! It helps others discover these free tools.
 
 ---
 
+# IQKeyLevelsGPU
+
+**Multi-session GPU-accelerated key-levels indicator for NinjaTrader 8**
+
+> Free · Open-source · Overlay indicator · Requires SharpDX (bundled with NinjaTrader 8)
+
+IQKeyLevelsGPU plots confluent price levels from multiple analysis layers on a single SharpDX-rendered overlay: **session POCs** (Asia / London / NY volume profiles), **POC Cluster zones** (shaded high-confluence bands), **Session Gap Zones** (auto-detected daily and weekend gaps with partial-fill shrinking), **Session Opens/Closes**, **RD Range Daily**, **Psychological (Psy) Levels** (D/W/M), **Weekly/Monthly Hi-Lo**, **Hourly Opens**, and **Level 2 order-flow walls**. Cluster and gap zone widths auto-scale to each instrument via a `PercentOfADR` mode (self-adapts to NQ, ES, RTY, YM, CL, GC and their micros). Coincident-level labels from different feature layers merge automatically (e.g. `D+WPsy H 29962.50`). Right-anchored labels include a keep-out band around the live price box and a full per-frame collision-avoidance system so labels never overprint.
+
+📖 **[Full documentation → IQKeyLevelsGPU.md](IQKeyLevelsGPU.md)**
+
+**Quick install:** copy `Indicators/IQKeyLevelsGPU.cs` to `Documents\NinjaTrader 8\bin\Custom\Indicators\`, right-click the `Indicators` folder in NT8 Editor → *Compile*, then add to any chart.
+
+---
+
+---
+
 # SmartTickAudio
 
 **Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8**
