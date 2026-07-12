@@ -220,8 +220,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private const int MaxPocListSize = 21;
 
         // Label render widths — must match the RectangleF width arg passed to DrawText
-        private const float PocLabelWidth  = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
-        private const float LevelLabelWidth = 200f; // General labels "RD H / Psy H / LWH …"
+        private const float PocLabelWidth      = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
+        private const float LevelLabelWidth     = 200f;  // General labels "RD H / Psy H / LWH …"
+        private const float ClusterLabelWidth   = 300f;  // Cluster labels "POC Cluster ×4  29800.75–29829.25  (A,L,N)"
         private const double ClusterMatchToleranceFactor = 0.001;
         private const double ClusterZonePaddingTickFactor = 2.0;
         private const double ClusterZonePaddingMaxPoints = 2.0;
@@ -269,8 +270,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Label collision avoidance — cleared per OnRender frame, bucketed by screen region so
         // left-anchored and right-anchored labels only collide against their own bucket.
-        private readonly HashSet<int> _usedLabelYLeft  = new HashSet<int>();
-        private readonly HashSet<int> _usedLabelYRight = new HashSet<int>();
+        private readonly HashSet<int>    _usedLabelYLeft       = new HashSet<int>();
+        private readonly HashSet<int>    _usedLabelYRight      = new HashSet<int>();
+
+        // Per-frame set of POC prices that belong to at least one rendered cluster zone.
+        // Populated by RenderPocClusters (called first in OnRender) and read by
+        // RenderSessionPocs to suppress individual labels when SuppressPocLabelsInClusters = true.
+        private readonly HashSet<double> _pocPricesInClusters  = new HashSet<double>();
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -326,6 +332,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ClusterOpacity         = 15;
                 ShowClusterLabels      = true;
                 ClusterAudioAlert      = false;
+                SuppressPocLabelsInClusters = true;
 
                 // 1b. Session Opens/Closes — Asia (kept for serialization compatibility only;
                 // Asia no longer renders Open/Close — see IsOcSessionEnabled)
@@ -1158,9 +1165,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Clear label collision buckets for this frame (left-anchored / right-anchored)
             _usedLabelYLeft.Clear();
             _usedLabelYRight.Clear();
+            // Clear per-frame cluster membership set (populated by RenderPocClusters below)
+            _pocPricesInClusters.Clear();
 
             var rt   = RenderTarget;
-            float rtW = (float)chartControl.ActualWidth;
+            // Bug 1 fix: use RenderTarget.Size.Width (the actual GPU drawing-surface width)
+            // instead of chartControl.ActualWidth (the full WPF element, which may include the
+            // price axis and differ from the renderable area at non-100% DPI).
+            // This matches IQMainGPU / IQMainUltimate which also use rt.Size.Width.
+            float rtW = rt.Size.Width;
             float rtH = (float)chartControl.ActualHeight;
 
             // ── 0. POC Cluster zones (shaded background, drawn first) ────────
@@ -1267,7 +1280,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                         DrawStyledLine(xStart, yPoc, xEnd, yPoc, pocBrush, thickness, style);
 
                         // C2 fix: only draw label when line is actually visible
-                        if (showLabel && _dxLabelFormat != null)
+                        // Feature: suppress individual label when this POC is a member of a
+                        // rendered cluster zone and SuppressPocLabelsInClusters is enabled —
+                        // the cluster label (drawn first) conveys all relevant info.
+                        bool drawLabel = showLabel && _dxLabelFormat != null
+                            && !(SuppressPocLabelsInClusters && _pocPricesInClusters.Contains(entry.POCPrice));
+                        if (drawLabel)
                         {
                             string label = string.Format("{0} POC {1} {2}",
                                 entry.SessionName,
@@ -1293,7 +1311,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Renders semi-transparent shaded rectangles for detected POC cluster zones,
-        /// and optional "POC Cluster ×N" labels.</summary>
+        /// optional enhanced cluster labels (count + price range + session composition), and
+        /// populates <see cref="_pocPricesInClusters"/> so RenderSessionPocs can suppress
+        /// individual labels for clustered POCs when SuppressPocLabelsInClusters is true.</summary>
         private void RenderPocClusters(ChartControl cc, ChartScale cs, float rtW)
         {
             if (!RenderPrereqsOk() || _dxClusterBrush == null) return;
@@ -1301,8 +1321,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             List<KLClusterZone> zones = _clusterZones;
             if (zones == null || zones.Count == 0) return;
 
+            // Take POC snapshot for session composition and label-suppression population.
+            List<KLPocEntry> pocSnapshot;
+            lock (_sessionLock) { pocSnapshot = _pocList.ToList(); }
+
+            DateTime etToday = _latestBarEtDate != DateTime.MinValue
+                ? _latestBarEtDate
+                : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone).Date;
+
+            // Tolerance for matching POC prices to zone bounds (half a tick, never zero).
+            double tol = Math.Max(TickSize / 2.0, 1e-9);
+
             double pad = Math.Max(TickSize * ClusterZonePaddingTickFactor,
                 Math.Min(ClusterZonePaddingMaxPoints, ClusterZoneWidthPoints * ClusterZonePaddingPercent));
+
+            // Bug 2/3 fix: use LabelAnchor to select the same bucket as RenderSessionPocs /
+            // RenderSessionOC use — so cluster labels and POC/OC labels collide against each other.
+            bool useRight = LabelAnchor == IQKLLabelAnchor.LineEnd;
 
             for (int i = 0; i < zones.Count; i++)
             {
@@ -1315,13 +1350,47 @@ namespace NinjaTrader.NinjaScript.Indicators
                 var rect = new SharpDX.RectangleF(0f, Math.Min(yTop, yBottom), rtW, Math.Abs(yBottom - yTop));
                 RenderTarget.FillRectangle(rect, _dxClusterBrush);
 
+                // ── Collect POC members in this zone for label text and label-suppression ──
+                // Always runs (not gated on ShowClusterLabels) so SuppressPocLabelsInClusters
+                // works even when the cluster label itself is hidden.
+                var sessionFlags = new bool[3]; // index: 0=Asia, 1=London, 2=NY
+                for (int p = 0; p < pocSnapshot.Count; p++)
+                {
+                    KLPocEntry e = pocSnapshot[p];
+                    if (e.POCPrice == 0) continue;
+                    int daysOld = (etToday - e.SessionDate).Days;
+                    if (daysOld < 0 || daysOld >= PocExtensionDays) continue;
+                    if (e.POCPrice < z.MinPrice - tol || e.POCPrice > z.MaxPrice + tol) continue;
+
+                    // This POC is a member of the zone.
+                    if (e.SessionId >= 0 && e.SessionId < 3) sessionFlags[e.SessionId] = true;
+                    _pocPricesInClusters.Add(e.POCPrice);
+                }
+
                 if (GlobalShowLabels && ShowClusterLabels && _dxLabelFormat != null)
                 {
-                    string label = string.Format("POC Cluster ×{0}", z.Count);
-                    float labelX = ClampLabelX(4f, rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, false);
+                    // Build enhanced label: "POC Cluster ×N  minPoc–maxPoc  (sessions)"
+                    // z.MinPrice / z.MaxPrice are the exact min/max POC prices in the zone.
+                    string priceRange = Instrument.MasterInstrument.FormatPrice(z.MinPrice)
+                        + "–" + Instrument.MasterInstrument.FormatPrice(z.MaxPrice);
+
+                    string sessionComp = "";
+                    var sessionParts = new System.Text.StringBuilder();
+                    if (sessionFlags[0]) sessionParts.Append("A");
+                    if (sessionFlags[1]) { if (sessionParts.Length > 0) sessionParts.Append(","); sessionParts.Append("L"); }
+                    if (sessionFlags[2]) { if (sessionParts.Length > 0) sessionParts.Append(","); sessionParts.Append("N"); }
+                    if (sessionParts.Length > 1)
+                        sessionComp = "  (" + sessionParts + ")";
+
+                    string label = string.Format("POC Cluster ×{0}  {1}{2}", z.Count, priceRange, sessionComp);
+
+                    // Bug 4 fix: use ClampLabelX with correct rtW so label stays within the
+                    // render surface and doesn't bleed into the price axis.
+                    float labelX = useRight ? rtW - (ClusterLabelWidth + 4f) : 4f;
+                    labelX = ClampLabelX(labelX, rtW, ClusterLabelWidth);
+                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, useRight);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxClusterBrush);
+                        new SharpDX.RectangleF(labelX, labelY, ClusterLabelWidth, 16f), _dxClusterBrush);
                 }
             }
         }
@@ -2153,6 +2222,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Cluster Audio Alert", Order = 7, GroupName = "1c. POC Clusters",
             Description = "Play an alert sound the first time price enters a cluster zone (real-time only).")]
         public bool ClusterAudioAlert { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Suppress POC Labels In Clusters", Order = 8, GroupName = "1c. POC Clusters",
+            Description = "When enabled (default), individual session POC labels are hidden for any POC that belongs to a rendered cluster zone. The cluster label (e.g. \"POC Cluster ×4  29800.75–29829.25  (L,N)\") carries all relevant information, eliminating label pile-up inside the zone. Disable to restore individual POC labels regardless of cluster membership.")]
+        public bool SuppressPocLabelsInClusters { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
