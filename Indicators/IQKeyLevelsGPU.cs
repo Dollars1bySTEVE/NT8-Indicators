@@ -1119,7 +1119,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (inside)
                 {
                     z.AlertFired = true;
-                    Alert("IQKL_Gap_" + i, Priority.Low,
+                    Alert("IQKL_Gap_" + z.OpenBarIndex, Priority.Low,
                         "IQKeyLevelsGPU: Price entered Gap zone " + z.OpenDate.ToString("M/d"),
                         NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10,
                         z.IsGapUp ? GapUpColor : GapDownColor, Brushes.Black);
@@ -1127,8 +1127,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        /// <summary>Minimum number of completed trading days required before PercentOfADR
+        /// mode computes a reliable average daily range. Below this threshold both
+        /// <see cref="ComputeEffectiveClusterWidth"/> and <see cref="ComputeEffectiveGapMinSize"/>
+        /// fall back to the FixedPoints values.</summary>
+        private const int MinAdrDataDays = 3;
+
         /// <summary>Effective cluster zone width in points, determined by ClusterWidthMode.
-        /// Falls back to FixedPoints value when ADR data is insufficient (&lt;3 days).</summary>
+        /// Falls back to FixedPoints value when ADR data is insufficient (&lt;MinAdrDataDays days).</summary>
         private double ComputeEffectiveClusterWidth()
         {
             switch (ClusterWidthMode)
@@ -1136,7 +1142,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case IQKLWidthMode.Ticks:
                     return Math.Max(1, ClusterWidthTicks) * TickSize;
                 case IQKLWidthMode.PercentOfADR:
-                    if (_rdRanges.Count >= 3)
+                    if (_rdRanges.Count >= MinAdrDataDays)
                         return _rdRanges.Average() * (ClusterWidthPctADR / 100.0);
                     return ClusterZoneWidthPoints; // fall back when insufficient ADR data
                 case IQKLWidthMode.FixedPoints:
@@ -1146,7 +1152,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         /// <summary>Effective gap minimum size in points, determined by GapMinSizeMode.
-        /// Falls back to FixedPoints value when ADR data is insufficient (&lt;3 days).</summary>
+        /// Falls back to FixedPoints value when ADR data is insufficient (&lt;MinAdrDataDays days).</summary>
         private double ComputeEffectiveGapMinSize()
         {
             switch (GapMinSizeMode)
@@ -1154,7 +1160,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case IQKLWidthMode.Ticks:
                     return Math.Max(1, GapMinSizeTicks) * TickSize;
                 case IQKLWidthMode.PercentOfADR:
-                    if (_rdRanges.Count >= 3)
+                    if (_rdRanges.Count >= MinAdrDataDays)
                         return _rdRanges.Average() * (GapMinSizePctADR / 100.0);
                     return GapMinSizePoints; // fall back
                 case IQKLWidthMode.FixedPoints:
@@ -2052,6 +2058,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     KLLevelLabel other = _pendingLevelLabels[j];
                     if (Math.Abs(other.Price - baseEntry.Price) <= tick)
                     {
+                        // Psy entries (D/W/MPsy) must share the same side (H or L) before merging;
+                        // cross-side coincidences (e.g. DPsy H ≈ WPsy L) are rendered separately.
+                        bool basePsy  = baseEntry.Prefix.EndsWith("Psy");
+                        bool otherPsy = other.Prefix.EndsWith("Psy");
+                        if (basePsy && otherPsy && other.Side != baseEntry.Side) continue;
                         group.Add(other);
                         rendered[j] = true;
                     }
