@@ -34,6 +34,9 @@ using NinjaTrader.NinjaScript.DrawingTools;
 /// <summary>Line rendering style for IQKeyLevelsGPU level lines.</summary>
 public enum IQKLLineStyle { Solid, Dashed, Dotted }
 
+/// <summary>Label anchor position for IQKeyLevelsGPU level labels.</summary>
+public enum IQKLLabelAnchor { LineStart, LineEnd }
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
@@ -59,6 +62,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double   POCPrice;
             public bool     IsComplete;
             public Dictionary<double, double> VolumeProfile = new Dictionary<double, double>();
+        }
+
+        /// <summary>One session Open/Close entry (one per session per day).</summary>
+        private class KLSessionOC
+        {
+            public int      SessionId;        // 0=Asia, 1=London, 2=NY
+            public string   SessionName;
+            public DateTime SessionDate;      // ET date of session start
+            public DateTime SessionStart;     // Full ET DateTime of session start (for window change detection)
+            public int      OpenBarIndex;     // bar index where Open was recorded
+            public double   OpenPrice;        // first in-session bar Open
+            public int      CloseBarIndex;    // bar index of last in-session bar
+            public double   ClosePrice;       // last in-session bar Close (updated live)
+            public bool     IsComplete;       // session ended, ClosePrice finalized
         }
 
         /// <summary>One hourly open record.</summary>
@@ -135,6 +152,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Private fields — Session Open/Close
+
+        // Max OC entries = 3 sessions × 7 days
+        private const int MaxOcListSize = 21;
+
+        private KLSessionOC[] _activeOcSessions; // index: 0=Asia,1=London,2=NY
+        private List<KLSessionOC> _ocList;
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region Private fields — Hourly Opens
 
         private List<KLHourlyOpen> _hourlyOpens;
@@ -159,6 +186,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Max POC entries = 3 sessions × 7 days (matches PocExtensionDays max)
         private const int MaxPocListSize = 21;
+
+        // Label render widths — must match the RectangleF width arg passed to DrawText
+        private const float PocLabelWidth  = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
+        private const float LevelLabelWidth = 200f; // General labels "RD H / Psy H / LWH …"
 
         // Cached ET date of the most-recently-processed bar (used in OnRender for age checks)
         private DateTime _latestBarEtDate = DateTime.MinValue;
@@ -191,6 +222,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         // L2 walls
         private SharpDX.Direct2D1.SolidColorBrush _dxWallBidBrush;
         private SharpDX.Direct2D1.SolidColorBrush _dxWallAskBrush;
+
+        // Session Open/Close brushes (one per session; Open=Solid, Close=Dashed)
+        private SharpDX.Direct2D1.SolidColorBrush _dxAsiaOcBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxLondonOcBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxNyOcBrush;
 
         // Label collision avoidance — cleared per OnRender frame
         private readonly HashSet<int> _usedLabelYPositions = new HashSet<int>();
@@ -231,6 +267,44 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PocExtensionDays  = 7;
                 PocBinMultiplier  = 1;
                 FadeOlderPocs     = true;
+
+                // 1b. Session Opens/Closes — Asia
+                ShowAsiaOC          = true;
+                ShowAsiaOCOpen      = true;
+                ShowAsiaOCClose     = true;
+                AsiaOcColor         = Brushes.Crimson;
+                AsiaOcOpacity       = 80;
+                AsiaOcOpenStyle     = IQKLLineStyle.Solid;
+                AsiaOcCloseStyle    = IQKLLineStyle.Dashed;
+                AsiaOcThickness     = 1;
+                ShowAsiaOCLabels    = true;
+
+                // 1b. Session Opens/Closes — London
+                ShowLondonOC         = true;
+                ShowLondonOCOpen     = true;
+                ShowLondonOCClose    = true;
+                LondonOcColor        = Brushes.SteelBlue;
+                LondonOcOpacity      = 80;
+                LondonOcOpenStyle    = IQKLLineStyle.Solid;
+                LondonOcCloseStyle   = IQKLLineStyle.Dashed;
+                LondonOcThickness    = 1;
+                ShowLondonOCLabels   = true;
+                EndLondonAtNyOpen    = false;
+
+                // 1b. Session Opens/Closes — New York
+                ShowNyOC             = true;
+                ShowNyOCOpen         = true;
+                ShowNyOCClose        = true;
+                NyOcColor            = Brushes.ForestGreen;
+                NyOcOpacity          = 80;
+                NyOcOpenStyle        = IQKLLineStyle.Solid;
+                NyOcCloseStyle       = IQKLLineStyle.Dashed;
+                NyOcThickness        = 1;
+                ShowNyOCLabels       = true;
+
+                // 1b. Session Opens/Closes — General
+                OcExtensionDays     = 7;
+                FadeOlderOC         = true;
 
                 // 2. Range Daily
                 ShowRd          = true;
@@ -298,10 +372,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // 7. General
                 LabelFontSize    = 11;
                 GlobalShowLabels = true;
+                LabelAnchor      = IQKLLabelAnchor.LineStart;
 
                 // Indicator meta
                 Name               = "IQKeyLevelsGPU";
-                Description        = "GPU-accelerated key levels: Session POCs, RD Hi/Lo, Psy Levels, Weekly/Monthly Hi-Lo, Hourly Opens, L2 Walls.";
+                Description        = "GPU-accelerated key levels: Session POCs, Session Opens/Closes, RD Hi/Lo, Psy Levels, Weekly/Monthly Hi-Lo, Hourly Opens, L2 Walls.";
                 IsOverlay          = true;
                 IsAutoScale        = false;
                 DisplayInDataBox   = false;
@@ -320,6 +395,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _hourlyOpens       = new List<KLHourlyOpen>();
                 _pocList           = new List<KLPocEntry>();
                 _activePocSessions = new KLPocEntry[3];
+                _ocList            = new List<KLSessionOC>();
+                _activeOcSessions  = new KLSessionOC[3];
                 _bidBook           = new Dictionary<double, KLBookLevel>();
                 _askBook           = new Dictionary<double, KLBookLevel>();
 
@@ -421,6 +498,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // ── Session POC accumulation ──────────────────────────────────
                 UpdateSessionPocs(barEt);
+
+                // ── Session Open/Close tracking ───────────────────────────────
+                UpdateSessionOC(barEt);
 
                 // ── Hourly open tracking ──────────────────────────────────────
                 UpdateHourlyOpens(barEt);
@@ -540,6 +620,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             switch (sessionId)
             {
                 case 0: GetCrossMidnightWindow(barEt, 19, 4, out start, out end); break;   // Asia   19:00→04:00 ET
+                case 1:
+                    start = today.AddHours(3);
+                    // When EndLondonAtNyOpen is enabled, London POC profile accumulates only until NY open (09:30)
+                    end = EndLondonAtNyOpen
+                        ? today.AddHours(9).AddMinutes(30)
+                        : today.AddHours(11).AddMinutes(30);
+                    break;  // London 03:00→09:30 or 11:30 ET
+                case 2: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16); break;  // NY     09:30→16:00 ET
+                default: start = today; end = today; break;
+            }
+        }
+
+        // Session OC window always uses the canonical session times (London always ends at 11:30,
+        // regardless of EndLondonAtNyOpen which only affects the POC profile accumulation).
+        private static void GetOcSessionWindow(int sessionId, DateTime barEt, out DateTime start, out DateTime end)
+        {
+            DateTime today = barEt.Date;
+            switch (sessionId)
+            {
+                case 0: GetCrossMidnightWindow(barEt, 19, 4, out start, out end); break;   // Asia   19:00→04:00 ET
                 case 1: start = today.AddHours(3); end = today.AddHours(11).AddMinutes(30); break;  // London 03:00→11:30 ET
                 case 2: start = today.AddHours(9).AddMinutes(30); end = today.AddHours(16); break;  // NY     09:30→16:00 ET
                 default: start = today; end = today; break;
@@ -561,9 +661,116 @@ namespace NinjaTrader.NinjaScript.Indicators
             switch (sessionId) { case 0: return ShowAsiaPoc; case 1: return ShowLondonPoc; case 2: return ShowNyPoc; default: return false; }
         }
 
+        private bool IsOcSessionEnabled(int sessionId)
+        {
+            switch (sessionId) { case 0: return ShowAsiaOC; case 1: return ShowLondonOC; case 2: return ShowNyOC; default: return false; }
+        }
+
         private string GetPocSessionName(int sessionId)
         {
             switch (sessionId) { case 0: return "Asia"; case 1: return "London"; case 2: return "NY"; default: return ""; }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Session Open/Close helpers
+
+        private void UpdateSessionOC(DateTime barEt)
+        {
+            for (int id = 0; id < 3; id++)
+            {
+                if (!IsOcSessionEnabled(id)) continue;
+
+                DateTime sStart, sEnd;
+                GetOcSessionWindow(id, barEt, out sStart, out sEnd);
+                bool inSession = barEt >= sStart && barEt < sEnd;
+
+                if (inSession)
+                {
+                    // Create new OC entry when the session window changes (mirrors KLPocEntry detection)
+                    if (_activeOcSessions[id] == null || _activeOcSessions[id].SessionStart != sStart)
+                    {
+                        // Finalize previous entry if still open
+                        if (_activeOcSessions[id] != null && !_activeOcSessions[id].IsComplete)
+                            _activeOcSessions[id].IsComplete = true;
+
+                        var entry = new KLSessionOC
+                        {
+                            SessionId     = id,
+                            SessionName   = GetPocSessionName(id),
+                            SessionDate   = sStart.Date,
+                            SessionStart  = sStart,
+                            OpenBarIndex  = CurrentBar,
+                            OpenPrice     = Open[0],
+                            CloseBarIndex = CurrentBar,
+                            ClosePrice    = Close[0],
+                            IsComplete    = false
+                        };
+                        _activeOcSessions[id] = entry;
+
+                        lock (_sessionLock)
+                        {
+                            // Prune entries outside the OcExtensionDays window
+                            DateTime cutoff = barEt.Date.AddDays(-(OcExtensionDays - 1));
+                            for (int i = _ocList.Count - 1; i >= 0; i--)
+                                if (_ocList[i].SessionDate < cutoff) _ocList.RemoveAt(i);
+                            if (_ocList.Count >= MaxOcListSize) _ocList.RemoveAt(0);
+                            _ocList.Add(entry);
+                        }
+                    }
+                    else
+                    {
+                        // Update live close price each bar
+                        var sess = _activeOcSessions[id];
+                        sess.CloseBarIndex = CurrentBar;
+                        sess.ClosePrice    = Close[0];
+                    }
+                }
+                else
+                {
+                    // Session ended — finalize
+                    if (_activeOcSessions[id] != null && !_activeOcSessions[id].IsComplete)
+                    {
+                        _activeOcSessions[id].IsComplete = true;
+                        _activeOcSessions[id] = null;
+                    }
+                }
+            }
+        }
+
+        private SharpDX.Direct2D1.SolidColorBrush GetOcBrush(int sessionId)
+        {
+            switch (sessionId) { case 0: return _dxAsiaOcBrush; case 1: return _dxLondonOcBrush; case 2: return _dxNyOcBrush; default: return null; }
+        }
+
+        private float GetOcThickness(int sessionId)
+        {
+            switch (sessionId) { case 0: return (float)AsiaOcThickness; case 1: return (float)LondonOcThickness; case 2: return (float)NyOcThickness; default: return 1f; }
+        }
+
+        private bool GetOcShowLabels(int sessionId)
+        {
+            switch (sessionId) { case 0: return ShowAsiaOCLabels; case 1: return ShowLondonOCLabels; case 2: return ShowNyOCLabels; default: return false; }
+        }
+
+        private IQKLLineStyle GetOcOpenStyle(int sessionId)
+        {
+            switch (sessionId) { case 0: return AsiaOcOpenStyle; case 1: return LondonOcOpenStyle; case 2: return NyOcOpenStyle; default: return IQKLLineStyle.Solid; }
+        }
+
+        private IQKLLineStyle GetOcCloseStyle(int sessionId)
+        {
+            switch (sessionId) { case 0: return AsiaOcCloseStyle; case 1: return LondonOcCloseStyle; case 2: return NyOcCloseStyle; default: return IQKLLineStyle.Dashed; }
+        }
+
+        private bool GetOcShowOpen(int sessionId)
+        {
+            switch (sessionId) { case 0: return ShowAsiaOCOpen; case 1: return ShowLondonOCOpen; case 2: return ShowNyOCOpen; default: return false; }
+        }
+
+        private bool GetOcShowClose(int sessionId)
+        {
+            switch (sessionId) { case 0: return ShowAsiaOCClose; case 1: return ShowLondonOCClose; case 2: return ShowNyOCClose; default: return false; }
         }
 
         #endregion
@@ -711,6 +918,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (SharpDX.SharpDXException sdxEx) { Print("IQKeyLevelsGPU: SharpDX error RenderSessionPocs: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQKeyLevelsGPU: RenderSessionPocs [" + ex.GetType().Name + "]: " + ex.Message); }
 
+            // ── 1b. Session Opens/Closes ──────────────────────────────────────
+            try { RenderSessionOC(chartControl, chartScale, rtW); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQKeyLevelsGPU: SharpDX error RenderSessionOC: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQKeyLevelsGPU: RenderSessionOC [" + ex.GetType().Name + "]: " + ex.Message); }
+
             // ── 2. RD Range Daily Hi/Lo ───────────────────────────────────────
             try { if (ShowRd && _rdValue > 0) RenderRdBands(chartControl, chartScale, rtW); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQKeyLevelsGPU: SharpDX error RenderRdBands: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
@@ -764,6 +976,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 int daysOld = (etToday - entry.SessionDate).Days;
                 if (daysOld >= PocExtensionDays) continue;
 
+                // C1 fix: skip entries whose StartBarIndex is beyond the visible right edge
+                // (the line wouldn't be visible, and xStart > xEnd causes zero-length draw)
+                if (entry.StartBarIndex > ChartBars.ToIndex) continue;
+
                 SharpDX.Direct2D1.SolidColorBrush pocBrush = GetPocBrush(entry.SessionId);
                 if (pocBrush == null) continue;
 
@@ -781,13 +997,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 try
                 {
-                    float xStart = cc.GetXByBarIndex(ChartBars, Math.Max(ChartBars.FromIndex, entry.StartBarIndex));
+                    // C1 fix: clamp xStart to visible area and extend xEnd to right edge
+                    int clampedStart = Math.Max(ChartBars.FromIndex, entry.StartBarIndex);
+                    float xStart = cc.GetXByBarIndex(ChartBars, clampedStart);
+                    float xEnd   = rtW; // always extend to chart right edge
                     float yPoc   = cs.GetYByValue(entry.POCPrice);
 
-                    if (!float.IsNaN(yPoc) && !float.IsInfinity(yPoc))
+                    if (!float.IsNaN(yPoc) && !float.IsInfinity(yPoc) && xStart <= xEnd)
                     {
-                        DrawStyledLine(xStart, yPoc, rtW, yPoc, pocBrush, thickness, style);
+                        DrawStyledLine(xStart, yPoc, xEnd, yPoc, pocBrush, thickness, style);
 
+                        // C2 fix: only draw label when line is actually visible
                         if (showLabel && _dxLabelFormat != null)
                         {
                             string label = string.Format("{0} POC {1}/{2} {3}",
@@ -796,9 +1016,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 entry.SessionDate.Day,
                                 Instrument.MasterInstrument.FormatPrice(entry.POCPrice));
 
+                            // D: label anchor support
+                            float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
+                                ? xEnd - (PocLabelWidth + 4f)
+                                : xStart + 4f;
                             float labelY = GetNonCollidingLabelY(yPoc - 14f);
                             RenderTarget.DrawText(label, _dxLabelFormat,
-                                new SharpDX.RectangleF(xStart + 4f, labelY, 220f, 16f), pocBrush);
+                                new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), pocBrush);
                         }
                     }
                 }
@@ -822,9 +1046,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (GlobalShowLabels && ShowRdLabels && _dxLabelFormat != null)
                 {
                     string label = string.Format("RD H {0}", Instrument.MasterInstrument.FormatPrice(_rdHigh));
+                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
                     float labelY = GetNonCollidingLabelY(yH - 14f);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxRdBrush);
+                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
             }
 
@@ -834,9 +1059,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (GlobalShowLabels && ShowRdLabels && _dxLabelFormat != null)
                 {
                     string label = string.Format("RD L {0}", Instrument.MasterInstrument.FormatPrice(_rdLow));
+                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
                     float labelY = GetNonCollidingLabelY(yL - 14f);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxRdBrush);
+                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
                 }
             }
         }
@@ -938,13 +1164,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 KLHourlyOpen ho = eligible[i];
                 int endBar = (ho == _currentHourlyOpen) ? CurrentBar : ho.EndBarIndex;
 
+                // C2 fix: skip if entirely outside visible area
                 if (endBar < firstBar || ho.StartBarIndex > lastBar) continue;
 
                 float xStart = cc.GetXByBarIndex(ChartBars, Math.Max(firstBar, ho.StartBarIndex));
-                float xEnd   = cc.GetXByBarIndex(ChartBars, Math.Min(lastBar,  endBar));
+                // C2 fix: for the live (current) hour, extend line to chart right edge so it
+                // renders alongside its label; for completed hours clamp to last visible bar.
+                // Note: label is anchored at xEnd - (LevelLabelWidth + 2f), so extending to rtW
+                // ensures the label always has a corresponding visible line segment.
+                float xEnd = (ho == _currentHourlyOpen)
+                    ? rtW
+                    : cc.GetXByBarIndex(ChartBars, Math.Min(lastBar, endBar));
                 float yOpen  = cs.GetYByValue(ho.OpenPrice);
 
                 if (float.IsNaN(yOpen) || float.IsInfinity(yOpen)) continue;
+                // C2 fix: only draw label when the line has non-zero visible width
+                if (xEnd <= xStart) continue;
 
                 DrawStyledLine(xStart, yOpen, xEnd, yOpen, _dxHourlyOpenBrush, HourlyOpenThickness, HourlyOpenLineStyle);
 
@@ -952,9 +1187,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     string label = string.Format("HO {0:D2}:00 {1}", ho.Hour,
                         Instrument.MasterInstrument.FormatPrice(ho.OpenPrice));
+                    // Hourly open labels always at line end (natural position near current time)
                     float labelY = GetNonCollidingLabelY(yOpen - 14f);
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(xStart + 2f, labelY, 200f, 16f), _dxHourlyOpenBrush);
+                        new SharpDX.RectangleF(xEnd - (LevelLabelWidth + 2f), labelY, LevelLabelWidth, 16f), _dxHourlyOpenBrush);
                 }
             }
         }
@@ -983,7 +1219,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         string label = string.Format("BID WALL x{0}", wallBidSize);
                         float labelY = GetNonCollidingLabelY(yBid - 14f);
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxWallBidBrush);
+                            new SharpDX.RectangleF(4f, labelY, LevelLabelWidth, 16f), _dxWallBidBrush);
                     }
                 }
             }
@@ -999,7 +1235,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         string label = string.Format("ASK WALL x{0}", wallAskSize);
                         float labelY = GetNonCollidingLabelY(yAsk - 14f);
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxWallAskBrush);
+                            new SharpDX.RectangleF(4f, labelY, LevelLabelWidth, 16f), _dxWallAskBrush);
                     }
                 }
             }
@@ -1019,9 +1255,123 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (showLabel && _dxLabelFormat != null && label.Length > 0)
             {
                 string text = string.Format("{0} {1}", label, Instrument.MasterInstrument.FormatPrice(price));
+                // D: label anchor — LineEnd places label at right edge, LineStart at left
+                float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
+                    ? rtW - (LevelLabelWidth + 4f)
+                    : xStart + 4f;
                 float labelY = GetNonCollidingLabelY(y - 14f);
                 RenderTarget.DrawText(text, _dxLabelFormat,
-                    new SharpDX.RectangleF(xStart + 4f, labelY, 200f, 16f), brush);
+                    new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), brush);
+            }
+        }
+
+        /// <summary>Render the Session Open/Close lines and their labels.</summary>
+        private void RenderSessionOC(ChartControl cc, ChartScale cs, float rtW)
+        {
+            List<KLSessionOC> snapshot;
+            lock (_sessionLock) { snapshot = _ocList.ToList(); }
+
+            if (snapshot.Count == 0) return;
+
+            DateTime etToday = _latestBarEtDate != DateTime.MinValue
+                ? _latestBarEtDate
+                : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone).Date;
+
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                KLSessionOC entry = snapshot[i];
+
+                int daysOld = (etToday - entry.SessionDate).Days;
+                if (daysOld >= OcExtensionDays) continue;
+
+                if (!IsOcSessionEnabled(entry.SessionId)) continue;
+
+                // Skip if the entry's open bar is beyond the visible right edge
+                if (entry.OpenBarIndex > ChartBars.ToIndex) continue;
+
+                SharpDX.Direct2D1.SolidColorBrush ocBrush = GetOcBrush(entry.SessionId);
+                if (ocBrush == null) continue;
+
+                float thickness  = GetOcThickness(entry.SessionId);
+                bool  showLabel  = GlobalShowLabels && GetOcShowLabels(entry.SessionId);
+                bool  showOpen   = GetOcShowOpen(entry.SessionId);
+                bool  showClose  = GetOcShowClose(entry.SessionId);
+
+                float savedOpacity = ocBrush.Opacity;
+                if (FadeOlderOC && daysOld > 0)
+                {
+                    float fadeOpacity = savedOpacity * Math.Max(0.15f, 1f - daysOld * 0.12f);
+                    ocBrush.Opacity = Math.Min(savedOpacity, Math.Max(0.08f, fadeOpacity));
+                }
+
+                try
+                {
+                    // ── Open line (always visible while in extension window) ──
+                    if (showOpen && entry.OpenPrice != 0)
+                    {
+                        int clampedOpenStart = Math.Max(ChartBars.FromIndex, entry.OpenBarIndex);
+                        float xOpenStart = cc.GetXByBarIndex(ChartBars, clampedOpenStart);
+                        float xOpenEnd   = rtW;
+                        float yOpen      = cs.GetYByValue(entry.OpenPrice);
+
+                        if (!float.IsNaN(yOpen) && !float.IsInfinity(yOpen) && xOpenStart <= xOpenEnd)
+                        {
+                            DrawStyledLine(xOpenStart, yOpen, xOpenEnd, yOpen, ocBrush, thickness, GetOcOpenStyle(entry.SessionId));
+
+                            if (showLabel && _dxLabelFormat != null)
+                            {
+                                string label = string.Format("{0} Open {1}/{2} {3}",
+                                    entry.SessionName,
+                                    entry.SessionDate.Month,
+                                    entry.SessionDate.Day,
+                                    Instrument.MasterInstrument.FormatPrice(entry.OpenPrice));
+                                float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
+                                    ? xOpenEnd - (PocLabelWidth + 4f)
+                                    : xOpenStart + 4f;
+                                float labelY = GetNonCollidingLabelY(yOpen - 14f);
+                                RenderTarget.DrawText(label, _dxLabelFormat,
+                                    new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
+                            }
+                        }
+                    }
+
+                    // ── Close line (only when session is complete) ──
+                    if (showClose && entry.IsComplete && entry.ClosePrice != 0)
+                    {
+                        // Close line starts at the close bar index
+                        if (entry.CloseBarIndex <= ChartBars.ToIndex)
+                        {
+                            int clampedCloseStart = Math.Max(ChartBars.FromIndex, entry.CloseBarIndex);
+                            float xCloseStart = cc.GetXByBarIndex(ChartBars, clampedCloseStart);
+                            float xCloseEnd   = rtW;
+                            float yClose      = cs.GetYByValue(entry.ClosePrice);
+
+                            if (!float.IsNaN(yClose) && !float.IsInfinity(yClose) && xCloseStart <= xCloseEnd)
+                            {
+                                DrawStyledLine(xCloseStart, yClose, xCloseEnd, yClose, ocBrush, thickness, GetOcCloseStyle(entry.SessionId));
+
+                                if (showLabel && _dxLabelFormat != null)
+                                {
+                                    string label = string.Format("{0} Close {1}/{2} {3}",
+                                        entry.SessionName,
+                                        entry.SessionDate.Month,
+                                        entry.SessionDate.Day,
+                                        Instrument.MasterInstrument.FormatPrice(entry.ClosePrice));
+                                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd
+                                        ? xCloseEnd - (PocLabelWidth + 4f)
+                                        : xCloseStart + 4f;
+                                    float labelY = GetNonCollidingLabelY(yClose - 14f);
+                                    RenderTarget.DrawText(label, _dxLabelFormat,
+                                        new SharpDX.RectangleF(labelX, labelY, PocLabelWidth, 16f), ocBrush);
+                                }
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    ocBrush.Opacity = savedOpacity;
+                }
             }
         }
 
@@ -1145,6 +1495,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _dxWallBidBrush = MakeBrush(rt, BidWallColor, BidWallOpacity / 100f);
                 _dxWallAskBrush = MakeBrush(rt, AskWallColor, AskWallOpacity / 100f);
 
+                // Session Open/Close brushes (one per session)
+                _dxAsiaOcBrush   = MakeBrush(rt, AsiaOcColor,   AsiaOcOpacity   / 100f);
+                _dxLondonOcBrush = MakeBrush(rt, LondonOcColor, LondonOcOpacity / 100f);
+                _dxNyOcBrush     = MakeBrush(rt, NyOcColor,     NyOcOpacity     / 100f);
+
                 dxReady = true;
             }
             catch (Exception ex)
@@ -1188,6 +1543,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref _dxHourlyOpenBrush);
             DisposeRef(ref _dxWallBidBrush);
             DisposeRef(ref _dxWallAskBrush);
+            DisposeRef(ref _dxAsiaOcBrush);
+            DisposeRef(ref _dxLondonOcBrush);
+            DisposeRef(ref _dxNyOcBrush);
         }
 
         private static void DisposeRef<T>(ref T resource) where T : class, IDisposable
@@ -1317,6 +1675,167 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Fade Older POCs", Order = 3, GroupName = "1. Session POCs — General",
             Description = "Progressively reduce opacity of older POC lines (−12% per day back).")]
         public bool FadeOlderPocs { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1b. Session Opens/Closes — Asia
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia Open/Close", Order = 1, GroupName = "1b. Session Opens/Closes — Asia",
+            Description = "Master toggle for Asia session Open and Close lines.")]
+        public bool ShowAsiaOC { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia Open Lines", Order = 2, GroupName = "1b. Session Opens/Closes — Asia")]
+        public bool ShowAsiaOCOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia Close Lines", Order = 3, GroupName = "1b. Session Opens/Closes — Asia")]
+        public bool ShowAsiaOCClose { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asia OC Color", Order = 4, GroupName = "1b. Session Opens/Closes — Asia")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AsiaOcColor { get; set; }
+        [Browsable(false)]
+        public string AsiaOcColorSerializable
+        { get { return Serialize.BrushToString(AsiaOcColor); } set { AsiaOcColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Asia OC Opacity %", Order = 5, GroupName = "1b. Session Opens/Closes — Asia")]
+        public int AsiaOcOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asia Open Line Style", Order = 6, GroupName = "1b. Session Opens/Closes — Asia")]
+        public IQKLLineStyle AsiaOcOpenStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asia Close Line Style", Order = 7, GroupName = "1b. Session Opens/Closes — Asia")]
+        public IQKLLineStyle AsiaOcCloseStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "Asia OC Thickness", Order = 8, GroupName = "1b. Session Opens/Closes — Asia")]
+        public int AsiaOcThickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia OC Labels", Order = 9, GroupName = "1b. Session Opens/Closes — Asia")]
+        public bool ShowAsiaOCLabels { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1b. Session Opens/Closes — London
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London Open/Close", Order = 1, GroupName = "1b. Session Opens/Closes — London",
+            Description = "Master toggle for London session Open and Close lines.")]
+        public bool ShowLondonOC { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London Open Lines", Order = 2, GroupName = "1b. Session Opens/Closes — London")]
+        public bool ShowLondonOCOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London Close Lines", Order = 3, GroupName = "1b. Session Opens/Closes — London")]
+        public bool ShowLondonOCClose { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London OC Color", Order = 4, GroupName = "1b. Session Opens/Closes — London")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush LondonOcColor { get; set; }
+        [Browsable(false)]
+        public string LondonOcColorSerializable
+        { get { return Serialize.BrushToString(LondonOcColor); } set { LondonOcColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "London OC Opacity %", Order = 5, GroupName = "1b. Session Opens/Closes — London")]
+        public int LondonOcOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Open Line Style", Order = 6, GroupName = "1b. Session Opens/Closes — London")]
+        public IQKLLineStyle LondonOcOpenStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London Close Line Style", Order = 7, GroupName = "1b. Session Opens/Closes — London")]
+        public IQKLLineStyle LondonOcCloseStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "London OC Thickness", Order = 8, GroupName = "1b. Session Opens/Closes — London")]
+        public int LondonOcThickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London OC Labels", Order = 9, GroupName = "1b. Session Opens/Closes — London")]
+        public bool ShowLondonOCLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "End London Profile at NY Open", Order = 10, GroupName = "1b. Session Opens/Closes — London",
+            Description = "When enabled, London's volume-at-price profile stops accumulating at 09:30 ET (NY open) instead of 11:30 ET. London Close price is still stamped at 11:30 either way.")]
+        public bool EndLondonAtNyOpen { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1b. Session Opens/Closes — New York
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show NY Open/Close", Order = 1, GroupName = "1b. Session Opens/Closes — New York",
+            Description = "Master toggle for New York session Open and Close lines.")]
+        public bool ShowNyOC { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show NY Open Lines", Order = 2, GroupName = "1b. Session Opens/Closes — New York")]
+        public bool ShowNyOCOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show NY Close Lines", Order = 3, GroupName = "1b. Session Opens/Closes — New York")]
+        public bool ShowNyOCClose { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "NY OC Color", Order = 4, GroupName = "1b. Session Opens/Closes — New York")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush NyOcColor { get; set; }
+        [Browsable(false)]
+        public string NyOcColorSerializable
+        { get { return Serialize.BrushToString(NyOcColor); } set { NyOcColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "NY OC Opacity %", Order = 5, GroupName = "1b. Session Opens/Closes — New York")]
+        public int NyOcOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "NY Open Line Style", Order = 6, GroupName = "1b. Session Opens/Closes — New York")]
+        public IQKLLineStyle NyOcOpenStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "NY Close Line Style", Order = 7, GroupName = "1b. Session Opens/Closes — New York")]
+        public IQKLLineStyle NyOcCloseStyle { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "NY OC Thickness", Order = 8, GroupName = "1b. Session Opens/Closes — New York")]
+        public int NyOcThickness { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show NY OC Labels", Order = 9, GroupName = "1b. Session Opens/Closes — New York")]
+        public bool ShowNyOCLabels { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1b. Session Opens/Closes — General
+
+        [NinjaScriptProperty]
+        [Range(1, 7)]
+        [Display(Name = "OC Extension Days", Order = 1, GroupName = "1b. Session Opens/Closes — General",
+            Description = "How many calendar days each Open/Close line extends forward (1–7).")]
+        public int OcExtensionDays { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Fade Older Open/Close", Order = 2, GroupName = "1b. Session Opens/Closes — General",
+            Description = "Progressively reduce opacity of older Open/Close lines (−12% per day back).")]
+        public bool FadeOlderOC { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1631,6 +2150,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Global Show Labels", Order = 2, GroupName = "7. General",
             Description = "Master on/off for all labels on all features.")]
         public bool GlobalShowLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Label Anchor", Order = 3, GroupName = "7. General",
+            Description = "LineStart: labels at line start (left edge). LineEnd: labels at line end (right edge, near current price).")]
+        public IQKLLabelAnchor LabelAnchor { get; set; }
 
         #endregion
     }
