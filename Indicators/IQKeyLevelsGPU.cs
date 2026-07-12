@@ -192,9 +192,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush _dxWallBidBrush;
         private SharpDX.Direct2D1.SolidColorBrush _dxWallAskBrush;
 
-        // Label (white text for all features)
-        private SharpDX.Direct2D1.SolidColorBrush _dxLabelBrush;
-
         // Label collision avoidance — cleared per OnRender frame
         private readonly HashSet<int> _usedLabelYPositions = new HashSet<int>();
 
@@ -478,8 +475,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                         _activePocSessions[id] = entry;
                         lock (_sessionLock)
                         {
-                            // Prune entries older than PocExtensionDays using the bar's ET date
-                            DateTime cutoff = barEt.Date.AddDays(-PocExtensionDays);
+                            // Prune entries outside the PocExtensionDays window using the bar's ET date
+                            // (keep exactly PocExtensionDays calendar dates: today plus the previous PocExtensionDays-1)
+                            DateTime cutoff = barEt.Date.AddDays(-(PocExtensionDays - 1));
                             for (int i = _pocList.Count - 1; i >= 0; i--)
                                 if (_pocList[i].SessionDate < cutoff) _pocList.RemoveAt(i);
                             if (_pocList.Count >= MaxPocListSize) _pocList.RemoveAt(0);
@@ -630,19 +628,24 @@ namespace NinjaTrader.NinjaScript.Indicators
             double price = e.Price;
             long   size  = e.Volume;
 
-            switch (e.Operation)
+            // Guard book mutation + wall detection so RenderWallLines (render thread)
+            // never observes torn/inconsistent wall state
+            lock (_sessionLock)
             {
-                case Operation.Add:
-                case Operation.Update:
-                    if (!book.ContainsKey(price)) book[price] = new KLBookLevel { Price = price };
-                    book[price].Size = size;
-                    break;
-                case Operation.Remove:
-                    if (book.ContainsKey(price)) book.Remove(price);
-                    break;
-            }
+                switch (e.Operation)
+                {
+                    case Operation.Add:
+                    case Operation.Update:
+                        if (!book.ContainsKey(price)) book[price] = new KLBookLevel { Price = price };
+                        book[price].Size = size;
+                        break;
+                    case Operation.Remove:
+                        if (book.ContainsKey(price)) book.Remove(price);
+                        break;
+                }
 
-            DetectOrderBookWalls(isBid ? _bidBook : _askBook, isBid);
+                DetectOrderBookWalls(book, isBid);
+            }
         }
 
         private void DetectOrderBookWalls(Dictionary<double, KLBookLevel> book, bool isBid)
@@ -746,7 +749,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (snapshot.Count == 0) return;
 
             // Use cached ET date for age calculations (avoids system-local DateTime.Today timezone issue)
-            DateTime etToday = _latestBarEtDate != DateTime.MinValue ? _latestBarEtDate : DateTime.UtcNow.Date;
+            DateTime etToday = _latestBarEtDate != DateTime.MinValue
+                ? _latestBarEtDate
+                : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone).Date;
 
             // Forward iteration: oldest entries first (rendered below), newest last (on top)
             for (int i = 0; i < snapshot.Count; i++)
@@ -754,9 +759,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 KLPocEntry entry = snapshot[i];
                 if (entry.POCPrice == 0) continue;
 
-                // Extension days check — skip entries older than limit (using ET date)
+                // Extension days check — skip entries outside the window (using ET date).
+                // A value of N keeps N calendar dates: daysOld 0 through N-1.
                 int daysOld = (etToday - entry.SessionDate).Days;
-                if (daysOld > PocExtensionDays) continue;
+                if (daysOld >= PocExtensionDays) continue;
 
                 SharpDX.Direct2D1.SolidColorBrush pocBrush = GetPocBrush(entry.SessionId);
                 if (pocBrush == null) continue;
@@ -955,15 +961,26 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderWallLines(ChartControl cc, ChartScale cs, float rtW)
         {
-            if (_wallBidPrice > 0 && _dxWallBidBrush != null)
+            // Snapshot wall state under lock — OnMarketDepth mutates these on the data thread
+            double wallBidPrice, wallAskPrice;
+            long   wallBidSize, wallAskSize;
+            lock (_sessionLock)
             {
-                float yBid = cs.GetYByValue(_wallBidPrice);
+                wallBidPrice = _wallBidPrice;
+                wallBidSize  = _wallBidSize;
+                wallAskPrice = _wallAskPrice;
+                wallAskSize  = _wallAskSize;
+            }
+
+            if (wallBidPrice > 0 && _dxWallBidBrush != null)
+            {
+                float yBid = cs.GetYByValue(wallBidPrice);
                 if (!float.IsNaN(yBid) && !float.IsInfinity(yBid))
                 {
                     DrawStyledLine(0f, yBid, rtW, yBid, _dxWallBidBrush, WallLineThickness, IQKLLineStyle.Solid);
                     if (GlobalShowLabels && ShowWallLabels && _dxLabelFormat != null)
                     {
-                        string label = string.Format("BID WALL x{0}", _wallBidSize);
+                        string label = string.Format("BID WALL x{0}", wallBidSize);
                         float labelY = GetNonCollidingLabelY(yBid - 14f);
                         RenderTarget.DrawText(label, _dxLabelFormat,
                             new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxWallBidBrush);
@@ -971,15 +988,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            if (_wallAskPrice > 0 && _dxWallAskBrush != null)
+            if (wallAskPrice > 0 && _dxWallAskBrush != null)
             {
-                float yAsk = cs.GetYByValue(_wallAskPrice);
+                float yAsk = cs.GetYByValue(wallAskPrice);
                 if (!float.IsNaN(yAsk) && !float.IsInfinity(yAsk))
                 {
                     DrawStyledLine(0f, yAsk, rtW, yAsk, _dxWallAskBrush, WallLineThickness, IQKLLineStyle.Solid);
                     if (GlobalShowLabels && ShowWallLabels && _dxLabelFormat != null)
                     {
-                        string label = string.Format("ASK WALL x{0}", _wallAskSize);
+                        string label = string.Format("ASK WALL x{0}", wallAskSize);
                         float labelY = GetNonCollidingLabelY(yAsk - 14f);
                         RenderTarget.DrawText(label, _dxLabelFormat,
                             new SharpDX.RectangleF(4f, labelY, 200f, 16f), _dxWallAskBrush);
@@ -1128,10 +1145,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _dxWallBidBrush = MakeBrush(rt, BidWallColor, BidWallOpacity / 100f);
                 _dxWallAskBrush = MakeBrush(rt, AskWallColor, AskWallOpacity / 100f);
 
-                // Shared white label brush
-                _dxLabelBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
-                    new SharpDX.Color4(0.9f, 0.9f, 0.9f, 1f));
-
                 dxReady = true;
             }
             catch (Exception ex)
@@ -1175,7 +1188,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref _dxHourlyOpenBrush);
             DisposeRef(ref _dxWallBidBrush);
             DisposeRef(ref _dxWallAskBrush);
-            DisposeRef(ref _dxLabelBrush);
         }
 
         private static void DisposeRef<T>(ref T resource) where T : class, IDisposable

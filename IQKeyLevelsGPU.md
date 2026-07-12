@@ -146,7 +146,7 @@ Maintains bid and ask order-book dictionaries via `OnMarketDepth`. Detects the s
 | Ask Wall Color | Crimson | |
 | Ask Wall Opacity % | 90 | |
 | Wall Line Thickness | 2 | |
-| Show Wall Labels | `true` | "BID WALL ×{size}" / "ASK WALL ×{size}" labels |
+| Show Wall Labels | `true` | "BID WALL x{size}" / "ASK WALL x{size}" labels |
 
 ---
 
