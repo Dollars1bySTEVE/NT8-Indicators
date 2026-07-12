@@ -1376,10 +1376,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     string sessionComp = "";
                     var sessionParts = new System.Text.StringBuilder();
-                    if (sessionFlags[0]) sessionParts.Append("A");
+                    if (sessionFlags[0]) { if (sessionParts.Length > 0) sessionParts.Append(","); sessionParts.Append("A"); }
                     if (sessionFlags[1]) { if (sessionParts.Length > 0) sessionParts.Append(","); sessionParts.Append("L"); }
                     if (sessionFlags[2]) { if (sessionParts.Length > 0) sessionParts.Append(","); sessionParts.Append("N"); }
-                    if (sessionParts.Length > 1)
+                    if (sessionParts.Length > 0)
                         sessionComp = "  (" + sessionParts + ")";
 
                     string label = string.Format("POC Cluster ×{0}  {1}{2}", z.Count, priceRange, sessionComp);

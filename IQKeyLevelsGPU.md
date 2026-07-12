@@ -76,7 +76,7 @@ Automatically detects zones where several session POCs (across sessions/days) la
 | Cluster Min POC Count | 2 | Minimum POCs required to form a zone (2–5) |
 | Cluster Color | Gold | Shading + label color |
 | Cluster Opacity % | 15 | Rectangle fill opacity (5–50) |
-| Show Cluster Labels | `true` | Toggle cluster label drawn on each zone. When enabled, the label shows count + price range + session composition: `"POC Cluster ×3  29800.75–29829.25  (L,N)"` |
+| Show Cluster Labels | `true` | Toggle cluster label drawn on each zone. When enabled, the label shows count + price range + session composition: `"POC Cluster ×4  29800.75–29829.25  (A,L,N)"` |
 | Cluster Audio Alert | `false` | Play a one-shot alert sound the first time price enters a zone; resets when price leaves. Fires only in `State.Realtime` (never during historical load/replay). |
 | Suppress POC Labels In Clusters | `true` | When enabled (default), individual session POC labels are hidden for any POC that belongs to a rendered cluster zone. The cluster label carries all relevant information, eliminating label pile-up inside the zone. Disable to restore individual POC labels regardless of cluster membership. |
 
