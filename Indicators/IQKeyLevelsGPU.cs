@@ -741,8 +741,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                     GetConfigurableWindow(barEt, LondonStartHour, LondonStartMin, LondonEndHour, LondonEndMin, out start, out end);
                     // When EndLondonAtNyOpen is enabled, London's POC profile accumulates only until
                     // the configured NY session start instead of the configured London session end.
+                    // Anchor the NY open to the session start's date and roll forward a day when it
+                    // lands at/before the start (cross-midnight London windows), so end > start.
                     if (EndLondonAtNyOpen)
+                    {
                         end = start.Date.AddHours(NyStartHour).AddMinutes(NyStartMin);
+                        if (end <= start) end = end.AddDays(1);
+                    }
                     break;
                 case 2:
                     GetConfigurableWindow(barEt, NyStartHour, NyStartMin, NyEndHour, NyEndMin, out start, out end);
@@ -877,11 +882,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// spamming during historical load/replay.</summary>
         private void CheckClusterAlerts(double price)
         {
-            if (!ClusterAudioAlert || _clusterZones.Count == 0) return;
+            // Snapshot the list reference: RecomputePocClusters can replace _clusterZones between
+            // the count check and the index access, which could otherwise throw or drop updates.
+            List<KLClusterZone> zones = _clusterZones;
+            if (!ClusterAudioAlert || zones.Count == 0) return;
 
-            for (int i = 0; i < _clusterZones.Count; i++)
+            for (int i = 0; i < zones.Count; i++)
             {
-                KLClusterZone z = _clusterZones[i];
+                KLClusterZone z = zones[i];
                 bool inside = price >= z.MinPrice && price <= z.MaxPrice;
                 if (inside)
                 {
