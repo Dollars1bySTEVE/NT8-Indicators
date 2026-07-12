@@ -114,7 +114,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private static TimeZoneInfo SafeFindEtZone()
         {
             try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
-            catch (Exception) { return TimeZoneInfo.CreateCustomTimeZone("ET-Fallback", TimeSpan.FromHours(-5), "ET-Fallback", "ET-Fallback"); }
+            catch (Exception)
+            {
+                try { return TimeZoneInfo.FindSystemTimeZoneById("America/New_York"); }
+                catch (Exception) { return TimeZoneInfo.CreateCustomTimeZone("ET-Fallback", TimeSpan.FromHours(-5), "ET-Fallback", "ET-Fallback"); }
+            }
         }
 
         private DateTime BarTimeEt()
@@ -585,8 +589,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _rdValue = _rdRanges.Average();
                 if (UseOnlyCompletedDaysForRD)
                 {
-                    // Anchor bands to today's Open using only the completed-day average range,
-                    // ignoring today's still-developing high/low so the bands stay fixed intraday.
                     double half = _rdValue / 2.0;
                     _rdHigh = _rdDayOpen + half;
                     _rdLow  = _rdDayOpen - half;
@@ -2243,7 +2245,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "End London Profile at NY Open", Order = 10, GroupName = "1b. Session Opens/Closes — London",
-            Description = "When enabled, London's volume-at-price profile stops accumulating at 09:30 ET (NY open) instead of 11:30 ET. London Close price is still stamped at 11:30 either way.")]
+            Description = "When enabled, London's volume-at-price profile stops accumulating at the configured NY session start instead of the configured London end. London Close price still uses the configured London end time.")]
         public bool EndLondonAtNyOpen { get; set; }
 
         #endregion

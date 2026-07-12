@@ -110,7 +110,7 @@ For London and New York, records the first in-session bar's **Open price** and t
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| End London Profile at NY Open | `false` | When enabled, London's **volume-at-price profile** stops accumulating at the configured NY start time instead of the configured London end time. London **Open/Close price lines** are NOT affected — London Close is always stamped at the configured London end time. |
+| End London Profile at NY Open | `false` | When enabled, London's **volume-at-price profile** stops accumulating at the configured NY start time instead of the configured London end time. London **Open/Close price lines** are NOT affected — London Close still uses the configured London end time. |
 
 **General Open/Close settings:**
 
@@ -142,7 +142,7 @@ Rolling-average daily range projected as RD High and RD Low around today's devel
 | RD Thickness | 1 | Line width |
 | Show RD Labels | `true` | "RD H / RD L + price" labels |
 | RD Lookback Days | 15 | Number of prior days in the rolling average (5–50) |
-| Use Only Completed Days for RD | `false` | When enabled, RD High/Low are anchored to today's Open using only the completed-day average range, ignoring today's still-developing high/low — the bands stay fixed all day instead of tightening as the range expands. |
+| Use Only Completed Days for RD | `false` | When enabled, today's developing range is excluded from the **average** used for RD projection; the bands still project from today's current high/low, preserving the usual RD behavior while using only completed prior days in the average. |
 
 ---
 
