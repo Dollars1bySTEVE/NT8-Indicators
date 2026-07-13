@@ -67,18 +67,49 @@ Computes a volume-at-price profile for each of the three sessions above and draw
 
 Automatically detects zones where several session POCs (across sessions/days) land within a narrow price range, and shades that zone as a potential high-confluence area.
 
-**Algorithm:** all active, non-expired POC prices are sorted, then greedily grouped so each group's max−min spread stays within `Cluster Zone Width`; any group with at least `Cluster Min POC Count` members becomes a visible cluster zone. Recomputed once per bar (first tick only).
+**Algorithm:** all active, non-expired POC prices are sorted, then greedily grouped so each group's max−min spread stays within the effective cluster width; any group with at least `Cluster Min POC Count` members becomes a visible cluster zone. Recomputed once per bar (first tick only).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Show POC Clusters | `true` | Master toggle |
-| Cluster Zone Width (points) | 35.0 | Max price spread between the lowest/highest POC in a group (5–200) |
+| Cluster Zone Width (points) | 35.0 | Max price spread. Used when Cluster Width Mode = FixedPoints (5–200) |
+| **Cluster Width Mode** | `FixedPoints` | **FixedPoints** (default — preserves saved settings): use Zone Width above. **PercentOfADR**: zone width = `Cluster Width % of ADR` × average daily range (self-scales across NQ/ES/RTY/YM/CL/GC). **Ticks**: fixed tick count. |
+| Cluster Width % of ADR | 2.0 | Zone width as % of rolling avg daily range (PercentOfADR mode, 0.25–10.0). Falls back to FixedPoints when fewer than 3 completed days are available. |
+| Cluster Width (ticks) | 140 | Zone width in ticks (Ticks mode, 4–2000) |
 | Cluster Min POC Count | 2 | Minimum POCs required to form a zone (2–5) |
 | Cluster Color | Gold | Shading + label color |
 | Cluster Opacity % | 15 | Rectangle fill opacity (5–50) |
-| Show Cluster Labels | `true` | Toggle cluster label drawn on each zone. When enabled, the label shows count + price range + session composition: `"POC Cluster ×4  29800.75–29829.25  (A,L,N)"` |
-| Cluster Audio Alert | `false` | Play a one-shot alert sound the first time price enters a zone; resets when price leaves. Fires only in `State.Realtime` (never during historical load/replay). |
-| Suppress POC Labels In Clusters | `true` | When enabled (default), individual session POC labels are hidden for any POC that belongs to a rendered cluster zone. The cluster label carries all relevant information, eliminating label pile-up inside the zone. Disable to restore individual POC labels regardless of cluster membership. |
+| Show Cluster Labels | `true` | Toggle cluster label: `"POC Cluster ×4  29800.75–29829.25  (A,L,N)"` |
+| Cluster Audio Alert | `false` | One-shot alert when price enters a zone; resets on exit. Realtime only. |
+| Suppress POC Labels In Clusters | `true` | Hides individual POC labels for clustered POCs — the cluster label carries all info. |
+
+> **Instrument scaling note:** `PercentOfADR` is recommended for trading multiple instruments. A fixed 35-point width works on NQ but is proportionally huge on ES or too tight on RTY/YM. PercentOfADR auto-adapts to each instrument's typical daily range and to changing volatility regimes.
+
+---
+
+### 1d. Gap Zones
+
+Detects gaps between the previous trading session's close (last bar before the Globex maintenance window) and the new Globex open (first bar of the Asia/18:00 ET session). Both daily and weekend gaps use the same logic. When `|open − prevClose| ≥ minimum gap size`, a shaded rectangle spanning the gap price range is created.
+
+**Partial-fill shrinking:** as price trades into the zone, the rendered rectangle shrinks to only the remaining unfilled portion. The zone's "near edge" tracks the extreme price penetration: for a gap-up, it follows the lowest price traded in the zone from above; for a gap-down, the highest from below. When price fully trades through, the gap is considered filled.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Show Gap Zones | `true` | Master toggle |
+| Gap Up Color | MediumPurple | Fill color for bullish gaps (open > prevClose) |
+| Gap Down Color | Teal | Fill color for bearish gaps (open < prevClose) |
+| Gap Opacity % | 20 | Rectangle fill opacity for unfilled zones (5–50) |
+| Gap Max Age (days) | 7 | Calendar days a zone is displayed before expiry (1–14) |
+| Show Gap Labels | `true` | Toggle label: `"7/12 Gap  29980.25–30038.50"` (M/d of open date + price range) |
+| Gap Filled Action | `Remove` | What happens on full fill: **Remove** (stop rendering), **Dim** (keep at reduced opacity + `" (filled)"` suffix), **Keep** (unchanged) |
+| Gap Dim Opacity % | 8 | Opacity when Filled Action = Dim (1–30) |
+| Gap Audio Alert | `false` | One-shot alert when price first enters an unfilled gap zone. Realtime only. |
+| **Gap Min Size Mode** | `PercentOfADR` | How the minimum gap size is measured: **FixedPoints**, **PercentOfADR** (recommended — self-scales across instruments), or **Ticks** |
+| Gap Min Size (points) | 10.0 | Minimum gap size in points (FixedPoints mode, or fallback) |
+| Gap Min Size % of ADR | 1.0 | Minimum gap as % of rolling avg daily range (PercentOfADR mode, 0.1–10.0) |
+| Gap Min Size (ticks) | 40 | Minimum gap in ticks (Ticks mode) |
+
+> **Storage:** bounded to 14 gap zone entries; oldest or filled+Removed zones pruned first. Weekend gaps (Friday close → Sunday Globex open) use the same detection — there is no separate weekend-only toggle.
 
 ---
 
@@ -237,6 +268,7 @@ Maintains bid and ask order-book dictionaries via `OnMarketDepth`, with a runnin
 | Global Show Labels | `true` | Master on/off for every label in all feature groups |
 | Label Anchor | LineStart | **LineStart**: labels at line origin (left/start edge). **LineEnd**: labels at line right end (near current price / right edge of chart). Label X positions are clamped so LineEnd labels never render off-screen near the right edge. |
 | Extend Lines to Right Edge | `true` | When enabled, POC and Open/Close lines extend to the chart's right edge. When disabled, they render only out to the last printed bar. |
+| **Merge Coincident Labels** | `true` | When two or more level labels (Psy, Hi-Lo, RD) share the same price (within ±1 tick), they are collapsed into a single merged label instead of stacking. Both underlying lines still draw (they overlap). Examples: `DPsy H 29962.50` + `WPsy H 29962.50` → `D+WPsy H 29962.50`; `LWH + MPsy H 30094.00` (cross-family). Disable to always render individual labels. |
 
 ---
 
@@ -246,14 +278,16 @@ Maintains bid and ask order-book dictionaries via `OnMarketDepth`, with a runnin
 - `IsOverlay = true`, `IsAutoScale = false`, no indicator plots.
 - `MaximumBarsLookBack = Infinite` — ensures weekly/monthly high/low tracking works on intraday charts with limited "days to load".
 - All SharpDX resources (brushes, text formats) created in `CreateDXResources`, disposed in `DisposeDXResources` and `OnRenderTargetChanged`, with the try/catch SharpDXException recovery pattern.
-- Session POC list bounded to 21 entries (3 sessions × 7 days); Session OC list also bounded to 21 entries; hourly opens list bounded to 200 entries; collections read in `OnRender` via lock-snapshot pattern (`lock(_sessionLock) { snapshot = list.ToList(); }`).
+- Session POC list bounded to 21 entries (3 sessions × 7 days); Session OC list also bounded to 21 entries; hourly opens list bounded to 200 entries; gap zones bounded to 14 entries; collections read in `OnRender` via lock-snapshot pattern (`lock(_sessionLock) { snapshot = list.ToList(); }`).
 - Render helpers guard against `Bars`/`ChartBars`/`RenderTarget` being null (e.g. during replay/teardown) before touching chart geometry.
 - **Right-edge width**: `OnRender` uses `RenderTarget.Size.Width` (the actual GPU drawing-surface width) for `rtW`, matching the pattern in `IQMainGPU` / `IQMainUltimate`. This ensures POC/OC lines and cluster rectangles always extend to the true right edge of the render surface regardless of DPI scaling or price-axis geometry. Age checks always use `_latestBarEtDate` (the last bar's ET date, cached in `OnBarUpdate`) rather than `DateTime.Now`/`Today`, so weekend viewing does not prematurely expire or mis-age lines.
-- Label Y-positions use per-frame collision avoidance (`GetNonCollidingLabelY`), bucketed into **two independent HashSets** — one for left-anchored labels (`LineStart`), one for right-anchored (`LineEnd`) — cleared exactly once per `OnRender` frame and shared across **all** render helpers so labels from different features (clusters, POCs, opens/closes) displace each other correctly. Cluster labels now respect `LabelAnchor` for bucket selection, consistent with POC and OC labels.
+- **Label Y-position collision system**: per-frame collision avoidance (`GetNonCollidingLabelY`) bucketed into two independent HashSets — one for left-anchored labels (`LineStart`), one for right-anchored (`LineEnd`) — cleared once per `OnRender` frame and shared across all render helpers. The vertical displacement step is at least `LabelFontSize + 4` pixels; collision detection treats labels within `LabelFontSize + 3` pixels as colliding. A keep-out band of `±LabelFontSize` pixels around the live chart price box (`_currentPriceY`) prevents labels from overprinting the current-price marker.
 - Label X-positions are clamped via `ClampLabelX` with the correct `rtW`, preventing right-side labels from bleeding into the price axis area.
 - `_pocPricesInClusters` is a per-frame `HashSet<double>` populated by `RenderPocClusters` (called first in `OnRender`) and consumed by `RenderSessionPocs` to suppress individual POC labels for clustered POCs when `SuppressPocLabelsInClusters = true`.
+- **Coincident label merging**: Psy level, Hi-Lo, and RD render methods queue their labels into `_pendingLevelLabels` (a `List<KLLevelLabel>` cleared each frame). `FlushLevelLabels` (called last in `OnRender`) groups entries within ±1 tick and renders a single merged label per group. The `MergeCoincidentLabels` toggle bypasses grouping when `false`.
+- **Gap zone partial fill**: `UpdateGapZoneFill` runs every tick, tracking the extreme price that has traded into each zone. For gap-up zones, `NearEdge` = minimum `Low[0]` since zone creation (gap fills from above); for gap-down, `NearEdge` = maximum `High[0]` (fills from below). The rendered rectangle uses `NearEdge` as the shrinking near edge. Gaps filled while `GapFilledAction = Remove` are pruned from the list; `Dim` keeps them at `GapDimOpacity` with a `(filled)` label suffix; `Keep` leaves rendering unchanged.
 - Each session POC volume profile tracks its own effective bin size (`CurrentBinSize`), which auto-doubles and re-buckets existing data whenever the profile exceeds `LimitPocBins`, instead of dropping data or growing unbounded.
 - `DetectOrderBookWalls` uses a running bid/ask size sum maintained incrementally in `OnMarketDepth`, avoiding a full re-summation of the book on every event.
 - All color properties follow the `[XmlIgnore]` + `...Serializable` string pattern used across this repository.
-- All new enums (`IQKLLineStyle`, `IQKLLabelAnchor`) are declared outside all namespaces per NT8 requirements.
+- All new enums (`IQKLLineStyle`, `IQKLLabelAnchor`, `IQKLGapFilledAction`, `IQKLWidthMode`) are declared outside all namespaces per NT8 requirements.
 - All existing public `[NinjaScriptProperty]` names are preserved for workspace/template serialization compatibility, including the now-hidden legacy Asia Open/Close properties.

@@ -37,6 +37,12 @@ public enum IQKLLineStyle { Solid, Dashed, Dotted }
 /// <summary>Label anchor position for IQKeyLevelsGPU level labels.</summary>
 public enum IQKLLabelAnchor { LineStart, LineEnd }
 
+/// <summary>Action taken when a gap zone has been fully filled by price.</summary>
+public enum IQKLGapFilledAction { Remove, Dim, Keep }
+
+/// <summary>Width/size measurement mode for cluster zones and gap minimum size.</summary>
+public enum IQKLWidthMode { FixedPoints, PercentOfADR, Ticks }
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
@@ -103,6 +109,36 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             public double Price;
             public long   Size;
+        }
+
+        /// <summary>One detected session gap zone (Globex open vs prior session close).</summary>
+        private class KLGapZone
+        {
+            public DateTime OpenDate;       // ET date of the gap open bar (for label)
+            public int      OpenBarIndex;   // bar index of the gap open bar
+            public double   ZoneLow;        // fixed lower bound (min of prevClose, openPrice)
+            public double   ZoneHigh;       // fixed upper bound (max of prevClose, openPrice)
+            public bool     IsGapUp;        // true = open > prevClose
+            // NearEdge tracks how far price has penetrated into the zone from the open side:
+            //   gap-up: starts = ZoneHigh, decreases toward ZoneLow as price fills from above
+            //   gap-down: starts = ZoneLow, increases toward ZoneHigh as price fills from below
+            public double   NearEdge;
+            public bool     IsFilled;       // true once fully traded through
+            public bool     AlertFired;     // one-shot entry-alert flag
+            public DateTime CreationDate;   // ET date at creation (for age-out)
+        }
+
+        /// <summary>Queued label for the per-frame level-label merge system (Psy, Hi-Lo, RD).</summary>
+        private struct KLLevelLabel
+        {
+            public double   Price;
+            public string   Prefix;       // "DPsy","WPsy","MPsy","LWH","LWL","LMH","LML","RD"
+            public string   Side;         // "H","L", or "" when side is already in Prefix
+            public float    LabelXHint;   // desired X before collision
+            public float    LabelWidth;
+            public bool     UseRightBucket;
+            public float    LineY;        // Y from chartScale (for collision seed)
+            public SharpDX.Direct2D1.SolidColorBrush Brush;
         }
 
         #endregion
@@ -197,6 +233,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Private fields — Gap Zones
+
+        private const int MaxGapZones = 14;
+
+        private List<KLGapZone>  _gapZones;
+        private DateTime         _lastGapCheckSessionStart = DateTime.MinValue;
+        private double           _gapScanPrevClose;  // Close[1] captured at IsFirstTickOfBar
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region Private fields — L2 Order Book
 
         private Dictionary<double, KLBookLevel> _bidBook;
@@ -223,6 +269,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private const float PocLabelWidth      = 220f;  // POC/OC labels  "Asia Open MM/DD 99999.99"
         private const float LevelLabelWidth     = 200f;  // General labels "RD H / Psy H / LWH …"
         private const float ClusterLabelWidth   = 300f;  // Cluster labels "POC Cluster ×4  29800.75–29829.25  (A,L,N)"
+        private const float GapLabelWidth       = 310f;  // Gap zone labels "7/12 Gap  29980.25–30038.50"
         private const double ClusterMatchToleranceFactor = 0.001;
         private const double ClusterZonePaddingTickFactor = 2.0;
         private const double ClusterZonePaddingMaxPoints = 2.0;
@@ -230,6 +277,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Cached ET date of the most-recently-processed bar (used in OnRender for age checks)
         private DateTime _latestBarEtDate = DateTime.MinValue;
+
+        // Cached Y of the current price line (set each OnRender frame; used for keep-out band)
+        private float _currentPriceY = float.NaN;
 
         private bool dxReady;
 
@@ -268,6 +318,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // POC Cluster zone shading brush
         private SharpDX.Direct2D1.SolidColorBrush _dxClusterBrush;
 
+        // Gap zone brushes
+        private SharpDX.Direct2D1.SolidColorBrush _dxGapUpBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxGapDownBrush;
+
         // Label collision avoidance — cleared per OnRender frame, bucketed by screen region so
         // left-anchored and right-anchored labels only collide against their own bucket.
         private readonly HashSet<int>    _usedLabelYLeft       = new HashSet<int>();
@@ -277,6 +331,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Populated by RenderPocClusters (called first in OnRender) and read by
         // RenderSessionPocs to suppress individual labels when SuppressPocLabelsInClusters = true.
         private readonly HashSet<double> _pocPricesInClusters  = new HashSet<double>();
+
+        // Per-frame pending level labels for the coincident-merge system (Psy, Hi-Lo, RD).
+        // Lines are drawn inline; labels are queued here and flushed merged after all helpers.
+        private readonly List<KLLevelLabel> _pendingLevelLabels = new List<KLLevelLabel>();
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -327,6 +385,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // 1c. POC Clusters
                 ShowPocClusters        = true;
                 ClusterZoneWidthPoints = 35.0;
+                ClusterWidthMode       = IQKLWidthMode.FixedPoints;
+                ClusterWidthPctADR     = 2.0;
+                ClusterWidthTicks      = 140;
                 ClusterMinPocCount     = 2;
                 ClusterColor           = Brushes.Gold;
                 ClusterOpacity         = 15;
@@ -442,6 +503,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 GlobalShowLabels = true;
                 LabelAnchor      = IQKLLabelAnchor.LineStart;
                 ExtendLinesToRightEdge = true;
+                MergeCoincidentLabels  = true;
+
+                // 1d. Gap Zones
+                ShowGapZones       = true;
+                GapUpColor         = Brushes.MediumPurple;
+                GapDownColor       = Brushes.Teal;
+                GapOpacity         = 20;
+                GapMaxAgeDays      = 7;
+                ShowGapLabels      = true;
+                GapFilledAction    = IQKLGapFilledAction.Remove;
+                GapDimOpacity      = 8;
+                GapAudioAlert      = false;
+                GapMinSizeMode     = IQKLWidthMode.PercentOfADR;
+                GapMinSizePoints   = 10.0;
+                GapMinSizePctADR   = 1.0;
+                GapMinSizeTicks    = 40;
 
                 // Indicator meta
                 Name               = "IQKeyLevelsGPU";
@@ -469,6 +546,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _bidBook           = new Dictionary<double, KLBookLevel>();
                 _askBook           = new Dictionary<double, KLBookLevel>();
                 _clusterZones      = new List<KLClusterZone>();
+                _gapZones          = new List<KLGapZone>();
                 _bidSizeSum        = 0;
                 _askSizeSum        = 0;
 
@@ -491,6 +569,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── Per-bar accumulation guarded by IsFirstTickOfBar ──────────────
             if (IsFirstTickOfBar)
             {
+                // Capture previous bar's close BEFORE any session processing (used by gap detection).
+                _gapScanPrevClose = Close[1];
+
                 DateTime barTime = Time[0];
                 DateTime barEt   = BarTimeEt();
                 _latestBarEtDate = barEt.Date;  // cache ET date for use in OnRender
@@ -572,6 +653,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // ── Session POC accumulation ──────────────────────────────────
                 UpdateSessionPocs(barEt);
 
+                // ── Gap zone detection (runs after session start is known) ────
+                DetectGapZone(barEt);
+
                 // ── Session Open/Close tracking ───────────────────────────────
                 UpdateSessionOC(barEt);
 
@@ -616,8 +700,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (_currentHourlyOpen != null)
                 _currentHourlyOpen.EndBarIndex = CurrentBar;
 
+            // ── Gap zone fill tracking — checked every tick for responsiveness ──
+            UpdateGapZoneFill();
+
             // ── POC cluster audio alert — checked every tick for responsiveness ──
             CheckClusterAlerts(Close[0]);
+
+            // ── Gap zone audio alert — checked every tick ──────────────────────
+            CheckGapAlerts(Close[0]);
         }
 
         #endregion
@@ -851,13 +941,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             prices.Sort();
 
             var newZones = new List<KLClusterZone>();
+            double effectiveWidth = ComputeEffectiveClusterWidth();
             int idx = 0;
             while (idx < prices.Count)
             {
                 int    j        = idx;
                 double groupMin = prices[idx];
                 double groupMax = prices[idx];
-                while (j + 1 < prices.Count && (prices[j + 1] - groupMin) <= ClusterZoneWidthPoints)
+                while (j + 1 < prices.Count && (prices[j + 1] - groupMin) <= effectiveWidth)
                 {
                     j++;
                     groupMax = prices[j];
@@ -914,6 +1005,168 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     z.AlertFired = false;
                 }
+            }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Gap Zone helpers
+
+        /// <summary>Detects a session gap when the Globex session (Asia) opens. Called once per
+        /// new session start from OnBarUpdate / IsFirstTickOfBar.</summary>
+        private void DetectGapZone(DateTime barEt)
+        {
+            if (!ShowGapZones) return;
+
+            // Only fires at the start of the Asia (Globex) session
+            DateTime sStart, sEnd;
+            GetConfigurableWindow(barEt, AsiaStartHour, AsiaStartMin, AsiaEndHour, AsiaEndMin, out sStart, out sEnd);
+            bool inAsia = barEt >= sStart && barEt < sEnd;
+            if (!inAsia) return;
+
+            // Only fire once per session start
+            if (sStart == _lastGapCheckSessionStart) return;
+            _lastGapCheckSessionStart = sStart;
+
+            if (CurrentBar < 2) return;
+
+            double prevClose = _gapScanPrevClose;
+            double openPrice = Open[0];
+            if (prevClose == 0 || openPrice == 0) return;
+
+            double gapSize = Math.Abs(openPrice - prevClose);
+            if (gapSize < ComputeEffectiveGapMinSize()) return;
+
+            bool   isGapUp  = openPrice > prevClose;
+            double zoneLow  = Math.Min(prevClose, openPrice);
+            double zoneHigh = Math.Max(prevClose, openPrice);
+
+            var zone = new KLGapZone
+            {
+                OpenDate     = barEt.Date,
+                OpenBarIndex = CurrentBar,
+                ZoneLow      = zoneLow,
+                ZoneHigh     = zoneHigh,
+                IsGapUp      = isGapUp,
+                // NearEdge starts at the "open side" — gap-up: starts at ZoneHigh (=open),
+                // gap-down: starts at ZoneLow (=open). Both move toward the unfilled edge.
+                NearEdge     = isGapUp ? zoneHigh : zoneLow,
+                IsFilled     = false,
+                AlertFired   = false,
+                CreationDate = barEt.Date
+            };
+
+            lock (_sessionLock)
+            {
+                DateTime cutoff = barEt.Date.AddDays(-Math.Max(1, GapMaxAgeDays));
+                for (int i = _gapZones.Count - 1; i >= 0; i--)
+                {
+                    KLGapZone gz = _gapZones[i];
+                    if (gz.CreationDate < cutoff) { _gapZones.RemoveAt(i); continue; }
+                    if (gz.IsFilled && GapFilledAction == IQKLGapFilledAction.Remove) _gapZones.RemoveAt(i);
+                }
+                if (_gapZones.Count >= MaxGapZones) _gapZones.RemoveAt(0);
+                _gapZones.Add(zone);
+            }
+        }
+
+        /// <summary>Updates the partial-fill NearEdge for every unfilled gap zone using the
+        /// current bar's High/Low. Called every tick for responsiveness.</summary>
+        private void UpdateGapZoneFill()
+        {
+            List<KLGapZone> zones = _gapZones;
+            if (zones == null || zones.Count == 0) return;
+
+            double lo = Low[0];
+            double hi = High[0];
+
+            for (int i = 0; i < zones.Count; i++)
+            {
+                KLGapZone z = zones[i];
+                if (z.IsFilled) continue;
+
+                if (z.IsGapUp)
+                {
+                    // Track lowest price seen (fills zone from the open/top side downward)
+                    if (lo < z.NearEdge) z.NearEdge = lo;
+                    if (z.NearEdge <= z.ZoneLow) z.IsFilled = true;
+                }
+                else
+                {
+                    // Track highest price seen (fills zone from the open/bottom side upward)
+                    if (hi > z.NearEdge) z.NearEdge = hi;
+                    if (z.NearEdge >= z.ZoneHigh) z.IsFilled = true;
+                }
+            }
+        }
+
+        /// <summary>Fires a one-shot audio alert the first time price enters an unfilled gap zone.
+        /// Alerts only during State.Realtime to avoid spamming during historical load/replay.</summary>
+        private void CheckGapAlerts(double price)
+        {
+            if (!GapAudioAlert || State != State.Realtime) return;
+            List<KLGapZone> zones = _gapZones;
+            if (zones == null || zones.Count == 0) return;
+
+            for (int i = 0; i < zones.Count; i++)
+            {
+                KLGapZone z = zones[i];
+                if (z.IsFilled || z.AlertFired) continue;
+
+                // Unfilled portion: gap-up → [ZoneLow, NearEdge]; gap-down → [NearEdge, ZoneHigh]
+                double dispLow  = z.IsGapUp ? z.ZoneLow  : z.NearEdge;
+                double dispHigh = z.IsGapUp ? z.NearEdge : z.ZoneHigh;
+                bool inside = price >= dispLow && price <= dispHigh;
+                if (inside)
+                {
+                    z.AlertFired = true;
+                    Alert("IQKL_Gap_" + z.OpenBarIndex, Priority.Low,
+                        "IQKeyLevelsGPU: Price entered Gap zone " + z.OpenDate.ToString("M/d"),
+                        NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 10,
+                        z.IsGapUp ? GapUpColor : GapDownColor, Brushes.Black);
+                }
+            }
+        }
+
+        /// <summary>Minimum number of completed trading days required before PercentOfADR
+        /// mode computes a reliable average daily range. Below this threshold both
+        /// <see cref="ComputeEffectiveClusterWidth"/> and <see cref="ComputeEffectiveGapMinSize"/>
+        /// fall back to the FixedPoints values.</summary>
+        private const int MinAdrDataDays = 3;
+
+        /// <summary>Effective cluster zone width in points, determined by ClusterWidthMode.
+        /// Falls back to FixedPoints value when ADR data is insufficient (&lt;MinAdrDataDays days).</summary>
+        private double ComputeEffectiveClusterWidth()
+        {
+            switch (ClusterWidthMode)
+            {
+                case IQKLWidthMode.Ticks:
+                    return Math.Max(1, ClusterWidthTicks) * TickSize;
+                case IQKLWidthMode.PercentOfADR:
+                    if (_rdRanges.Count >= MinAdrDataDays)
+                        return _rdRanges.Average() * (ClusterWidthPctADR / 100.0);
+                    return ClusterZoneWidthPoints; // fall back when insufficient ADR data
+                case IQKLWidthMode.FixedPoints:
+                default:
+                    return ClusterZoneWidthPoints;
+            }
+        }
+
+        /// <summary>Effective gap minimum size in points, determined by GapMinSizeMode.
+        /// Falls back to FixedPoints value when ADR data is insufficient (&lt;MinAdrDataDays days).</summary>
+        private double ComputeEffectiveGapMinSize()
+        {
+            switch (GapMinSizeMode)
+            {
+                case IQKLWidthMode.Ticks:
+                    return Math.Max(1, GapMinSizeTicks) * TickSize;
+                case IQKLWidthMode.PercentOfADR:
+                    if (_rdRanges.Count >= MinAdrDataDays)
+                        return _rdRanges.Average() * (GapMinSizePctADR / 100.0);
+                    return GapMinSizePoints; // fall back
+                case IQKLWidthMode.FixedPoints:
+                default:
+                    return GapMinSizePoints;
             }
         }
 
@@ -1167,6 +1420,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             _usedLabelYRight.Clear();
             // Clear per-frame cluster membership set (populated by RenderPocClusters below)
             _pocPricesInClusters.Clear();
+            // Clear per-frame pending level label list (for Psy/HiLo/RD coincident merging)
+            _pendingLevelLabels.Clear();
 
             var rt   = RenderTarget;
             // Bug 1 fix: use RenderTarget.Size.Width (the actual GPU drawing-surface width)
@@ -1175,6 +1430,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             // This matches IQMainGPU / IQMainUltimate which also use rt.Size.Width.
             float rtW = rt.Size.Width;
             float rtH = (float)chartControl.ActualHeight;
+
+            // Cache current-price Y for the label keep-out band (Part D).
+            try
+            {
+                _currentPriceY = CurrentBar >= 0 ? chartScale.GetYByValue(Close[0]) : float.NaN;
+            }
+            catch { _currentPriceY = float.NaN; }
+
+            // ── -1. Gap zones (shaded background, drawn before clusters) ─────
+            try { if (ShowGapZones) RenderGapZones(chartControl, chartScale, rtW); }
+            catch (SharpDX.SharpDXException sdxEx) { Print("IQKeyLevelsGPU: SharpDX error RenderGapZones: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
+            catch (Exception ex) { Print("IQKeyLevelsGPU: RenderGapZones [" + ex.GetType().Name + "]: " + ex.Message); }
 
             // ── 0. POC Cluster zones (shaded background, drawn first) ────────
             try { if (ShowPocClusters) RenderPocClusters(chartControl, chartScale, rtW); }
@@ -1215,6 +1482,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             try { if (ShowWallLines && EnableLevel2 && _level2Available) RenderWallLines(chartControl, chartScale, rtW); }
             catch (SharpDX.SharpDXException sdxEx) { Print("IQKeyLevelsGPU: SharpDX error RenderWallLines: " + sdxEx.Message); dxReady = false; DisposeDXResources(); return; }
             catch (Exception ex) { Print("IQKeyLevelsGPU: RenderWallLines [" + ex.GetType().Name + "]: " + ex.Message); }
+
+            // ── Flush merged level labels (Psy, Hi-Lo, RD — collected above) ─
+            try { if (_pendingLevelLabels.Count > 0) FlushLevelLabels(chartScale, rtW); }
+            catch (Exception ex) { Print("IQKeyLevelsGPU: FlushLevelLabels [" + ex.GetType().Name + "]: " + ex.Message); }
         }
 
         #endregion
@@ -1400,34 +1671,33 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!RenderPrereqsOk()) return;
             if (_dxRdBrush == null || _rdHigh == 0 || _rdLow == 0) return;
 
-            float yH = cs.GetYByValue(_rdHigh);
-            float yL = cs.GetYByValue(_rdLow);
+            bool useRight = LabelAnchor == IQKLLabelAnchor.LineEnd;
+            float labelX  = useRight ? rtW - (LevelLabelWidth + 4f) : 4f;
+            labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
 
+            float yH = cs.GetYByValue(_rdHigh);
             if (!float.IsNaN(yH) && !float.IsInfinity(yH))
             {
                 DrawStyledLine(0f, yH, rtW, yH, _dxRdBrush, RdThickness, RdLineStyle);
                 if (GlobalShowLabels && ShowRdLabels && _dxLabelFormat != null)
                 {
-                    string label = string.Format("RD H {0}", Instrument.MasterInstrument.FormatPrice(_rdHigh));
-                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
-                    labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(yH - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
-                    RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
+                    var lbl = new KLLevelLabel { Price = _rdHigh, Prefix = "RD", Side = "H",
+                        LabelXHint = labelX, LabelWidth = LevelLabelWidth,
+                        UseRightBucket = useRight, LineY = yH, Brush = _dxRdBrush };
+                    _pendingLevelLabels.Add(lbl);
                 }
             }
 
+            float yL = cs.GetYByValue(_rdLow);
             if (!float.IsNaN(yL) && !float.IsInfinity(yL))
             {
                 DrawStyledLine(0f, yL, rtW, yL, _dxRdBrush, RdThickness, RdLineStyle);
                 if (GlobalShowLabels && ShowRdLabels && _dxLabelFormat != null)
                 {
-                    string label = string.Format("RD L {0}", Instrument.MasterInstrument.FormatPrice(_rdLow));
-                    float labelX = LabelAnchor == IQKLLabelAnchor.LineEnd ? rtW - (LevelLabelWidth + 4f) : 4f;
-                    labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
-                    float labelY = GetNonCollidingLabelY(yL - 14f, LabelAnchor == IQKLLabelAnchor.LineEnd);
-                    RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(labelX, labelY, LevelLabelWidth, 16f), _dxRdBrush);
+                    var lbl = new KLLevelLabel { Price = _rdLow, Prefix = "RD", Side = "L",
+                        LabelXHint = labelX, LabelWidth = LevelLabelWidth,
+                        UseRightBucket = useRight, LineY = yL, Brush = _dxRdBrush };
+                    _pendingLevelLabels.Add(lbl);
                 }
             }
         }
@@ -1436,37 +1706,76 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (!RenderPrereqsOk()) return;
 
-            // Daily Psy — uses values cached once per bar in OnBarUpdate
+            bool showLabels = GlobalShowLabels && _dxLabelFormat != null;
+            bool useRight   = LabelAnchor == IQKLLabelAnchor.LineEnd;
+            float labelX    = useRight ? rtW - (LevelLabelWidth + 4f) : 4f;
+            labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
+
+            // Draw all psy lines; queue labels into the merge system.
             if (ShowDailyPsy && _dxDailyPsyBrush != null && _psyDayHigh > 0)
             {
-                RenderSingleLine(cc, cs, rtW, _cachedDPsyH, _dxDailyPsyBrush,
-                    GlobalShowLabels && ShowDailyPsyLabels ? "DPsy H" : "", GlobalShowLabels && ShowDailyPsyLabels,
-                    0f, DailyPsyLineStyle, 1f);
-                RenderSingleLine(cc, cs, rtW, _cachedDPsyL, _dxDailyPsyBrush,
-                    GlobalShowLabels && ShowDailyPsyLabels ? "DPsy L" : "", GlobalShowLabels && ShowDailyPsyLabels,
-                    0f, DailyPsyLineStyle, 1f);
+                float yDH = cs.GetYByValue(_cachedDPsyH);
+                float yDL = cs.GetYByValue(_cachedDPsyL);
+                if (!float.IsNaN(yDH) && !float.IsInfinity(yDH))
+                {
+                    DrawStyledLine(0f, yDH, rtW, yDH, _dxDailyPsyBrush, 1f, DailyPsyLineStyle);
+                    if (showLabels && ShowDailyPsyLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _cachedDPsyH, Prefix = "DPsy", Side = "H",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yDH, Brush = _dxDailyPsyBrush });
+                }
+                if (!float.IsNaN(yDL) && !float.IsInfinity(yDL))
+                {
+                    DrawStyledLine(0f, yDL, rtW, yDL, _dxDailyPsyBrush, 1f, DailyPsyLineStyle);
+                    if (showLabels && ShowDailyPsyLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _cachedDPsyL, Prefix = "DPsy", Side = "L",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yDL, Brush = _dxDailyPsyBrush });
+                }
             }
 
-            // Weekly Psy
             if (ShowWeeklyPsy && _dxWeeklyPsyBrush != null && _psyWeekHigh > 0)
             {
-                RenderSingleLine(cc, cs, rtW, _cachedWPsyH, _dxWeeklyPsyBrush,
-                    GlobalShowLabels && ShowWeeklyPsyLabels ? "WPsy H" : "", GlobalShowLabels && ShowWeeklyPsyLabels,
-                    0f, WeeklyPsyLineStyle, 1f);
-                RenderSingleLine(cc, cs, rtW, _cachedWPsyL, _dxWeeklyPsyBrush,
-                    GlobalShowLabels && ShowWeeklyPsyLabels ? "WPsy L" : "", GlobalShowLabels && ShowWeeklyPsyLabels,
-                    0f, WeeklyPsyLineStyle, 1f);
+                float yWH = cs.GetYByValue(_cachedWPsyH);
+                float yWL = cs.GetYByValue(_cachedWPsyL);
+                if (!float.IsNaN(yWH) && !float.IsInfinity(yWH))
+                {
+                    DrawStyledLine(0f, yWH, rtW, yWH, _dxWeeklyPsyBrush, 1f, WeeklyPsyLineStyle);
+                    if (showLabels && ShowWeeklyPsyLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _cachedWPsyH, Prefix = "WPsy", Side = "H",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yWH, Brush = _dxWeeklyPsyBrush });
+                }
+                if (!float.IsNaN(yWL) && !float.IsInfinity(yWL))
+                {
+                    DrawStyledLine(0f, yWL, rtW, yWL, _dxWeeklyPsyBrush, 1f, WeeklyPsyLineStyle);
+                    if (showLabels && ShowWeeklyPsyLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _cachedWPsyL, Prefix = "WPsy", Side = "L",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yWL, Brush = _dxWeeklyPsyBrush });
+                }
             }
 
-            // Monthly Psy
             if (ShowMonthlyPsy && _dxMonthlyPsyBrush != null && _psyMonthHigh > 0)
             {
-                RenderSingleLine(cc, cs, rtW, _cachedMPsyH, _dxMonthlyPsyBrush,
-                    GlobalShowLabels && ShowMonthlyPsyLabels ? "MPsy H" : "", GlobalShowLabels && ShowMonthlyPsyLabels,
-                    0f, MonthlyPsyLineStyle, 1f);
-                RenderSingleLine(cc, cs, rtW, _cachedMPsyL, _dxMonthlyPsyBrush,
-                    GlobalShowLabels && ShowMonthlyPsyLabels ? "MPsy L" : "", GlobalShowLabels && ShowMonthlyPsyLabels,
-                    0f, MonthlyPsyLineStyle, 1f);
+                float yMH = cs.GetYByValue(_cachedMPsyH);
+                float yML = cs.GetYByValue(_cachedMPsyL);
+                if (!float.IsNaN(yMH) && !float.IsInfinity(yMH))
+                {
+                    DrawStyledLine(0f, yMH, rtW, yMH, _dxMonthlyPsyBrush, 1f, MonthlyPsyLineStyle);
+                    if (showLabels && ShowMonthlyPsyLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _cachedMPsyH, Prefix = "MPsy", Side = "H",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yMH, Brush = _dxMonthlyPsyBrush });
+                }
+                if (!float.IsNaN(yML) && !float.IsInfinity(yML))
+                {
+                    DrawStyledLine(0f, yML, rtW, yML, _dxMonthlyPsyBrush, 1f, MonthlyPsyLineStyle);
+                    if (showLabels && ShowMonthlyPsyLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _cachedMPsyL, Prefix = "MPsy", Side = "L",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yML, Brush = _dxMonthlyPsyBrush });
+                }
             }
         }
 
@@ -1474,26 +1783,53 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (!RenderPrereqsOk()) return;
 
-            // Last Week Hi/Lo
+            bool showLabels = GlobalShowLabels && _dxLabelFormat != null;
+            bool useRight   = LabelAnchor == IQKLLabelAnchor.LineEnd;
+            float labelX    = useRight ? rtW - (LevelLabelWidth + 4f) : 4f;
+            labelX = ClampLabelX(labelX, rtW, LevelLabelWidth);
+
             if (ShowLastWeek && _dxWeekHlBrush != null && _lastWeekHigh > 0)
             {
-                RenderSingleLine(cc, cs, rtW, _lastWeekHigh, _dxWeekHlBrush,
-                    GlobalShowLabels && ShowLastWeekLabels ? "LWH" : "", GlobalShowLabels && ShowLastWeekLabels,
-                    0f, LastWeekLineStyle, LastWeekThickness);
-                RenderSingleLine(cc, cs, rtW, _lastWeekLow, _dxWeekHlBrush,
-                    GlobalShowLabels && ShowLastWeekLabels ? "LWL" : "", GlobalShowLabels && ShowLastWeekLabels,
-                    0f, LastWeekLineStyle, LastWeekThickness);
+                float yH = cs.GetYByValue(_lastWeekHigh);
+                float yL = cs.GetYByValue(_lastWeekLow);
+                if (!float.IsNaN(yH) && !float.IsInfinity(yH))
+                {
+                    DrawStyledLine(0f, yH, rtW, yH, _dxWeekHlBrush, LastWeekThickness, LastWeekLineStyle);
+                    if (showLabels && ShowLastWeekLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _lastWeekHigh, Prefix = "LWH", Side = "",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yH, Brush = _dxWeekHlBrush });
+                }
+                if (!float.IsNaN(yL) && !float.IsInfinity(yL))
+                {
+                    DrawStyledLine(0f, yL, rtW, yL, _dxWeekHlBrush, LastWeekThickness, LastWeekLineStyle);
+                    if (showLabels && ShowLastWeekLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _lastWeekLow, Prefix = "LWL", Side = "",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yL, Brush = _dxWeekHlBrush });
+                }
             }
 
-            // Last Month Hi/Lo
             if (ShowLastMonth && _dxMonthHlBrush != null && _prevMonthHigh > 0)
             {
-                RenderSingleLine(cc, cs, rtW, _prevMonthHigh, _dxMonthHlBrush,
-                    GlobalShowLabels && ShowLastMonthLabels ? "LMH" : "", GlobalShowLabels && ShowLastMonthLabels,
-                    0f, LastMonthLineStyle, LastMonthThickness);
-                RenderSingleLine(cc, cs, rtW, _prevMonthLow, _dxMonthHlBrush,
-                    GlobalShowLabels && ShowLastMonthLabels ? "LML" : "", GlobalShowLabels && ShowLastMonthLabels,
-                    0f, LastMonthLineStyle, LastMonthThickness);
+                float yH = cs.GetYByValue(_prevMonthHigh);
+                float yL = cs.GetYByValue(_prevMonthLow);
+                if (!float.IsNaN(yH) && !float.IsInfinity(yH))
+                {
+                    DrawStyledLine(0f, yH, rtW, yH, _dxMonthHlBrush, LastMonthThickness, LastMonthLineStyle);
+                    if (showLabels && ShowLastMonthLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _prevMonthHigh, Prefix = "LMH", Side = "",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yH, Brush = _dxMonthHlBrush });
+                }
+                if (!float.IsNaN(yL) && !float.IsInfinity(yL))
+                {
+                    DrawStyledLine(0f, yL, rtW, yL, _dxMonthHlBrush, LastMonthThickness, LastMonthLineStyle);
+                    if (showLabels && ShowLastMonthLabels)
+                        _pendingLevelLabels.Add(new KLLevelLabel { Price = _prevMonthLow, Prefix = "LML", Side = "",
+                            LabelXHint = labelX, LabelWidth = LevelLabelWidth, UseRightBucket = useRight,
+                            LineY = yL, Brush = _dxMonthHlBrush });
+                }
             }
         }
 
@@ -1604,6 +1940,213 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
+        }
+
+        /// <summary>Renders gap zones (shaded rectangles + labels) with partial-fill shrinking.
+        /// Must be called before RenderPocClusters so clusters render on top.</summary>
+        private void RenderGapZones(ChartControl cc, ChartScale cs, float rtW)
+        {
+            if (!RenderPrereqsOk()) return;
+
+            List<KLGapZone> snapshot;
+            lock (_sessionLock) { snapshot = _gapZones.ToList(); }
+            if (snapshot.Count == 0) return;
+
+            DateTime etToday = _latestBarEtDate != DateTime.MinValue
+                ? _latestBarEtDate
+                : TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, EtZone).Date;
+
+            bool useRight = LabelAnchor == IQKLLabelAnchor.LineEnd;
+
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                KLGapZone z = snapshot[i];
+
+                int daysOld = (etToday - z.CreationDate).Days;
+                if (daysOld > GapMaxAgeDays) continue;
+
+                if (z.IsFilled && GapFilledAction == IQKLGapFilledAction.Remove) continue;
+
+                // Unfilled display bounds:
+                //   gap-up:   displayed = [ZoneLow, NearEdge]  (NearEdge shrinks from ZoneHigh toward ZoneLow)
+                //   gap-down: displayed = [NearEdge, ZoneHigh] (NearEdge grows from ZoneLow toward ZoneHigh)
+                double dispLow  = z.IsGapUp ? z.ZoneLow  : z.NearEdge;
+                double dispHigh = z.IsGapUp ? z.NearEdge : z.ZoneHigh;
+
+                // Show full original bounds when filled + Keep action
+                if (z.IsFilled && GapFilledAction == IQKLGapFilledAction.Keep)
+                { dispLow = z.ZoneLow; dispHigh = z.ZoneHigh; }
+
+                if (dispHigh <= dispLow) continue; // fully collapsed (filled)
+
+                float yTop    = cs.GetYByValue(dispHigh);
+                float yBottom = cs.GetYByValue(dispLow);
+                if (float.IsNaN(yTop) || float.IsInfinity(yTop) ||
+                    float.IsNaN(yBottom) || float.IsInfinity(yBottom)) continue;
+
+                SharpDX.Direct2D1.SolidColorBrush brush = z.IsGapUp ? _dxGapUpBrush : _dxGapDownBrush;
+                if (brush == null) continue;
+
+                float savedOpacity = brush.Opacity;
+                if (z.IsFilled && GapFilledAction == IQKLGapFilledAction.Dim)
+                    brush.Opacity = Math.Max(0.01f, GapDimOpacity / 100f);
+
+                try
+                {
+                    float rectTop    = Math.Min(yTop, yBottom);
+                    float rectHeight = Math.Abs(yBottom - yTop);
+                    RenderTarget.FillRectangle(
+                        new SharpDX.RectangleF(0f, rectTop, rtW, rectHeight), brush);
+
+                    if (GlobalShowLabels && ShowGapLabels && _dxLabelFormat != null)
+                    {
+                        string filledSuffix = (z.IsFilled && GapFilledAction == IQKLGapFilledAction.Dim)
+                            ? " (filled)" : "";
+                        string label = string.Format("{0} Gap  {1}–{2}{3}",
+                            z.OpenDate.ToString("M/d"),
+                            Instrument.MasterInstrument.FormatPrice(z.ZoneLow),
+                            Instrument.MasterInstrument.FormatPrice(z.ZoneHigh),
+                            filledSuffix);
+                        float labelX = useRight ? rtW - (GapLabelWidth + 4f) : 4f;
+                        labelX = ClampLabelX(labelX, rtW, GapLabelWidth);
+                        float labelY = GetNonCollidingLabelY(rectTop + 2f, useRight);
+                        RenderTarget.DrawText(label, _dxLabelFormat,
+                            new SharpDX.RectangleF(labelX, labelY, GapLabelWidth, 16f), brush);
+                    }
+                }
+                finally { brush.Opacity = savedOpacity; }
+            }
+        }
+
+        /// <summary>Flushes all queued level labels (Psy, Hi-Lo, RD) with optional coincident
+        /// merging. When MergeCoincidentLabels is true, labels within ±1 tick of each other
+        /// are collapsed into a single combined label. All underlying lines are already drawn;
+        /// only labels are affected here.</summary>
+        private void FlushLevelLabels(ChartScale cs, float rtW)
+        {
+            if (_pendingLevelLabels.Count == 0 || _dxLabelFormat == null) return;
+
+            int n = _pendingLevelLabels.Count;
+
+            if (!MergeCoincidentLabels)
+            {
+                // No merging — draw each label individually
+                for (int i = 0; i < n; i++)
+                {
+                    KLLevelLabel e = _pendingLevelLabels[i];
+                    string text = BuildSingleLevelLabelText(e);
+                    float labelY = GetNonCollidingLabelY(e.LineY - LabelFontSize - 2f, e.UseRightBucket);
+                    RenderTarget.DrawText(text, _dxLabelFormat,
+                        new SharpDX.RectangleF(e.LabelXHint, labelY, e.LabelWidth, 16f), e.Brush);
+                }
+                return;
+            }
+
+            double tick = Math.Max(TickSize, 1e-9);
+
+            // Sort by price so grouping is transitive and order-independent: entries whose
+            // neighbour-to-neighbour gap is within one tick form a single contiguous cluster.
+            var sorted = new System.Collections.Generic.List<KLLevelLabel>(_pendingLevelLabels);
+            sorted.Sort((a, b) => a.Price.CompareTo(b.Price));
+
+            var rendered = new bool[n];
+            int start = 0;
+            while (start < n)
+            {
+                int end = start;
+                while (end + 1 < n && (sorted[end + 1].Price - sorted[end].Price) <= tick)
+                    end++;
+
+                for (int i = start; i <= end; i++)
+                {
+                    if (rendered[i]) continue;
+                    rendered[i] = true;
+
+                    KLLevelLabel baseEntry = sorted[i];
+                    var group = new System.Collections.Generic.List<KLLevelLabel> { baseEntry };
+
+                    for (int j = i + 1; j <= end; j++)
+                    {
+                        if (rendered[j]) continue;
+                        KLLevelLabel other = sorted[j];
+                        // Psy entries (D/W/MPsy) must share the same side (H or L) before merging;
+                        // cross-side coincidences (e.g. DPsy H ≈ WPsy L) are rendered separately.
+                        bool basePsy  = baseEntry.Prefix.EndsWith("Psy");
+                        bool otherPsy = other.Prefix.EndsWith("Psy");
+                        if (basePsy && otherPsy && other.Side != baseEntry.Side) continue;
+                        group.Add(other);
+                        rendered[j] = true;
+                    }
+
+                    string mergedText = group.Count > 1
+                        ? BuildMergedLevelLabelText(group, baseEntry.Price)
+                        : BuildSingleLevelLabelText(baseEntry);
+
+                    float labelY = GetNonCollidingLabelY(baseEntry.LineY - LabelFontSize - 2f, baseEntry.UseRightBucket);
+                    RenderTarget.DrawText(mergedText, _dxLabelFormat,
+                        new SharpDX.RectangleF(baseEntry.LabelXHint, labelY, baseEntry.LabelWidth, 16f),
+                        baseEntry.Brush);
+                }
+
+                start = end + 1;
+            }
+        }
+
+        private string BuildSingleLevelLabelText(KLLevelLabel e)
+        {
+            string priceStr = Instrument.MasterInstrument.FormatPrice(e.Price);
+            // HiLo prefixes already include H/L in the prefix ("LWH", "LWL", "LMH", "LML")
+            if (e.Side.Length == 0)
+                return string.Format("{0} {1}", e.Prefix, priceStr);
+            return string.Format("{0} {1} {2}", e.Prefix, e.Side, priceStr);
+        }
+
+        private string BuildMergedLevelLabelText(
+            System.Collections.Generic.List<KLLevelLabel> group, double price)
+        {
+            string priceStr = Instrument.MasterInstrument.FormatPrice(price);
+
+            // Separate Psy entries (prefix ends with "Psy") from HiLo/RD entries
+            bool hasD = false, hasW = false, hasM = false;
+            string psySide = "";
+            var nonPsyParts = new System.Text.StringBuilder();
+
+            for (int k = 0; k < group.Count; k++)
+            {
+                KLLevelLabel e = group[k];
+                if (e.Prefix == "DPsy") { hasD = true; psySide = e.Side; }
+                else if (e.Prefix == "WPsy") { hasW = true; psySide = e.Side; }
+                else if (e.Prefix == "MPsy") { hasM = true; psySide = e.Side; }
+                else
+                {
+                    // HiLo (LWH/LWL/LMH/LML) or RD (with Side)
+                    if (nonPsyParts.Length > 0) nonPsyParts.Append(" + ");
+                    if (e.Side.Length == 0) nonPsyParts.Append(e.Prefix);
+                    else nonPsyParts.Append(e.Prefix + " " + e.Side);
+                }
+            }
+
+            // Build Psy prefix (D, W, M combined)
+            string psyPart = "";
+            if (hasD || hasW || hasM)
+            {
+                var psyCode = new System.Text.StringBuilder();
+                if (hasD) psyCode.Append("D");
+                if (hasW) { if (psyCode.Length > 0) psyCode.Append("+"); psyCode.Append("W"); }
+                if (hasM) { if (psyCode.Length > 0) psyCode.Append("+"); psyCode.Append("M"); }
+                psyPart = psyCode + "Psy " + psySide;
+            }
+
+            // Combine parts
+            var result = new System.Text.StringBuilder();
+            if (nonPsyParts.Length > 0)
+            {
+                result.Append(nonPsyParts);
+                if (psyPart.Length > 0) { result.Append(" + "); result.Append(psyPart); }
+            }
+            else { result.Append(psyPart); }
+            result.Append(" "); result.Append(priceStr);
+            return result.ToString();
         }
 
         /// <summary>Render a single full-width horizontal line with optional label.</summary>
@@ -1793,15 +2336,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             // labels, and right-edge / line-end labels only collide with their own bucket.
             HashSet<int> bucket = useRightBucket ? _usedLabelYRight : _usedLabelYLeft;
 
+            // Part D: use font-sized step + margin to guarantee readable separation.
+            int step      = Math.Max((int)labelHeight, LabelFontSize + 4);
+            int threshold = LabelFontSize + 3;
+
             int yInt = (int)y;
-            int step = (int)labelHeight;
             bool collision = true;
-            while (collision)
+            int maxIter = 80; // guard against infinite loop
+            while (collision && maxIter-- > 0)
             {
                 collision = false;
-                foreach (int used in bucket)
+                // Part D: keep-out band — never overprint the current-price marker box
+                if (!float.IsNaN(_currentPriceY) && Math.Abs(yInt - (int)_currentPriceY) < LabelFontSize)
+                { collision = true; }
+
+                if (!collision)
                 {
-                    if (Math.Abs(used - yInt) < step) { collision = true; break; }
+                    foreach (int used in bucket)
+                    {
+                        if (Math.Abs(used - yInt) < threshold) { collision = true; break; }
+                    }
                 }
                 if (collision) yInt += step;
             }
@@ -1930,6 +2484,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // POC Cluster zone shading
                 _dxClusterBrush = MakeBrush(rt, ClusterColor, ClusterOpacity / 100f);
 
+                // Gap zone brushes
+                _dxGapUpBrush   = MakeBrush(rt, GapUpColor,   GapOpacity / 100f);
+                _dxGapDownBrush = MakeBrush(rt, GapDownColor, GapOpacity / 100f);
+
                 dxReady = true;
             }
             catch (Exception ex)
@@ -1977,6 +2535,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref _dxLondonOcBrush);
             DisposeRef(ref _dxNyOcBrush);
             DisposeRef(ref _dxClusterBrush);
+            DisposeRef(ref _dxGapUpBrush);
+            DisposeRef(ref _dxGapDownBrush);
         }
 
         private static void DisposeRef<T>(ref T resource) where T : class, IDisposable
@@ -2191,17 +2751,34 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Range(5.0, 200.0)]
         [Display(Name = "Cluster Zone Width (points)", Order = 2, GroupName = "1c. POC Clusters",
-            Description = "Max price spread (in points) between the lowest and highest POC in a cluster group.")]
+            Description = "Max price spread (in points) between the lowest and highest POC in a cluster group. Used when Cluster Width Mode = FixedPoints.")]
         public double ClusterZoneWidthPoints { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Cluster Width Mode", Order = 3, GroupName = "1c. POC Clusters",
+            Description = "FixedPoints: use Cluster Zone Width (points). PercentOfADR: % of average daily range (auto-scales across NQ/ES/RTY/YM/CL/GC). Ticks: fixed tick count.")]
+        public IQKLWidthMode ClusterWidthMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.25, 10.0)]
+        [Display(Name = "Cluster Width % of ADR", Order = 4, GroupName = "1c. POC Clusters",
+            Description = "Used when Cluster Width Mode = PercentOfADR. Zone width = this % of the rolling average daily range. Falls back to FixedPoints if fewer than 3 completed days are available.")]
+        public double ClusterWidthPctADR { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(4, 2000)]
+        [Display(Name = "Cluster Width (ticks)", Order = 5, GroupName = "1c. POC Clusters",
+            Description = "Used when Cluster Width Mode = Ticks. Zone width = ticks × TickSize.")]
+        public int ClusterWidthTicks { get; set; }
+
+        [NinjaScriptProperty]
         [Range(2, 5)]
-        [Display(Name = "Cluster Min POC Count", Order = 3, GroupName = "1c. POC Clusters",
+        [Display(Name = "Cluster Min POC Count", Order = 6, GroupName = "1c. POC Clusters",
             Description = "Minimum number of POCs grouped within the zone width required to form a visible cluster zone.")]
         public int ClusterMinPocCount { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Cluster Color", Order = 4, GroupName = "1c. POC Clusters")]
+        [Display(Name = "Cluster Color", Order = 7, GroupName = "1c. POC Clusters")]
         [XmlIgnore]
         public System.Windows.Media.Brush ClusterColor { get; set; }
         [Browsable(false)]
@@ -2210,21 +2787,21 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(5, 50)]
-        [Display(Name = "Cluster Opacity %", Order = 5, GroupName = "1c. POC Clusters")]
+        [Display(Name = "Cluster Opacity %", Order = 8, GroupName = "1c. POC Clusters")]
         public int ClusterOpacity { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Cluster Labels", Order = 6, GroupName = "1c. POC Clusters",
+        [Display(Name = "Show Cluster Labels", Order = 9, GroupName = "1c. POC Clusters",
             Description = "Toggle the \"POC Cluster ×N\" label drawn on each zone.")]
         public bool ShowClusterLabels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Cluster Audio Alert", Order = 7, GroupName = "1c. POC Clusters",
+        [Display(Name = "Cluster Audio Alert", Order = 10, GroupName = "1c. POC Clusters",
             Description = "Play an alert sound the first time price enters a cluster zone (real-time only).")]
         public bool ClusterAudioAlert { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Suppress POC Labels In Clusters", Order = 8, GroupName = "1c. POC Clusters",
+        [Display(Name = "Suppress POC Labels In Clusters", Order = 11, GroupName = "1c. POC Clusters",
             Description = "When enabled (default), individual session POC labels are hidden for any POC that belongs to a rendered cluster zone. The cluster label (e.g. \"POC Cluster ×4  29800.75–29829.25  (L,N)\") carries all relevant information, eliminating label pile-up inside the zone. Disable to restore individual POC labels regardless of cluster membership.")]
         public bool SuppressPocLabelsInClusters { get; set; }
 
@@ -2401,6 +2978,89 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Fade Older Open/Close", Order = 2, GroupName = "1b. Session Opens/Closes — General",
             Description = "Progressively reduce opacity of older Open/Close lines (−12% per day back).")]
         public bool FadeOlderOC { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Properties — 1d. Gap Zones
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Gap Zones", Order = 1, GroupName = "1d. Gap Zones",
+            Description = "Master toggle for session gap zones (Globex open vs prior close). Applies to daily and weekend gaps.")]
+        public bool ShowGapZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Gap Up Color", Order = 2, GroupName = "1d. Gap Zones",
+            Description = "Fill color for bullish gaps (open > prevClose).")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush GapUpColor { get; set; }
+        [Browsable(false)]
+        public string GapUpColorSerializable
+        { get { return Serialize.BrushToString(GapUpColor); } set { GapUpColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Gap Down Color", Order = 3, GroupName = "1d. Gap Zones",
+            Description = "Fill color for bearish gaps (open < prevClose).")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush GapDownColor { get; set; }
+        [Browsable(false)]
+        public string GapDownColorSerializable
+        { get { return Serialize.BrushToString(GapDownColor); } set { GapDownColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Range(5, 50)]
+        [Display(Name = "Gap Opacity %", Order = 4, GroupName = "1d. Gap Zones",
+            Description = "Fill opacity for unfilled gap zone rectangles (5–50).")]
+        public int GapOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 14)]
+        [Display(Name = "Gap Max Age (days)", Order = 5, GroupName = "1d. Gap Zones",
+            Description = "Number of calendar days a gap zone is displayed before being removed (1–14).")]
+        public int GapMaxAgeDays { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Gap Labels", Order = 6, GroupName = "1d. Gap Zones",
+            Description = "Toggle the gap zone label (e.g. \"7/12 Gap  29980.25–30038.50\").")]
+        public bool ShowGapLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Gap Filled Action", Order = 7, GroupName = "1d. Gap Zones",
+            Description = "What happens when price fully trades through a gap zone: Remove (stop rendering), Dim (keep at reduced opacity with \" (filled)\" label suffix), Keep (unchanged).")]
+        public IQKLGapFilledAction GapFilledAction { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 30)]
+        [Display(Name = "Gap Dim Opacity %", Order = 8, GroupName = "1d. Gap Zones",
+            Description = "Opacity used when Gap Filled Action = Dim (1–30). Default 8%.")]
+        public int GapDimOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Gap Audio Alert", Order = 9, GroupName = "1d. Gap Zones",
+            Description = "Play a one-shot alert the first time price enters an unfilled gap zone (real-time only).")]
+        public bool GapAudioAlert { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Gap Min Size Mode", Order = 10, GroupName = "1d. Gap Zones",
+            Description = "How the minimum gap size is measured: FixedPoints (GapMinSizePoints), PercentOfADR (% of rolling avg daily range — self-scales across instruments), or Ticks.")]
+        public IQKLWidthMode GapMinSizeMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.25, 1000.0)]
+        [Display(Name = "Gap Min Size (points)", Order = 11, GroupName = "1d. Gap Zones",
+            Description = "Minimum gap size in points. Used when Gap Min Size Mode = FixedPoints; also used as fallback when ADR data is insufficient.")]
+        public double GapMinSizePoints { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.1, 10.0)]
+        [Display(Name = "Gap Min Size % of ADR", Order = 12, GroupName = "1d. Gap Zones",
+            Description = "Minimum gap size as % of rolling average daily range. Used when Gap Min Size Mode = PercentOfADR. Self-scales across NQ, ES, RTY, YM, CL, GC.")]
+        public double GapMinSizePctADR { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 2000)]
+        [Display(Name = "Gap Min Size (ticks)", Order = 13, GroupName = "1d. Gap Zones",
+            Description = "Minimum gap size in ticks. Used when Gap Min Size Mode = Ticks.")]
+        public int GapMinSizeTicks { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -2730,6 +3390,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Extend Lines to Right Edge", Order = 4, GroupName = "7. General",
             Description = "When enabled (default), POC and Open/Close lines extend to the chart's right edge. When disabled, they render only out to the last printed bar.")]
         public bool ExtendLinesToRightEdge { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Merge Coincident Labels", Order = 5, GroupName = "7. General",
+            Description = "When enabled (default), level labels (Psy, Hi-Lo, RD) at the same price (within ±1 tick) are merged into a single label, e.g. \"D+WPsy H 29962.50\" or \"LWH + MPsy H 30094.00\".")]
+        public bool MergeCoincidentLabels { get; set; }
 
         #endregion
     }
