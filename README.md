@@ -368,8 +368,6 @@ IQKeyLevelsGPU plots confluent price levels from multiple analysis layers on a s
 
 ---
 
----
-
 # SmartTickAudio
 
 **Audio-only, self-calibrating order-flow alert indicator for NinjaTrader 8**

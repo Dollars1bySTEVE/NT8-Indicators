@@ -941,13 +941,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             prices.Sort();
 
             var newZones = new List<KLClusterZone>();
+            double effectiveWidth = ComputeEffectiveClusterWidth();
             int idx = 0;
             while (idx < prices.Count)
             {
                 int    j        = idx;
                 double groupMin = prices[idx];
                 double groupMax = prices[idx];
-                while (j + 1 < prices.Count && (prices[j + 1] - groupMin) <= ComputeEffectiveClusterWidth())
+                while (j + 1 < prices.Count && (prices[j + 1] - groupMin) <= effectiveWidth)
                 {
                     j++;
                     groupMax = prices[j];
@@ -2026,7 +2027,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (_pendingLevelLabels.Count == 0 || _dxLabelFormat == null) return;
 
             int n = _pendingLevelLabels.Count;
-            var rendered = new bool[n];
 
             if (!MergeCoincidentLabels)
             {
@@ -2044,20 +2044,31 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             double tick = Math.Max(TickSize, 1e-9);
 
-            for (int i = 0; i < n; i++)
+            // Sort by price so grouping is transitive and order-independent: entries whose
+            // neighbour-to-neighbour gap is within one tick form a single contiguous cluster.
+            var sorted = new System.Collections.Generic.List<KLLevelLabel>(_pendingLevelLabels);
+            sorted.Sort((a, b) => a.Price.CompareTo(b.Price));
+
+            var rendered = new bool[n];
+            int start = 0;
+            while (start < n)
             {
-                if (rendered[i]) continue;
-                rendered[i] = true;
+                int end = start;
+                while (end + 1 < n && (sorted[end + 1].Price - sorted[end].Price) <= tick)
+                    end++;
 
-                KLLevelLabel baseEntry = _pendingLevelLabels[i];
-                var group = new System.Collections.Generic.List<KLLevelLabel> { baseEntry };
-
-                for (int j = i + 1; j < n; j++)
+                for (int i = start; i <= end; i++)
                 {
-                    if (rendered[j]) continue;
-                    KLLevelLabel other = _pendingLevelLabels[j];
-                    if (Math.Abs(other.Price - baseEntry.Price) <= tick)
+                    if (rendered[i]) continue;
+                    rendered[i] = true;
+
+                    KLLevelLabel baseEntry = sorted[i];
+                    var group = new System.Collections.Generic.List<KLLevelLabel> { baseEntry };
+
+                    for (int j = i + 1; j <= end; j++)
                     {
+                        if (rendered[j]) continue;
+                        KLLevelLabel other = sorted[j];
                         // Psy entries (D/W/MPsy) must share the same side (H or L) before merging;
                         // cross-side coincidences (e.g. DPsy H ≈ WPsy L) are rendered separately.
                         bool basePsy  = baseEntry.Prefix.EndsWith("Psy");
@@ -2066,16 +2077,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                         group.Add(other);
                         rendered[j] = true;
                     }
+
+                    string mergedText = group.Count > 1
+                        ? BuildMergedLevelLabelText(group, baseEntry.Price)
+                        : BuildSingleLevelLabelText(baseEntry);
+
+                    float labelY = GetNonCollidingLabelY(baseEntry.LineY - LabelFontSize - 2f, baseEntry.UseRightBucket);
+                    RenderTarget.DrawText(mergedText, _dxLabelFormat,
+                        new SharpDX.RectangleF(baseEntry.LabelXHint, labelY, baseEntry.LabelWidth, 16f),
+                        baseEntry.Brush);
                 }
 
-                string mergedText = group.Count > 1
-                    ? BuildMergedLevelLabelText(group, baseEntry.Price)
-                    : BuildSingleLevelLabelText(baseEntry);
-
-                float labelY = GetNonCollidingLabelY(baseEntry.LineY - LabelFontSize - 2f, baseEntry.UseRightBucket);
-                RenderTarget.DrawText(mergedText, _dxLabelFormat,
-                    new SharpDX.RectangleF(baseEntry.LabelXHint, labelY, baseEntry.LabelWidth, 16f),
-                    baseEntry.Brush);
+                start = end + 1;
             }
         }
 
