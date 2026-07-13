@@ -273,6 +273,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private const float ZoneLabelTextHeight = 16f;
         private const float ZoneLabelChipPadX   = 3f;
         private const float ZoneLabelChipPadY   = 2f;
+        private const float ZoneLabelMinWidth   = 16f;
+        private const float LabelFontMinPx      = 8f;
+        private const float LabelFontMaxPx      = 16f;
+        private const float ZoneLabelCharWidthFactor = 0.62f;
+        private const float ZoneLabelChipAlpha  = 0.65f;
         private const double ClusterMatchToleranceFactor = 0.001;
         private const double ClusterZonePaddingTickFactor = 2.0;
         private const double ClusterZonePaddingMaxPoints = 2.0;
@@ -1672,7 +1677,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, useRight, labelBlockHeight);
                     if (ZoneLabelBackground && _dxZoneLabelChipBrush != null)
                     {
-                        float chipWidth = Math.Min(ClusterLabelWidth, EstimateZoneLabelTextWidth(label, ClusterLabelWidth) + ZoneLabelChipPadX * 2f);
+                        float chipWidth = CalculateZoneLabelChipWidth(label, ClusterLabelWidth);
                         RenderTarget.FillRectangle(new SharpDX.RectangleF(labelX, labelY, chipWidth, chipHeight), _dxZoneLabelChipBrush);
                     }
                     float textY = ZoneLabelBackground ? labelY + ZoneLabelChipPadY : labelY;
@@ -2031,7 +2036,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         float labelY = GetNonCollidingLabelY(rectTop + 2f, useRight, labelBlockHeight);
                         if (ZoneLabelBackground && _dxZoneLabelChipBrush != null)
                         {
-                            float chipWidth = Math.Min(GapLabelWidth, EstimateZoneLabelTextWidth(label, GapLabelWidth) + ZoneLabelChipPadX * 2f);
+                            float chipWidth = CalculateZoneLabelChipWidth(label, GapLabelWidth);
                             RenderTarget.FillRectangle(new SharpDX.RectangleF(labelX, labelY, chipWidth, chipHeight), _dxZoneLabelChipBrush);
                         }
                         float textY = ZoneLabelBackground ? labelY + ZoneLabelChipPadY : labelY;
@@ -2392,10 +2397,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private float EstimateZoneLabelTextWidth(string text, float maxWidth)
         {
-            if (string.IsNullOrEmpty(text)) return 16f;
-            float fontPx = Math.Max(8f, Math.Min(16f, (float)LabelFontSize));
-            float estimated = text.Length * (fontPx * 0.62f);
-            return Math.Max(16f, Math.Min(maxWidth, estimated));
+            if (string.IsNullOrEmpty(text)) return ZoneLabelMinWidth;
+            float fontPx = Math.Max(LabelFontMinPx, Math.Min(LabelFontMaxPx, (float)LabelFontSize));
+            float estimated = text.Length * (fontPx * ZoneLabelCharWidthFactor);
+            return Math.Max(ZoneLabelMinWidth, Math.Min(maxWidth, estimated));
+        }
+
+        private float CalculateZoneLabelChipWidth(string text, float maxWidth)
+        {
+            return Math.Min(maxWidth, EstimateZoneLabelTextWidth(text, maxWidth) + ZoneLabelChipPadX * 2f);
         }
 
         /// <summary>Clamps a label's X position so its full width stays within the visible chart
@@ -2485,7 +2495,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 _dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 _dxLabelFormat  = new SharpDX.DirectWrite.TextFormat(_dxWriteFactory, "Consolas",
-                    Math.Max(8f, Math.Min(16f, (float)LabelFontSize)));
+                    Math.Max(LabelFontMinPx, Math.Min(LabelFontMaxPx, (float)LabelFontSize)));
 
                 // Session POC brushes
                 _dxAsiaPocBrush   = MakeBrush(rt, AsiaPocColor,    AsiaPocOpacity   / 100f);
@@ -2525,7 +2535,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _dxGapDownBrush = MakeBrush(rt, GapDownColor, GapOpacity / 100f);
                 _dxGapUpLabelBrush   = MakeBrush(rt, GapUpColor, 1f);
                 _dxGapDownLabelBrush = MakeBrush(rt, GapDownColor, 1f);
-                _dxZoneLabelChipBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0f, 0f, 0f, 0.65f));
+                _dxZoneLabelChipBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0f, 0f, 0f, ZoneLabelChipAlpha));
 
                 dxReady = true;
             }
