@@ -270,6 +270,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private const float LevelLabelWidth     = 200f;  // General labels "RD H / Psy H / LWH …"
         private const float ClusterLabelWidth   = 300f;  // Cluster labels "POC Cluster ×4  29800.75–29829.25  (A,L,N)"
         private const float GapLabelWidth       = 310f;  // Gap zone labels "7/12 Gap  29980.25–30038.50"
+        private const float ZoneLabelTextHeight = 16f;
+        private const float ZoneLabelChipPadX   = 3f;
+        private const float ZoneLabelChipPadY   = 2f;
         private const double ClusterMatchToleranceFactor = 0.001;
         private const double ClusterZonePaddingTickFactor = 2.0;
         private const double ClusterZonePaddingMaxPoints = 2.0;
@@ -317,10 +320,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // POC Cluster zone shading brush
         private SharpDX.Direct2D1.SolidColorBrush _dxClusterBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxClusterLabelBrush;
 
         // Gap zone brushes
         private SharpDX.Direct2D1.SolidColorBrush _dxGapUpBrush;
         private SharpDX.Direct2D1.SolidColorBrush _dxGapDownBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxGapUpLabelBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxGapDownLabelBrush;
+        private SharpDX.Direct2D1.SolidColorBrush _dxZoneLabelChipBrush;
 
         // Label collision avoidance — cleared per OnRender frame, bucketed by screen region so
         // left-anchored and right-anchored labels only collide against their own bucket.
@@ -504,6 +511,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LabelAnchor      = IQKLLabelAnchor.LineStart;
                 ExtendLinesToRightEdge = true;
                 MergeCoincidentLabels  = true;
+                ZoneLabelBackground    = true;
 
                 // 1d. Gap Zones
                 ShowGapZones       = true;
@@ -1659,9 +1667,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // render surface and doesn't bleed into the price axis.
                     float labelX = useRight ? rtW - (ClusterLabelWidth + 4f) : 4f;
                     labelX = ClampLabelX(labelX, rtW, ClusterLabelWidth);
-                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, useRight);
+                    float chipHeight = ZoneLabelTextHeight + ZoneLabelChipPadY * 2f;
+                    float labelBlockHeight = ZoneLabelBackground ? chipHeight : ZoneLabelTextHeight;
+                    float labelY = GetNonCollidingLabelY(Math.Min(yTop, yBottom) + 2f, useRight, labelBlockHeight);
+                    if (ZoneLabelBackground && _dxZoneLabelChipBrush != null)
+                    {
+                        float chipWidth = Math.Min(ClusterLabelWidth, EstimateZoneLabelTextWidth(label, ClusterLabelWidth) + ZoneLabelChipPadX * 2f);
+                        RenderTarget.FillRectangle(new SharpDX.RectangleF(labelX, labelY, chipWidth, chipHeight), _dxZoneLabelChipBrush);
+                    }
+                    float textY = ZoneLabelBackground ? labelY + ZoneLabelChipPadY : labelY;
+                    SharpDX.Direct2D1.SolidColorBrush labelBrush = _dxClusterLabelBrush ?? _dxClusterBrush;
                     RenderTarget.DrawText(label, _dxLabelFormat,
-                        new SharpDX.RectangleF(labelX, labelY, ClusterLabelWidth, 16f), _dxClusterBrush);
+                        new SharpDX.RectangleF(labelX, textY, ClusterLabelWidth, ZoneLabelTextHeight), labelBrush);
                 }
             }
         }
@@ -2009,9 +2026,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                             filledSuffix);
                         float labelX = useRight ? rtW - (GapLabelWidth + 4f) : 4f;
                         labelX = ClampLabelX(labelX, rtW, GapLabelWidth);
-                        float labelY = GetNonCollidingLabelY(rectTop + 2f, useRight);
+                        float chipHeight = ZoneLabelTextHeight + ZoneLabelChipPadY * 2f;
+                        float labelBlockHeight = ZoneLabelBackground ? chipHeight : ZoneLabelTextHeight;
+                        float labelY = GetNonCollidingLabelY(rectTop + 2f, useRight, labelBlockHeight);
+                        if (ZoneLabelBackground && _dxZoneLabelChipBrush != null)
+                        {
+                            float chipWidth = Math.Min(GapLabelWidth, EstimateZoneLabelTextWidth(label, GapLabelWidth) + ZoneLabelChipPadX * 2f);
+                            RenderTarget.FillRectangle(new SharpDX.RectangleF(labelX, labelY, chipWidth, chipHeight), _dxZoneLabelChipBrush);
+                        }
+                        float textY = ZoneLabelBackground ? labelY + ZoneLabelChipPadY : labelY;
+                        SharpDX.Direct2D1.SolidColorBrush labelBrush = z.IsGapUp ? _dxGapUpLabelBrush : _dxGapDownLabelBrush;
+                        if (labelBrush == null) labelBrush = brush;
                         RenderTarget.DrawText(label, _dxLabelFormat,
-                            new SharpDX.RectangleF(labelX, labelY, GapLabelWidth, 16f), brush);
+                            new SharpDX.RectangleF(labelX, textY, GapLabelWidth, ZoneLabelTextHeight), labelBrush);
                     }
                 }
                 finally { brush.Opacity = savedOpacity; }
@@ -2337,8 +2364,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             HashSet<int> bucket = useRightBucket ? _usedLabelYRight : _usedLabelYLeft;
 
             // Part D: use font-sized step + margin to guarantee readable separation.
-            int step      = Math.Max((int)labelHeight, LabelFontSize + 4);
-            int threshold = LabelFontSize + 3;
+            int step      = Math.Max((int)Math.Ceiling(labelHeight), LabelFontSize + 4);
+            int threshold = Math.Max((int)Math.Ceiling(labelHeight), LabelFontSize + 3);
 
             int yInt = (int)y;
             bool collision = true;
@@ -2361,6 +2388,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             bucket.Add(yInt);
             return (float)yInt;
+        }
+
+        private float EstimateZoneLabelTextWidth(string text, float maxWidth)
+        {
+            if (string.IsNullOrEmpty(text)) return 16f;
+            float fontPx = Math.Max(8f, Math.Min(16f, (float)LabelFontSize));
+            float estimated = text.Length * (fontPx * 0.62f);
+            return Math.Max(16f, Math.Min(maxWidth, estimated));
         }
 
         /// <summary>Clamps a label's X position so its full width stays within the visible chart
@@ -2483,10 +2518,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // POC Cluster zone shading
                 _dxClusterBrush = MakeBrush(rt, ClusterColor, ClusterOpacity / 100f);
+                _dxClusterLabelBrush = MakeBrush(rt, ClusterColor, 1f);
 
                 // Gap zone brushes
                 _dxGapUpBrush   = MakeBrush(rt, GapUpColor,   GapOpacity / 100f);
                 _dxGapDownBrush = MakeBrush(rt, GapDownColor, GapOpacity / 100f);
+                _dxGapUpLabelBrush   = MakeBrush(rt, GapUpColor, 1f);
+                _dxGapDownLabelBrush = MakeBrush(rt, GapDownColor, 1f);
+                _dxZoneLabelChipBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new SharpDX.Color4(0f, 0f, 0f, 0.65f));
 
                 dxReady = true;
             }
@@ -2535,8 +2574,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref _dxLondonOcBrush);
             DisposeRef(ref _dxNyOcBrush);
             DisposeRef(ref _dxClusterBrush);
+            DisposeRef(ref _dxClusterLabelBrush);
             DisposeRef(ref _dxGapUpBrush);
             DisposeRef(ref _dxGapDownBrush);
+            DisposeRef(ref _dxGapUpLabelBrush);
+            DisposeRef(ref _dxGapDownLabelBrush);
+            DisposeRef(ref _dxZoneLabelChipBrush);
         }
 
         private static void DisposeRef<T>(ref T resource) where T : class, IDisposable
@@ -3395,6 +3438,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Merge Coincident Labels", Order = 5, GroupName = "7. General",
             Description = "When enabled (default), level labels (Psy, Hi-Lo, RD) at the same price (within ±1 tick) are merged into a single label, e.g. \"D+WPsy H 29962.50\" or \"LWH + MPsy H 30094.00\".")]
         public bool MergeCoincidentLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Zone Label Background", Order = 6, GroupName = "7. General",
+            Description = "Draw a subtle dark background chip behind gap/cluster zone labels for readability over fills/candles.")]
+        public bool ZoneLabelBackground { get; set; }
 
         #endregion
     }
