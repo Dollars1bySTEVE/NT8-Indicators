@@ -21,15 +21,19 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///
     /// Always-on background "warning light": red while price is overbought,
     /// green while oversold, clear otherwise. Rendered via SharpDX for clean,
-    /// fast visuals (drawn behind the chart bars). Optional order-flow (delta)
-    /// and Level 2 book-imbalance boosts intensify the tint when flow confirms
-    /// the looming reversal. Optional on-chart status readout.
+    /// fast visuals (drawn behind the chart bars; ZOrder is re-enforced every
+    /// render pass because NT8 can reshuffle Z-orders at runtime). Optional
+    /// order-flow (delta) and Level 2 book-imbalance boosts intensify the tint
+    /// when flow confirms the looming reversal. Optional on-chart status readout.
     ///
     /// Signal filtering (visuals only; ZoneState stays raw):
     ///  - Min Bars In Zone: zone must persist N consecutive bars (kills brief blips)
     ///  - Min RSI Depth: RSI must reach N points past the threshold during the run
     ///    (kills shallow zones). Thresholds define the ZONE; depth defines what's
-    ///    WORTH SHOWING. Both back-fill retroactively on confirmation.
+    ///    WORTH SHOWING. Both back-fill retroactively on confirmation — and
+    ///    retro-CLEAR if an intrabar confirmation flickers away before holding
+    ///    (prevents "ghost" bands from one-tick confirmations under
+    ///    Calculate.OnPriceChange).
     ///
     /// Follow Mode (optional, default OFF — preserves classic behavior):
     ///  Once a band confirms, it latches and keeps painting at a steady reduced
@@ -251,7 +255,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.Historical)
             {
-                // Render behind the chart bars so the tint never overpowers them
+                // Render behind the chart bars so the tint never overpowers them.
+                // (Also re-enforced every render pass — NT8 can reshuffle Z-orders
+                // at runtime when indicators/templates change.)
                 if (ChartBars != null)
                     ZOrder = ChartBars.ZOrder - 1;
             }
@@ -352,6 +358,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     runConfirmed = false;
 
+                    // Retroactive CLEAR: with Calculate.OnPriceChange, a confirmation
+                    // can flicker true for a tick (run/depth momentarily pass), back-fill
+                    // the run, then flicker away — leaving orphaned "ghost" paint on the
+                    // earlier bars of the run. If this run is NOT currently confirmed and
+                    // we're not following, un-paint any zone-paint on its bars.
+                    // (Follow bars from a previously confirmed latch are legit and kept.)
+                    if (!(EnableFollowMode && followZone != 0))
+                    {
+                        for (int back = 1; back <= CurrentBar; back++)
+                        {
+                            if (zoneSeries[back] != zone) break;
+                            if (paintSeries[back] == zone)
+                            {
+                                paintSeries[back] = 0;
+                                alphaSeries[back] = 0;
+                            }
+                        }
+                    }
+
                     // Still following a previous confirmed band? Keep painting through
                     // this unconfirmed same-side or opposite pending zone.
                     if (EnableFollowMode && followZone != 0)
@@ -369,6 +394,47 @@ namespace NinjaTrader.NinjaScript.Indicators
             zoneRunLength = 0;
             runDepthReached = false;
             runConfirmed = false;
+
+            // Retroactive CLEAR on zone exit: if the just-ended run never held its
+            // confirmation (an intrabar flicker back-filled it), un-paint it now.
+            // Only clear when there is no active follow claiming those bars.
+            if (!(EnableFollowMode && followZone != 0) && CurrentBar > 0)
+            {
+                double prevZone = zoneSeries[1];
+                if (prevZone != 0)
+                {
+                    // Re-verify the completed run actually met both conditions
+                    int runLen = 0;
+                    bool depthHeld = MinRsiDepth <= 0;
+                    double thr = prevZone == 1 ? OverboughtThreshold : OversoldThreshold;
+                    double dTarget = prevZone == 1 ? thr + MinRsiDepth : thr - MinRsiDepth;
+
+                    for (int back = 1; back <= CurrentBar; back++)
+                    {
+                        if (zoneSeries[back] != prevZone) break;
+                        runLen++;
+                        if (!depthHeld)
+                        {
+                            double backRsi = rsiSeries[back];
+                            if (prevZone == 1 ? backRsi >= dTarget : backRsi <= dTarget)
+                                depthHeld = true;
+                        }
+                    }
+
+                    bool runWasValid = runLen >= MinBarsInZone && depthHeld;
+                    if (!runWasValid)
+                    {
+                        for (int back = 1; back <= runLen; back++)
+                        {
+                            if (paintSeries[back] == prevZone)
+                            {
+                                paintSeries[back] = 0;
+                                alphaSeries[back] = 0;
+                            }
+                        }
+                    }
+                }
+            }
 
             if (EnableFollowMode && followZone != 0)
             {
@@ -544,6 +610,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (Bars == null || ChartBars == null || dxObBrush == null || dxOsBrush == null)
                 return;
+
+            // Self-healing ZOrder: NT8 can reshuffle Z-orders at runtime (indicator
+            // add/remove, template apply, reconnect). If anything pushed us at or
+            // above the chart bars, drop back below so the tint never covers them.
+            if (ZOrder >= ChartBars.ZOrder)
+                ZOrder = ChartBars.ZOrder - 1;
 
             float top = ChartPanel.Y;
             float height = ChartPanel.H;
