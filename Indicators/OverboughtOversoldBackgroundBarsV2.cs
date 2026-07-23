@@ -21,9 +21,9 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///
     /// Always-on background "warning light": red while price is overbought,
     /// green while oversold, clear otherwise. Rendered via SharpDX for clean,
-    /// fast visuals. Optional order-flow (delta) and Level 2 book-imbalance
-    /// boosts intensify the tint when flow confirms the looming reversal.
-    /// Optional on-chart status readout (RSI / delta / book imbalance).
+    /// fast visuals (drawn behind the chart bars). Optional order-flow (delta)
+    /// and Level 2 book-imbalance boosts intensify the tint when flow confirms
+    /// the looming reversal. Optional on-chart status readout.
     ///
     /// Built for renko-style charts (e.g. 6/3 NinZaRenko on NQ/MNQ) but
     /// instrument-agnostic — tune thresholds per instrument.
@@ -32,9 +32,10 @@ namespace NinjaTrader.NinjaScript.Indicators
     {
         private RSI rsi;
 
-        // Per-bar zone record
+        // Per-bar records (written in OnBarUpdate, safely read at render time)
         private Series<double> zoneSeries;   // 1 / -1 / 0
         private Series<double> alphaSeries;  // computed opacity per bar (0..1)
+        private Series<double> rsiSeries;    // RSI value per bar (for readout)
 
         // ---- SharpDX device-dependent resources ----
         private SharpDX.Direct2D1.SolidColorBrush dxObBrush;
@@ -147,7 +148,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered, with optional order-flow boosts and status readout.";
+                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with optional order-flow boosts and status readout.";
                 Name = "OverboughtOversoldBackgroundBarsV2";
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
@@ -176,6 +177,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 zoneSeries = new Series<double>(this);
                 alphaSeries = new Series<double>(this);
+                rsiSeries = new Series<double>(this);
             }
             else if (State == State.DataLoaded)
             {
@@ -185,6 +187,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     int t = MinOpacityPct; MinOpacityPct = MaxOpacityPct; MaxOpacityPct = t;
                 }
+            }
+            else if (State == State.Historical)
+            {
+                // Render behind the chart bars so the tint never overpowers them
+                if (ChartBars != null)
+                    ZOrder = ChartBars.ZOrder - 1;
             }
             else if (State == State.Terminated)
             {
@@ -203,6 +211,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 zoneSeries[0] = 0;
                 alphaSeries[0] = 0;
+                rsiSeries[0] = 0;
                 return;
             }
 
@@ -213,6 +222,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             double rsiValue = rsi[0];
+            rsiSeries[0] = rsiValue;
 
             if (rsiValue >= OverboughtThreshold)
             {
@@ -285,7 +295,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ---------------- Level 2 book: throttled imbalance ----------------
         protected override void OnMarketDepth(MarketDepthEventArgs e)
         {
-            if ((!EnableLevel2Boost && !ShowStatusReadout) || e.Position >= 10)
+            if (!EnableLevel2Boost || e.Position >= 10)
                 return;
 
             double size = (e.Operation == Operation.Remove) ? 0 : e.Volume;
@@ -384,18 +394,23 @@ namespace NinjaTrader.NinjaScript.Indicators
                 textFormat = new TextFormat(NinjaTrader.Core.Globals.DirectWriteFactory,
                     "Consolas", FontWeight.Normal, FontStyle.Normal, 13f);
 
-            // Use GetValueAt: the [0] indexer is not reliable from the render thread
-            double rsiValue = rsi.GetValueAt(CurrentBar);
+            // Read from our own series — safe at render time (the RSI sub-indicator
+            // indexers are unreliable from the render thread and can return price)
+            double rsiValue = rsiSeries.GetValueAt(CurrentBar);
             double zone = zoneSeries.GetValueAt(CurrentBar);
             string zoneTxt = zone > 0 ? "OVERBOUGHT" : zone < 0 ? "OVERSOLD" : "NEUTRAL";
 
             double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
             bool boosted = State == State.Realtime && zone != 0 && IsBoosted((int)zone);
 
+            string bookTxt = !EnableLevel2Boost ? "off"
+                : State == State.Realtime ? (bookImbalance * 100).ToString("+0;-0;0") + "% bid"
+                : "n/a (hist)";
+
             string text =
                   "RSI(" + RsiPeriod + "): " + rsiValue.ToString("F1") + "  [" + zoneTxt + "]"
                 + "\nDelta: " + (State == State.Realtime ? effDelta.ToString("+0;-0;0") : "n/a (hist)")
-                + "\nBook:  " + (State == State.Realtime ? (bookImbalance * 100).ToString("+0;-0;0") + "% bid" : "n/a (hist)")
+                + "\nBook:  " + bookTxt
                 + (boosted ? "\n** BOOST ACTIVE **" : "");
 
             using (var layout = new TextLayout(NinjaTrader.Core.Globals.DirectWriteFactory,
