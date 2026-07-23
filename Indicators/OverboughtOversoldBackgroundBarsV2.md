@@ -94,7 +94,7 @@ RSI is normalized 0–100, so only thresholds need tuning per instrument:
 ## Feature Reference
 
 ### Min Bars In Zone (persistence filter)
-Tint only paints once RSI has held in the zone for N consecutive bars (default 3). On confirmation, the earlier bars of the run **back-fill retroactively**, so completed bands look whole on chart review. Brief one/two-brick blips never paint. **Visual-only** — the `ZoneState` series stays raw for strategy use. The readout shows pending zones as e.g. `[OVERBOUGHT (2/3)]` so you can watch a band building before it confirms. Set to **1** to restore classic always-on behavior.
+Tint only paints once RSI has held in the zone for N consecutive bars (default 3). On confirmation, the earlier bars of the run **back-fill at bar close** (first tick of next bar), so completed bands look whole on chart review. Brief one/two-brick blips never paint. **Visual-only** — the `ZoneState` series stays raw for strategy use. The readout shows pending zones as e.g. `[OVERBOUGHT (2/3)]` so you can watch a band building before it confirms. Set to **1** to restore classic always-on behavior.
 
 ### Gradient Intensity
 Opacity scales from Min (at zone entry, e.g. RSI 75) to Max (near extremes). Saturates ~80% of the way to 0/100 since RSI rarely hits absolute limits. With Min at 5, shallow zones are a near-invisible whisper and deep extremes carry all the visual weight.
@@ -141,6 +141,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 - **Strong trends will still tint** — RSI pinning is reduced by wider thresholds + persistence filter but not eliminated. The tint means *extended*, not *enter now*. Wait for confirmation (delta confluence, your entry signal, etc).
 - **Thin sessions** (e.g., 4 AM) — expect more zone time; drop the delta threshold to ~50.
 - **Confluence threshold sensitivity matters more with the gate on** — too high in a quiet session can yield few/no full confirmations.
+- **Bar-close back-fill latency** — historical run back-fill appears at bar close (first tick of next bar), not mid-bar. Current bar tint/boost still react live.
 
 ## Ideas / Backlog (accuracy work)
 
@@ -153,6 +154,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 | Date | Change |
 |---|---|
+| 2026-07-23 | Ghost-leak fix: removed retro-clear cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
 | 2026-07-23 | V2 released: SharpDX rendering, gradient intensity, delta boost, experimental L2 boost, status readout |
 | 2026-07-23 | Fixed compile errors (escaped `&&`, missing `NinjaTrader.Cbi` using) |
 | 2026-07-23 | Fixed status readout showing RSI 0.0 (render-thread indexer issue) |

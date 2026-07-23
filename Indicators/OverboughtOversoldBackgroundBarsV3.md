@@ -16,12 +16,12 @@ The tint appears once the condition has *persisted* (see Min Bars In Zone), stay
 
 ## What's New in V3
 
-V3 is a direct continuation of V2. All V2 features are preserved. The version bump packages the complete, production-validated feature set (follow mode, delta-confluence soft gate, flicker-proof latching, retroactive fill/clear) into a clean named release so the instrument template and any saved workspaces can reference it by version.
+V3 is a direct continuation of V2. The version bump packages the production-validated feature set into a clean named release so the instrument template and any saved workspaces can reference it by version.
 
 **Feature set carried forward from V2:**
 - SharpDX background rendering (ZOrder behind bars, self-healing every render pass)
 - RSI gradient intensity with min/max opacity
-- **Min Bars In Zone** persistence filter (retroactive fill + retroactive clear for flicker-proof tick confirmations)
+- **Min Bars In Zone** persistence filter with **bar-close-authoritative** back-fill (no retroactive cleanup path)
 - **Min RSI Depth** shallow-zone filter
 - **Follow Mode** — bar-close-solid latching, exhaustion/invalidation releases, delta-boost overlay during follow
 - **Delta-Confluence soft gate** — whisper/full two-state grammar, real-time only, retro-upgrade on flush
@@ -113,10 +113,10 @@ RSI is normalized 0–100, so only thresholds need tuning per instrument:
 ## Feature Reference
 
 ### Min Bars In Zone (persistence filter)
-Tint only paints once RSI has held in the zone for N consecutive bars (default 3). On confirmation, the earlier bars of the run **back-fill retroactively**, so completed bands look whole on chart review. Brief one/two-brick blips never paint. **Visual-only** — the `ZoneState` series stays raw for strategy use. The readout shows pending zones as e.g. `[OVERBOUGHT (2/3)]` so you can watch a band building before it confirms. Set to **1** to restore classic always-on behavior.
+Tint only paints once RSI has held in the zone for N consecutive bars (default 3). On confirmation, the earlier bars of the run **back-fill at bar close** (first tick of next bar), so completed bands look whole on chart review. Brief one/two-brick blips never paint. **Visual-only** — the `ZoneState` series stays raw for strategy use. The readout shows pending zones as e.g. `[OVERBOUGHT (2/3)]` so you can watch a band building before it confirms. Set to **1** to restore classic always-on behavior.
 
 ### Min RSI Depth (shallow-zone filter)
-RSI must penetrate N points past the threshold at some point during the run before the band paints (default 3, so OB requires RSI 78+, OS requires 22−). Complements Min Bars In Zone: bars filter blip *duration*; depth filters blip *shallowness*. Both back-fill retroactively on confirmation. Set to **0** to disable.
+RSI must penetrate N points past the threshold at some point during the run before the band paints (default 3, so OB requires RSI 78+, OS requires 22−). Complements Min Bars In Zone: bars filter blip *duration*; depth filters blip *shallowness*. Both participate in the same bar-close back-fill confirmation flow. Set to **0** to disable.
 
 ### Gradient Intensity
 Opacity scales from Min (at zone entry, e.g. RSI 75) to Max (near extremes). Saturates ~80% of the way to 0/100 since RSI rarely hits absolute limits. With Min at 5, shallow zones are a near-invisible whisper and deep extremes carry all the visual weight.
@@ -129,7 +129,7 @@ Once a band **confirms at bar close** (held through the full bar), it latches an
 
 Delta boost still overlays during the follow — a with-move capitulation flush at follow-time = exhaustion cue.
 
-**Flicker-proofing**: follows may only latch from bar-close-solid confirmations, never from intrabar ticks. Retroactive clear also runs in follow state, but only un-paints bars not owned by the active follow.
+**Flicker-proofing**: follows may only latch from bar-close-solid confirmations, never from intrabar ticks. Closed-bar paint/back-fill is now authoritative-at-close, so no retroactive cleanup pass is needed.
 
 ### Delta Boost (real-time only)
 Watches the tape (`OnMarketData`). While in a zone, if net **aggressive opposing flow** on the current bar exceeds the threshold (selling into overbought / buying into oversold), tint jumps to Max Opacity — *"the reversal isn't just looming, it's starting."*
@@ -173,6 +173,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 - **Strong trends will still tint** — RSI pinning is reduced by wider thresholds + persistence filter but not eliminated. The tint means *extended*, not *enter now*. Wait for confirmation (delta confluence, your entry signal, etc).
 - **Thin sessions** (e.g., 4 AM) — expect more zone time; drop the delta threshold to ~50.
 - **Confluence threshold sensitivity matters more with the gate on** — too high in a quiet session can yield few/no full confirmations.
+- **Bar-close back-fill latency** — historical run back-fill appears at bar close (first tick of next bar), not mid-bar. Current bar tint/boost still react live.
 
 ## Ideas / Backlog (accuracy work)
 
@@ -185,8 +186,9 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 | Date | Change |
 |---|---|
+| 2026-07-23 | V3/V2 ghost-leak fix: removed retro-clear cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
 | 2026-07-23 | **V3 released**: production rename of V2 complete feature set; all settings, logic, and validated baselines carried forward unchanged |
-| 2026-07-23 | V2 → V3: added Min RSI Depth feature reference to documentation; clarified follow-latch flicker-proof rules and retroactive clear ownership rules |
+| 2026-07-23 | V2 → V3: added Min RSI Depth feature reference to documentation; clarified follow-latch flicker-proof rules |
 | 2026-07-23 | V2: SharpDX rendering, gradient intensity, delta boost, experimental L2 boost, status readout |
 | 2026-07-23 | V2: Fixed compile errors (escaped `&&`, missing `NinjaTrader.Cbi` using) |
 | 2026-07-23 | V2: Fixed status readout showing RSI 0.0 (render-thread indexer issue) |
