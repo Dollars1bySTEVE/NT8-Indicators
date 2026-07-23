@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows.Media;
 using System.Xml.Serialization;
+using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -188,8 +189,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Terminated)
             {
                 DisposeDeviceResources();
-                textFormat?.Dispose();
-                textFormat = null;
+                if (textFormat != null)
+                {
+                    textFormat.Dispose();
+                    textFormat = null;
+                }
             }
         }
 
@@ -271,7 +275,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ---------------- Level 1 tape: cumulative bar delta ----------------
         protected override void OnMarketData(MarketDataEventArgs e)
         {
-            if ((!EnableDeltaBoost &amp;&amp; !ShowStatusReadout) || e.MarketDataType != MarketDataType.Last)
+            if ((!EnableDeltaBoost && !ShowStatusReadout) || e.MarketDataType != MarketDataType.Last)
                 return;
 
             if (e.Price >= e.Ask)      barDelta += e.Volume;  // aggressive buy
@@ -281,7 +285,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ---------------- Level 2 book: throttled imbalance ----------------
         protected override void OnMarketDepth(MarketDepthEventArgs e)
         {
-            if ((!EnableLevel2Boost &amp;&amp; !ShowStatusReadout) || e.Position >= 10)
+            if ((!EnableLevel2Boost && !ShowStatusReadout) || e.Position >= 10)
                 return;
 
             double size = (e.Operation == Operation.Remove) ? 0 : e.Volume;
@@ -321,15 +325,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void DisposeDeviceResources()
         {
-            dxObBrush?.Dispose();    dxObBrush = null;
-            dxOsBrush?.Dispose();    dxOsBrush = null;
-            dxTextBrush?.Dispose();  dxTextBrush = null;
-            dxPanelBrush?.Dispose(); dxPanelBrush = null;
+            if (dxObBrush != null)    { dxObBrush.Dispose();    dxObBrush = null; }
+            if (dxOsBrush != null)    { dxOsBrush.Dispose();    dxOsBrush = null; }
+            if (dxTextBrush != null)  { dxTextBrush.Dispose();  dxTextBrush = null; }
+            if (dxPanelBrush != null) { dxPanelBrush.Dispose(); dxPanelBrush = null; }
         }
 
         private SharpDX.Direct2D1.SolidColorBrush MakeDxBrush(System.Windows.Media.Brush src, System.Windows.Media.Color fallback)
         {
-            var c = (src as System.Windows.Media.SolidColorBrush)?.Color ?? fallback;
+            var solid = src as System.Windows.Media.SolidColorBrush;
+            var c = solid != null ? solid.Color : fallback;
             return new SharpDX.Direct2D1.SolidColorBrush(RenderTarget,
                 new Color4(c.R / 255f, c.G / 255f, c.B / 255f, 1f)); // alpha applied per-bar at draw time
         }
@@ -384,7 +389,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             string zoneTxt = zone > 0 ? "OVERBOUGHT" : zone < 0 ? "OVERSOLD" : "NEUTRAL";
 
             double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
-            bool boosted = State == State.Realtime &amp;&amp; zone != 0 &amp;&amp; IsBoosted((int)zone);
+            bool boosted = State == State.Realtime && zone != 0 && IsBoosted((int)zone);
 
             string text =
                   "RSI(" + RsiPeriod + "): " + rsiValue.ToString("F1") + "  [" + zoneTxt + "]"
