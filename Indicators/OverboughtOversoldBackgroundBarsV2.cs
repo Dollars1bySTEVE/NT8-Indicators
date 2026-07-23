@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///
     /// Always-on background "warning light": red while price is overbought,
     /// green while oversold, clear otherwise. Rendered via SharpDX for clean,
-    /// fast visuals (drawn behind the chart bars; ZOrder is reinforced every
+    /// fast visuals (drawn behind the chart bars; ZOrder is re-enforced every
     /// render pass because NT8 can reshuffle Z-orders at runtime). Optional
     /// order-flow (delta) and Level 2 book-imbalance boosts intensify the tint
     /// when flow confirms the looming reversal. Optional on-chart status readout.
@@ -30,18 +30,18 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///  - Min Bars In Zone: zone must persist N consecutive bars (kills brief blips)
     ///  - Min RSI Depth: RSI must reach N points past the threshold during the run
     ///    (kills shallow zones). Thresholds define the ZONE; depth defines what's
-    ///    WORTH SHOWING. Historical/back-fill paint decisions are made once
-    ///    per bar close from completed-bar data (ApplyClosedBarPaintDecision),
-    ///    so one-tick confirmations under Calculate.OnPriceChange can never
-    ///    leak "ghost" bands into history.
+    ///    WORTH SHOWING. Both back-fill retroactively on confirmation — and
+    ///    retro-CLEAR if an intrabar confirmation flickers away before holding
+    ///    (prevents "ghost" bands from one-tick confirmations under
+    ///    Calculate.OnPriceChange).
     ///
     /// Flicker-proofing: under OnPriceChange a confirmation can pass for a single
     /// tick and die on the next. Two defenses:
     ///  - Follow latches are only taken from BAR-CLOSE-solid confirmations
     ///    (evaluated on the first tick of the next bar), never from intrabar
     ///    ticks — one-tick phantoms cannot spawn ghost follows.
-    ///  - Completed bars are painted authoritatively at bar close; intrabar
-    ///    paint only ever affects the live bar and is rewritten on close.
+    ///  - Retro-clear runs even while a follow is active, protecting only the
+    ///    bars the active follow legitimately owns (from its origin bar forward).
     ///
     /// Follow Mode (optional, default OFF — preserves classic behavior):
     ///  Once a band confirms (bar-close solid), it latches and keeps painting at
@@ -68,13 +68,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Series<double> paintSeries;  // zone actually painted (includes follow bars)
         private Series<double> alphaSeries;  // computed opacity per bar (0..1)
         private Series<double> rsiSeries;    // RSI value per bar (for readout)
-        private Series<double> confluenceSeries; // per-bar flush marker: 1/-1/0 (real-time only)
 
-        // Persistence + depth tracking for the current run (for live current-bar state/readout)
+        // Persistence + depth tracking for the current run
         private int zoneRunLength;           // consecutive bars in current zone
         private bool runDepthReached;        // RSI reached threshold +/- depth during run
         private bool runConfirmed;           // both conditions met -> painting
-        private bool runFlushSeen;           // with-move opposing-flow flush seen during current run
 
         // Follow Mode state
         private int followZone;              // 0 = not following; else 1 / -1
@@ -196,31 +194,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int DeltaBoostThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Require Delta Confluence", GroupName = "4. Order Flow Boost", Order = 2,
-                 Description = "Real-time only. Soft gate: a run that passed Min Bars + Min RSI Depth stays at Unconfirmed Opacity until an opposing-flow with-move flush occurs during that run.")]
-        public bool RequireDeltaConfluence { get; set; }
-
-        [NinjaScriptProperty, Range(1, 100000)]
-        [Display(Name = "Confluence Threshold (contracts)", GroupName = "4. Order Flow Boost", Order = 3,
-                 Description = "Net opposing delta required to count as a run-confirming flush (separate from Delta Boost Threshold so it can be lower).")]
-        public int ConfluenceThreshold { get; set; }
-
-        [NinjaScriptProperty, Range(0, 100)]
-        [Display(Name = "Unconfirmed Opacity %", GroupName = "4. Order Flow Boost", Order = 4,
-                 Description = "Fixed opacity for runs that passed bars+depth but are still pending the confluence flush.")]
-        public int UnconfirmedOpacityPct { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Enable Level 2 Boost (experimental)", GroupName = "4. Order Flow Boost", Order = 5,
+        [Display(Name = "Enable Level 2 Boost (experimental)", GroupName = "4. Order Flow Boost", Order = 2,
                  Description = "Real-time only. Boosts tint when the resting book stacks against the extreme. Book data can be spoofed; treat as supplementary.")]
         public bool EnableLevel2Boost { get; set; }
 
         [NinjaScriptProperty, Range(1, 10)]
-        [Display(Name = "L2 Depth Levels", GroupName = "4. Order Flow Boost", Order = 6)]
+        [Display(Name = "L2 Depth Levels", GroupName = "4. Order Flow Boost", Order = 3)]
         public int DepthLevels { get; set; }
 
         [NinjaScriptProperty, Range(50, 95)]
-        [Display(Name = "L2 Imbalance % Trigger", GroupName = "4. Order Flow Boost", Order = 7,
+        [Display(Name = "L2 Imbalance % Trigger", GroupName = "4. Order Flow Boost", Order = 4,
                  Description = "One side must hold at least this % of visible size to trigger. 65-75 is reasonable.")]
         public int ImbalanceTriggerPct { get; set; }
         #endregion
@@ -260,9 +243,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 EnableDeltaBoost = true;
                 DeltaBoostThreshold = 100;
-                RequireDeltaConfluence = false;
-                ConfluenceThreshold = 100;
-                UnconfirmedOpacityPct = 15;
                 EnableLevel2Boost = false;
                 DepthLevels = 5;
                 ImbalanceTriggerPct = 70;
@@ -273,7 +253,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries = new Series<double>(this);
                 alphaSeries = new Series<double>(this);
                 rsiSeries = new Series<double>(this);
-                confluenceSeries = new Series<double>(this);
             }
             else if (State == State.DataLoaded)
             {
@@ -288,7 +267,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Historical)
             {
                 // Render behind the chart bars so the tint never overpowers them.
-                // (Also reinforced every render pass — NT8 can reshuffle Z-orders
+                // (Also re-enforced every render pass — NT8 can reshuffle Z-orders
                 // at runtime when indicators/templates change.)
                 if (ChartBars != null)
                     ZOrder = ChartBars.ZOrder - 1;
@@ -312,11 +291,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries[0] = 0;
                 alphaSeries[0] = 0;
                 rsiSeries[0] = 0;
-                confluenceSeries[0] = 0;
                 zoneRunLength = 0;
                 runDepthReached = false;
                 runConfirmed = false;
-                runFlushSeen = false;
                 followZone = 0;
                 followOriginBar = -1;
                 return;
@@ -326,11 +303,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 prevBarDelta = barDelta;
                 barDelta = 0;
-
-                // Authoritative closed-bar painting:
-                // evaluate and write completed-bar decisions once, on bar close.
-                if (CurrentBar > 0)
-                    ApplyClosedBarPaintDecision();
 
                 // ---- Bar-close-solid follow latch (flicker-proof) ----
                 // Follows may ONLY latch from a confirmation that held through a
@@ -346,9 +318,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         int runLen; bool depthHeld; int originBar;
                         EvaluateRun(1, (int)closedZone, out runLen, out depthHeld, out originBar);
 
-                        bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
-                        bool flushSeen = !requiresFlush || RunHasConfluenceFlush(1, (int)closedZone, runLen);
-                        if (runLen >= MinBarsInZone && depthHeld && flushSeen)
+                        if (runLen >= MinBarsInZone && depthHeld)
                         {
                             followZone = (int)closedZone;
                             followOriginBar = originBar;
@@ -366,9 +336,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             else                                      zone = 0;
 
             zoneSeries[0] = zone;
-
-            // Real-time only confluence marker for THIS bar (evaluated live).
-            confluenceSeries[0] = (State == State.Realtime && zone != 0 && IsConfluenceFlush(zone)) ? zone : 0;
 
             // ---------------- In an RSI extreme zone ----------------
             if (zone != 0)
@@ -399,25 +366,48 @@ namespace NinjaTrader.NinjaScript.Indicators
                 runDepthReached = depthOk;
 
                 bool confirmedNow = run >= MinBarsInZone && depthOk;
-                bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
-                runFlushSeen = !requiresFlush || RunHasConfluenceFlush(0, zone, run);
-                bool fullConfirmedNow = confirmedNow && (!requiresFlush || runFlushSeen);
-                double unconfirmedOpacity = UnconfirmedOpacityPct / 100.0;
 
                 if (confirmedNow)
                 {
-                    runConfirmed = fullConfirmedNow;
+                    runConfirmed = true;
                     paintSeries[0] = zone;
-                    alphaSeries[0] = fullConfirmedNow
-                        ? ComputeOpacity(zone, rsiValue, threshold, extreme)
-                        : unconfirmedOpacity;
+                    alphaSeries[0] = ComputeOpacity(zone, rsiValue, threshold, extreme);
 
-                    // Historical/back-fill decisions are handled only on bar close
-                    // (IsFirstTickOfBar -> ApplyClosedBarPaintDecision).
+                    // Retroactive fill: paint any unpainted bars of this run.
+                    // NOTE: does NOT latch the follow — latching happens only from
+                    // bar-close-solid confirmations (see IsFirstTickOfBar block).
+                    for (int back = 1; back <= CurrentBar; back++)
+                    {
+                        if (zoneSeries[back] != zone) break;
+                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone)
+                        {
+                            paintSeries[back] = zone;
+                            alphaSeries[back] = ComputeOpacity(zone, rsiSeries[back], threshold, extreme);
+                        }
+                    }
                 }
                 else
                 {
                     runConfirmed = false;
+
+                    // Retroactive CLEAR: a tick-confirmation may have back-filled
+                    // this run and then died. Un-paint the run's bars — but never
+                    // touch bars owned by an active bar-close-solid follow (those
+                    // are at or after followOriginBar).
+                    for (int back = 1; back <= CurrentBar; back++)
+                    {
+                        if (zoneSeries[back] != zone) break;
+
+                        int barIdx = CurrentBar - back;
+                        bool ownedByFollow = EnableFollowMode && followZone != 0
+                            && followOriginBar >= 0 && barIdx >= followOriginBar;
+
+                        if (!ownedByFollow && paintSeries[back] == zone)
+                        {
+                            paintSeries[back] = 0;
+                            alphaSeries[back] = 0;
+                        }
+                    }
 
                     // Still following a previous confirmed band? Keep painting through
                     // this unconfirmed same-side or opposite pending zone.
@@ -436,7 +426,37 @@ namespace NinjaTrader.NinjaScript.Indicators
             zoneRunLength = 0;
             runDepthReached = false;
             runConfirmed = false;
-            runFlushSeen = false;
+
+            // Retroactive CLEAR on zone exit: if the just-ended run never held its
+            // confirmation (an intrabar flicker back-filled it), un-paint it now.
+            // Runs even while following — bars owned by the active follow (at or
+            // after followOriginBar) are protected.
+            if (CurrentBar > 0)
+            {
+                double prevZone = zoneSeries[1];
+                if (prevZone != 0)
+                {
+                    int runLen; bool depthHeld; int originBar;
+                    EvaluateRun(1, (int)prevZone, out runLen, out depthHeld, out originBar);
+
+                    bool runWasValid = runLen >= MinBarsInZone && depthHeld;
+                    if (!runWasValid)
+                    {
+                        for (int back = 1; back <= runLen; back++)
+                        {
+                            int barIdx = CurrentBar - back;
+                            bool ownedByFollow = EnableFollowMode && followZone != 0
+                                && followOriginBar >= 0 && barIdx >= followOriginBar;
+
+                            if (!ownedByFollow && paintSeries[back] == prevZone)
+                            {
+                                paintSeries[back] = 0;
+                                alphaSeries[back] = 0;
+                            }
+                        }
+                    }
+                }
+            }
 
             if (EnableFollowMode && followZone != 0)
             {
@@ -471,89 +491,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries[0] = 0;
                 alphaSeries[0] = 0;
             }
-        }
-
-        /// <summary>
-        /// Applies paint decisions for the just-closed bar/run from completed-bar
-        /// data only. This prevents intrabar flicker artifacts from leaking into
-        /// historical paint.
-        /// </summary>
-        private void ApplyClosedBarPaintDecision()
-        {
-            int closedZone = (int)zoneSeries[1];
-            if (closedZone == 0)
-                return;
-
-            int runLen; bool depthHeld; int originBar;
-            EvaluateRun(1, closedZone, out runLen, out depthHeld, out originBar);
-
-            bool confirmed = runLen >= MinBarsInZone && depthHeld;
-            if (!confirmed)
-                return;
-
-            bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
-            bool fullConfirmed = !requiresFlush || RunHasConfluenceFlush(1, closedZone, runLen);
-
-            int threshold = closedZone == 1 ? OverboughtThreshold : OversoldThreshold;
-            int extreme   = closedZone == 1 ? 100 : 0;
-            double whisperOpacity = UnconfirmedOpacityPct / 100.0;
-
-            for (int back = 1; back <= runLen; back++)
-            {
-                if (fullConfirmed)
-                {
-                    double baseOp = ComputeBaseOpacity(closedZone, rsiSeries[back], threshold, extreme);
-                    // Preserve any live per-bar boost (e.g., delta boost max
-                    // opacity) applied while the bar was forming — never dim a
-                    // boosted bar back down to base on bar close.
-                    alphaSeries[back] = paintSeries[back] == closedZone
-                        ? Math.Max(alphaSeries[back], baseOp)
-                        : baseOp;
-                }
-                else
-                    alphaSeries[back] = whisperOpacity;
-
-                paintSeries[back] = closedZone;
-            }
-        }
-
-        /// <summary>
-        /// Returns true if a confluence flush exists in the run segment.
-        /// startBarsAgo lets us evaluate either the current live run (0) or the
-        /// just-closed run (1).
-        /// </summary>
-        private bool RunHasConfluenceFlush(int startBarsAgo, int zone, int runLen)
-        {
-            if (State != State.Realtime || runLen <= 0)
-                return false;
-
-            int begin = Math.Max(startBarsAgo, 0);
-            int end = begin + runLen - 1;
-            for (int back = begin; back <= end && back <= CurrentBar; back++)
-            {
-                if ((int)confluenceSeries[back] == zone)
-                    return true;
-            }
-
-            return false;
-        }
-
-        /// <summary>
-        /// Base opacity (no boost), used for completed-bar back-fill decisions.
-        /// </summary>
-        private double ComputeBaseOpacity(int zone, double rsiValue, int threshold, int extreme)
-        {
-            double minOp = MinOpacityPct / 100.0;
-            double maxOp = MaxOpacityPct / 100.0;
-
-            if (!UseGradientIntensity)
-                return maxOp;
-
-            double span  = Math.Abs(extreme - threshold) * 0.8; // saturate before absolute extreme
-            double depth = Math.Abs(rsiValue - threshold);
-            double pct   = span <= 0 ? 1.0 : Math.Min(depth / span, 1.0);
-
-            return minOp + pct * (maxOp - minOp);
         }
 
         /// <summary>
@@ -602,11 +539,21 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Returns opacity 0..1 for an in-zone bar, including boost logic.</summary>
         private double ComputeOpacity(int zone, double rsiValue, int threshold, int extreme)
         {
+            double minOp = MinOpacityPct / 100.0;
+            double maxOp = MaxOpacityPct / 100.0;
+
             // Boosts always win: flow confirming the reversal = full intensity
             if (State == State.Realtime && IsBoosted(zone))
-                return MaxOpacityPct / 100.0;
+                return maxOp;
 
-            return ComputeBaseOpacity(zone, rsiValue, threshold, extreme);
+            if (!UseGradientIntensity)
+                return maxOp;
+
+            double span  = Math.Abs(extreme - threshold) * 0.8; // saturate before absolute extreme
+            double depth = Math.Abs(rsiValue - threshold);
+            double pct   = span <= 0 ? 1.0 : Math.Min(depth / span, 1.0);
+
+            return minOp + pct * (maxOp - minOp);
         }
 
         /// <summary>Boost while IN the extreme: opposing flow (reversal starting).</summary>
@@ -614,7 +561,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (EnableDeltaBoost)
             {
-                double effDelta = GetEffectiveDelta();
+                double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
                 if (zone == 1 && effDelta <= -DeltaBoostThreshold) return true;  // selling into OB
                 if (zone == -1 && effDelta >= DeltaBoostThreshold) return true;  // buying into OS
             }
@@ -637,33 +584,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!EnableDeltaBoost)
                 return false;
 
-            double effDelta = GetEffectiveDelta();
+            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
             if (followZone == 1 && effDelta <= -DeltaBoostThreshold) return true;
             if (followZone == -1 && effDelta >= DeltaBoostThreshold) return true;
-            return false;
-        }
-
-        private double GetEffectiveDelta()
-        {
-            return barDelta != 0 ? barDelta : prevBarDelta;
-        }
-
-        /// <summary>
-        /// Run-confluence flush while IN the extreme: opposing tape with the move
-        /// against the extreme (capitulation).
-        /// </summary>
-        private bool IsConfluenceFlush(int zone)
-        {
-            double effDelta = GetEffectiveDelta();
-            if (zone == 1 && effDelta <= -ConfluenceThreshold) return true; // selling into OB
-            if (zone == -1 && effDelta >= ConfluenceThreshold) return true; // buying into OS
             return false;
         }
 
         // ---------------- Level 1 tape: cumulative bar delta ----------------
         protected override void OnMarketData(MarketDataEventArgs e)
         {
-            if ((!EnableDeltaBoost && !RequireDeltaConfluence && !ShowStatusReadout) || e.MarketDataType != MarketDataType.Last)
+            if ((!EnableDeltaBoost && !ShowStatusReadout) || e.MarketDataType != MarketDataType.Last)
                 return;
 
             if (e.Price >= e.Ask)      barDelta += e.Volume;  // aggressive buy
@@ -793,19 +723,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     zoneTxt += " (pending depth)";
             }
 
-            if (State == State.Realtime
-                && RequireDeltaConfluence
-                && zone != 0
-                && zoneRunLength >= MinBarsInZone
-                && (MinRsiDepth <= 0 || runDepthReached)
-                && !runFlushSeen)
-                zoneTxt += " (pending flush)";
-
             // Follow state
             if (EnableFollowMode && followZone != 0 && !runConfirmed)
                 zoneTxt += followZone == 1 ? "  >> FOLLOWING SHORT" : "  >> FOLLOWING LONG";
 
-            double effDelta = GetEffectiveDelta();
+            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
             bool boosted = State == State.Realtime
                 && ((zone != 0 && IsBoosted((int)zone))
                     || (followZone != 0 && !runConfirmed && IsFollowBoosted(followZone)));
