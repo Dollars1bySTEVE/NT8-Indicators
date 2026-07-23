@@ -68,8 +68,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Series<double> paintSeries;  // zone actually painted (includes follow bars)
         private Series<double> alphaSeries;  // computed opacity per bar (0..1)
         private Series<double> rsiSeries;    // RSI value per bar (for readout)
+        private Series<double> confluenceSeries; // per-bar flush marker: 1/-1/0 (real-time only)
 
-        // Persistence + depth tracking for the current run
+        // Persistence + depth tracking for the current run (for live current-bar state/readout)
         private int zoneRunLength;           // consecutive bars in current zone
         private bool runDepthReached;        // RSI reached threshold +/- depth during run
         private bool runConfirmed;           // both conditions met -> painting
@@ -272,6 +273,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries = new Series<double>(this);
                 alphaSeries = new Series<double>(this);
                 rsiSeries = new Series<double>(this);
+                confluenceSeries = new Series<double>(this);
             }
             else if (State == State.DataLoaded)
             {
@@ -310,6 +312,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries[0] = 0;
                 alphaSeries[0] = 0;
                 rsiSeries[0] = 0;
+                confluenceSeries[0] = 0;
                 zoneRunLength = 0;
                 runDepthReached = false;
                 runConfirmed = false;
@@ -323,6 +326,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 prevBarDelta = barDelta;
                 barDelta = 0;
+
+                // Authoritative closed-bar painting:
+                // evaluate and write completed-bar decisions once, on bar close.
+                if (CurrentBar > 0)
+                    ApplyClosedBarPaintDecision();
 
                 // ---- Bar-close-solid follow latch (flicker-proof) ----
                 // Follows may ONLY latch from a confirmation that held through a
@@ -339,7 +347,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         EvaluateRun(1, (int)closedZone, out runLen, out depthHeld, out originBar);
 
                         bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
-                        if (runLen >= MinBarsInZone && depthHeld && (!requiresFlush || runFlushSeen))
+                        bool flushSeen = !requiresFlush || RunHasConfluenceFlush(1, (int)closedZone, runLen);
+                        if (runLen >= MinBarsInZone && depthHeld && flushSeen)
                         {
                             followZone = (int)closedZone;
                             followOriginBar = originBar;
@@ -358,15 +367,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             zoneSeries[0] = zone;
 
+            // Real-time only confluence marker for THIS bar (evaluated live).
+            confluenceSeries[0] = (State == State.Realtime && zone != 0 && IsConfluenceFlush(zone)) ? zone : 0;
+
             // ---------------- In an RSI extreme zone ----------------
             if (zone != 0)
             {
-                if (zoneSeries[1] != zone)
-                    runFlushSeen = false;
-
-                if (State == State.Realtime && IsConfluenceFlush(zone))
-                    runFlushSeen = true;
-
                 int threshold = zone == 1 ? OverboughtThreshold : OversoldThreshold;
                 int extreme   = zone == 1 ? 100 : 0;
                 double depthTarget = zone == 1 ? threshold + MinRsiDepth : threshold - MinRsiDepth;
@@ -394,58 +400,24 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 bool confirmedNow = run >= MinBarsInZone && depthOk;
                 bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
+                runFlushSeen = !requiresFlush || RunHasConfluenceFlush(0, zone, run);
                 bool fullConfirmedNow = confirmedNow && (!requiresFlush || runFlushSeen);
                 double unconfirmedOpacity = UnconfirmedOpacityPct / 100.0;
 
                 if (confirmedNow)
                 {
-                    bool wasFullConfirmed = runConfirmed;
                     runConfirmed = fullConfirmedNow;
-                    bool graduatedNow = requiresFlush && fullConfirmedNow && !wasFullConfirmed;
                     paintSeries[0] = zone;
                     alphaSeries[0] = fullConfirmedNow
                         ? ComputeOpacity(zone, rsiValue, threshold, extreme)
                         : unconfirmedOpacity;
 
-                    // Retroactive fill: paint any unpainted bars of this run.
-                    // If the run graduates from whisper to full, upgrade earlier
-                    // whisper bars to full gradient opacity.
-                    // NOTE: does NOT latch the follow — latching happens only from
-                    // bar-close-solid confirmations (see IsFirstTickOfBar block).
-                    for (int back = 1; back <= CurrentBar; back++)
-                    {
-                        if (zoneSeries[back] != zone) break;
-                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone || graduatedNow)
-                        {
-                            paintSeries[back] = zone;
-                            alphaSeries[back] = fullConfirmedNow
-                                ? ComputeOpacity(zone, rsiSeries[back], threshold, extreme)
-                                : unconfirmedOpacity;
-                        }
-                    }
+                    // Historical/back-fill decisions are handled only on bar close
+                    // (IsFirstTickOfBar -> ApplyClosedBarPaintDecision).
                 }
                 else
                 {
                     runConfirmed = false;
-
-                    // Retroactive CLEAR: a tick-confirmation may have back-filled
-                    // this run and then died. Un-paint the run's bars — but never
-                    // touch bars owned by an active bar-close-solid follow (those
-                    // are at or after followOriginBar).
-                    for (int back = 1; back <= CurrentBar; back++)
-                    {
-                        if (zoneSeries[back] != zone) break;
-
-                        int barIdx = CurrentBar - back;
-                        bool ownedByFollow = EnableFollowMode && followZone != 0
-                            && followOriginBar >= 0 && barIdx >= followOriginBar;
-
-                        if (!ownedByFollow && paintSeries[back] == zone)
-                        {
-                            paintSeries[back] = 0;
-                            alphaSeries[back] = 0;
-                        }
-                    }
 
                     // Still following a previous confirmed band? Keep painting through
                     // this unconfirmed same-side or opposite pending zone.
@@ -465,37 +437,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             runDepthReached = false;
             runConfirmed = false;
             runFlushSeen = false;
-
-            // Retroactive CLEAR on zone exit: if the just-ended run never held its
-            // confirmation (an intrabar flicker back-filled it), un-paint it now.
-            // Runs even while following — bars owned by the active follow (at or
-            // after followOriginBar) are protected.
-            if (CurrentBar > 0)
-            {
-                double prevZone = zoneSeries[1];
-                if (prevZone != 0)
-                {
-                    int runLen; bool depthHeld; int originBar;
-                    EvaluateRun(1, (int)prevZone, out runLen, out depthHeld, out originBar);
-
-                    bool runWasValid = runLen >= MinBarsInZone && depthHeld;
-                    if (!runWasValid)
-                    {
-                        for (int back = 1; back <= runLen; back++)
-                        {
-                            int barIdx = CurrentBar - back;
-                            bool ownedByFollow = EnableFollowMode && followZone != 0
-                                && followOriginBar >= 0 && barIdx >= followOriginBar;
-
-                            if (!ownedByFollow && paintSeries[back] == prevZone)
-                            {
-                                paintSeries[back] = 0;
-                                alphaSeries[back] = 0;
-                            }
-                        }
-                    }
-                }
-            }
 
             if (EnableFollowMode && followZone != 0)
             {
@@ -530,6 +471,79 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries[0] = 0;
                 alphaSeries[0] = 0;
             }
+        }
+
+        /// <summary>
+        /// Applies paint decisions for the just-closed bar/run from completed-bar
+        /// data only. This prevents intrabar flicker artifacts from leaking into
+        /// historical paint.
+        /// </summary>
+        private void ApplyClosedBarPaintDecision()
+        {
+            int closedZone = (int)zoneSeries[1];
+            if (closedZone == 0)
+                return;
+
+            int runLen; bool depthHeld; int originBar;
+            EvaluateRun(1, closedZone, out runLen, out depthHeld, out originBar);
+
+            bool confirmed = runLen >= MinBarsInZone && depthHeld;
+            if (!confirmed)
+                return;
+
+            bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
+            bool fullConfirmed = !requiresFlush || RunHasConfluenceFlush(1, closedZone, runLen);
+
+            int threshold = closedZone == 1 ? OverboughtThreshold : OversoldThreshold;
+            int extreme   = closedZone == 1 ? 100 : 0;
+            double whisperOpacity = UnconfirmedOpacityPct / 100.0;
+
+            for (int back = 1; back <= runLen; back++)
+            {
+                paintSeries[back] = closedZone;
+                alphaSeries[back] = fullConfirmed
+                    ? ComputeBaseOpacity(closedZone, rsiSeries[back], threshold, extreme)
+                    : whisperOpacity;
+            }
+        }
+
+        /// <summary>
+        /// Returns true if a confluence flush exists in the run segment.
+        /// startBarsAgo lets us evaluate either the current live run (0) or the
+        /// just-closed run (1).
+        /// </summary>
+        private bool RunHasConfluenceFlush(int startBarsAgo, int zone, int runLen)
+        {
+            if (State != State.Realtime || runLen <= 0)
+                return false;
+
+            int begin = Math.Max(startBarsAgo, 0);
+            int end = begin + runLen - 1;
+            for (int back = begin; back <= end && back <= CurrentBar; back++)
+            {
+                if ((int)confluenceSeries[back] == zone)
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Base opacity (no boost), used for completed-bar back-fill decisions.
+        /// </summary>
+        private double ComputeBaseOpacity(int zone, double rsiValue, int threshold, int extreme)
+        {
+            double minOp = MinOpacityPct / 100.0;
+            double maxOp = MaxOpacityPct / 100.0;
+
+            if (!UseGradientIntensity)
+                return maxOp;
+
+            double span  = Math.Abs(extreme - threshold) * 0.8; // saturate before absolute extreme
+            double depth = Math.Abs(rsiValue - threshold);
+            double pct   = span <= 0 ? 1.0 : Math.Min(depth / span, 1.0);
+
+            return minOp + pct * (maxOp - minOp);
         }
 
         /// <summary>
@@ -578,21 +592,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// <summary>Returns opacity 0..1 for an in-zone bar, including boost logic.</summary>
         private double ComputeOpacity(int zone, double rsiValue, int threshold, int extreme)
         {
-            double minOp = MinOpacityPct / 100.0;
-            double maxOp = MaxOpacityPct / 100.0;
-
             // Boosts always win: flow confirming the reversal = full intensity
             if (State == State.Realtime && IsBoosted(zone))
-                return maxOp;
+                return MaxOpacityPct / 100.0;
 
-            if (!UseGradientIntensity)
-                return maxOp;
-
-            double span  = Math.Abs(extreme - threshold) * 0.8; // saturate before absolute extreme
-            double depth = Math.Abs(rsiValue - threshold);
-            double pct   = span <= 0 ? 1.0 : Math.Min(depth / span, 1.0);
-
-            return minOp + pct * (maxOp - minOp);
+            return ComputeBaseOpacity(zone, rsiValue, threshold, extreme);
         }
 
         /// <summary>Boost while IN the extreme: opposing flow (reversal starting).</summary>
