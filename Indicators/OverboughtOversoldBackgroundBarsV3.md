@@ -1,4 +1,4 @@
-# OverboughtOversoldBackgroundBarsV2 — Settings Guide
+# OverboughtOversoldBackgroundBarsV3 — Settings Guide
 
 > Living document — update this as we learn what works in live trading.
 
@@ -14,6 +14,21 @@ The tint appears once the condition has *persisted* (see Min Bars In Zone), stay
 
 **Primary use case:** 6/3 NinZaRenko chart on NQ/MNQ, but works on any futures instrument with threshold tuning.
 
+## What's New in V3
+
+V3 is a direct continuation of V2. The version bump packages the production-validated feature set into a clean named release so the instrument template and any saved workspaces can reference it by version.
+
+**Feature set carried forward from V2:**
+- SharpDX background rendering (ZOrder behind bars, self-healing every render pass)
+- RSI gradient intensity with min/max opacity
+- **Min Bars In Zone** persistence filter with **bar-close-only** back-fill (no retroactive cleanup path)
+- **Min RSI Depth** shallow-zone filter
+- **Follow Mode** — bar-close-solid latching, exhaustion/invalidation releases, delta-boost overlay during follow
+- **Delta-Confluence soft gate** — whisper/full two-state grammar, real-time only, retro-upgrade on flush
+- **Delta Boost** — opposing tape jumps tint to max opacity
+- **Level 2 book-imbalance boost** (experimental, default off)
+- Status readout with pending counts, flush state, and boost indicator
+
 ## Design Goal
 
 **Catch the bigger oversold and overbought extremes — equally on both sides — as accurately as possible.** Nothing is 100%, but every tuning decision should serve that goal:
@@ -25,7 +40,7 @@ The tint appears once the condition has *persisted* (see Min Bars In Zone), stay
 
 ## Quick Start — Validated Baseline (NQ 6/3 NinZaRenko)
 
-*Locked in 2026-07-23 after live tuning in both overnight and RTH sessions:*
+*Locked in 2026-07-23 on V2; carried forward to V3 unchanged:*
 
 | Group | Setting | Value | Notes |
 |---|---|---|---|
@@ -34,6 +49,10 @@ The tint appears once the condition has *persisted* (see Min Bars In Zone), stay
 | Parameters | Overbought Threshold | **75** | 70 paints a "red wall" on trend days — validated twice |
 | Parameters | Oversold Threshold | **25** | 30 mirrors the same problem in downtrends |
 | Parameters | Min Bars In Zone | **3** | Kills one/two-brick blip signals; set 1 for classic always-on |
+| Parameters | Min RSI Depth | **3** | RSI must reach 78+ (OB) or 22− (OS) at some point in the run |
+| Follow Mode | Enable Follow Mode | **Off** | Enable when you want the tint to follow the reversal move |
+| Follow Mode | Release Offset | **10** | Red releases at RSI < 40 or > 60; green mirrored |
+| Follow Mode | Follow Opacity % | **20** | Keep below Max Opacity so "in extreme" vs "following" stay distinct |
 | Visuals | Gradient Intensity | **On** | |
 | Visuals | Min Opacity % | **5** | "Conviction dial": shallow zones whisper, deep extremes pop |
 | Visuals | Max Opacity % | **40** | 60 is too heavy even behind the bars |
@@ -49,7 +68,7 @@ The tint appears once the condition has *persisted* (see Min Bars In Zone), stay
 | Order Flow | L2 Depth Levels | 5 | (unused while L2 off) |
 | Order Flow | L2 Imbalance % Trigger | 70 | (unused while L2 off) |
 
-> ⚠️ **Save these as the default template!** In the indicator dialog, click **template** (bottom right) → save as default. Recompiling after a code change that adds a new property **resets the instance to code defaults (70/30/60/100)** — this bit us once already. With a saved template, you're one click from restoring your baseline.
+> ⚠️ **Save these as the default template!** In the indicator dialog, click **template** (bottom right) → save as default. Recompiling after a code change that adds a new property **resets the instance to code defaults** — this has already bitten us. With a saved template, you're one click from restoring your baseline.
 
 ### Two-layer noise filtering
 
@@ -96,8 +115,21 @@ RSI is normalized 0–100, so only thresholds need tuning per instrument:
 ### Min Bars In Zone (persistence filter)
 Tint only paints once RSI has held in the zone for N consecutive bars (default 3). On confirmation, the earlier bars of the run **back-fill at bar close** (first tick of next bar), so completed bands look whole on chart review. Brief one/two-brick blips never paint. **Visual-only** — the `ZoneState` series stays raw for strategy use. The readout shows pending zones as e.g. `[OVERBOUGHT (2/3)]` so you can watch a band building before it confirms. Set to **1** to restore classic always-on behavior.
 
+### Min RSI Depth (shallow-zone filter)
+RSI must penetrate N points past the threshold at some point during the run before the band paints (default 3, so OB requires RSI 78+, OS requires 22−). Complements Min Bars In Zone: bars filter blip *duration*; depth filters blip *shallowness*. Both participate in the same bar-close back-fill confirmation flow. Set to **0** to disable.
+
 ### Gradient Intensity
 Opacity scales from Min (at zone entry, e.g. RSI 75) to Max (near extremes). Saturates ~80% of the way to 0/100 since RSI rarely hits absolute limits. With Min at 5, shallow zones are a near-invisible whisper and deep extremes carry all the visual weight.
+
+### Follow Mode (optional, default OFF)
+Once a band **confirms at bar close** (held through the full bar), it latches and keeps painting at Follow Opacity until one of two exits fires:
+
+- **EXHAUSTION** — RSI crosses deep through the midline **with** the move (red releases at RSI < 50−offset; green at RSI > 50+offset). The reversal ran its course.
+- **INVALIDATION** — RSI recovers **against** the signal past the other side (red releases at RSI > 50+offset; green at RSI < 50−offset). The reversal never came; signal failed, stop painting.
+
+Delta boost still overlays during the follow — a with-move capitulation flush at follow-time = exhaustion cue.
+
+**Flicker-proofing**: follows may only latch from bar-close-solid confirmations, never from intrabar ticks. Closed-bar paint/back-fill is now authoritative-at-close, so no retroactive cleanup pass is needed.
 
 ### Delta Boost (real-time only)
 Watches the tape (`OnMarketData`). While in a zone, if net **aggressive opposing flow** on the current bar exceeds the threshold (selling into overbought / buying into oversold), tint jumps to Max Opacity — *"the reversal isn't just looming, it's starting."*
@@ -127,10 +159,10 @@ Watches the resting book (`OnMarketDepth`, throttled to 4×/sec). Boosts when on
 On-chart corner panel: live RSI + zone (with pending count), current bar delta, book imbalance (or `off`), and `** BOOST ACTIVE **` flag. Historical bars show `n/a (hist)` for delta — no historical tape/depth in NT8.
 
 ### Rendering
-Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacity tint never overpowers the bricks.
+Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacity tint never overpowers the bricks. ZOrder is self-healed every render pass in case NT8 reshuffles it.
 
 ### Strategy Access
-`ZoneState` series is public: `1` = overbought, `-1` = oversold, `0` = neutral. Unfiltered by Min Bars In Zone.
+`ZoneState` series is public: `1` = overbought, `-1` = oversold, `0` = neutral. Unfiltered by Min Bars In Zone, Min RSI Depth, or Follow Mode — raw RSI zone only.
 
 ## Known Behaviors & Limitations
 
@@ -145,8 +177,8 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 ## Ideas / Backlog (accuracy work)
 
-- **Depth-based confirmation** — optionally require RSI to reach N points past the threshold before painting (filters shallow zones entirely rather than just dimming them)
-- **Delta-confluence marker** — *soft-gate/readout version shipped 2026-07-23*; optional future enhancement is an explicit per-bar marker when a full-confirmed run and extreme opposing delta coincide
+- **Depth-based confirmation** — optionally require RSI to reach N points past the threshold before painting (filters shallow zones entirely rather than just dimming them) — *partially addressed by Min RSI Depth in V2/V3; further work: multi-depth gating*
+- **Delta-confluence marker** — *soft-gate/readout version shipped in V2*; optional future enhancement is an explicit per-bar marker when a full-confirmed run and extreme opposing delta coincide
 - **L2 boost evaluation session** — one live session with L2 on to see if the book adds anything the tape doesn't
 - **RTH-open delta calibration** — verify 100–150 threshold behavior in the 9:30–10:00 burst
 
@@ -154,15 +186,17 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 | Date | Change |
 |---|---|
-| 2026-07-23 | Ghost-leak fix: removed retroactive cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
-| 2026-07-23 | V2 released: SharpDX rendering, gradient intensity, delta boost, experimental L2 boost, status readout |
-| 2026-07-23 | Fixed compile errors (escaped `&&`, missing `NinjaTrader.Cbi` using) |
-| 2026-07-23 | Fixed status readout showing RSI 0.0 (render-thread indexer issue) |
-| 2026-07-23 | Fixed readout showing price instead of RSI (dedicated `rsiSeries`); tint now renders **behind** bars (ZOrder); `Book: off` when L2 disabled |
-| 2026-07-23 | Added **Min Bars In Zone** persistence filter (visual-only, retroactive fill, default 3); readout shows pending count |
-| 2026-07-23 | Baseline validated in RTH: **75/25, opacity 15/40, Min Bars 3, delta 100 RTH / 50 overnight, L2 off** |
-| 2026-07-23 | Min Opacity refined 15 → **5** ("conviction dial"); documented design goal (equal both-sides accuracy) and delta-confluence trade trigger |
-| 2026-07-23 | Added optional **Delta-Confluence** soft gate (real-time only, default off): runs that pass bars+depth but lack a with-move flush paint at fixed unconfirmed opacity (whisper) and do not latch follow; a flush graduates to full gradient + follow. Readout shows `(pending flush)`. New properties added — re-save default template after recompile. |
+| 2026-07-23 | V3/V2 ghost-leak fix: removed retroactive cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
+| 2026-07-23 | **V3 released**: production rename of V2 complete feature set; all settings, logic, and validated baselines carried forward unchanged |
+| 2026-07-23 | V2 → V3: added Min RSI Depth feature reference to documentation; clarified follow-latch flicker-proof rules |
+| 2026-07-23 | V2: SharpDX rendering, gradient intensity, delta boost, experimental L2 boost, status readout |
+| 2026-07-23 | V2: Fixed compile errors (escaped `&&`, missing `NinjaTrader.Cbi` using) |
+| 2026-07-23 | V2: Fixed status readout showing RSI 0.0 (render-thread indexer issue) |
+| 2026-07-23 | V2: Fixed readout showing price instead of RSI (dedicated `rsiSeries`); tint now renders **behind** bars (ZOrder); `Book: off` when L2 disabled |
+| 2026-07-23 | V2: Added **Min Bars In Zone** persistence filter (visual-only, retroactive fill, default 3); readout shows pending count |
+| 2026-07-23 | V2: Baseline validated in RTH: **75/25, opacity 15/40, Min Bars 3, delta 100 RTH / 50 overnight, L2 off** |
+| 2026-07-23 | V2: Min Opacity refined 15 → **5** ("conviction dial"); documented design goal (equal both-sides accuracy) and delta-confluence trade trigger |
+| 2026-07-23 | V2: Added optional **Delta-Confluence** soft gate (real-time only, default off): runs that pass bars+depth but lack a with-move flush paint at fixed unconfirmed opacity (whisper) and do not latch follow; a flush graduates to full gradient + follow. Readout shows `(pending flush)`. New properties added — re-save default template after recompile. |
 
 ## Session Notes (add yours here)
 

@@ -17,7 +17,7 @@ using SharpDX.DirectWrite;
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
-    /// OverboughtOversoldBackgroundBars V2
+    /// OverboughtOversoldBackgroundBars V3
     ///
     /// Always-on background "warning light": red while price is overbought,
     /// green while oversold, clear otherwise. Rendered via SharpDX for clean,
@@ -59,7 +59,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// Built for renko-style charts (e.g. 6/3 NinZaRenko on NQ/MNQ) but
     /// instrument-agnostic — tune thresholds per instrument.
     /// </summary>
-    public class OverboughtOversoldBackgroundBarsV2 : Indicator
+    public class OverboughtOversoldBackgroundBarsV3 : Indicator
     {
         private RSI rsi;
 
@@ -233,8 +233,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode (exhaustion/invalidation releases, flicker-proof bar-close latching), order-flow boosts and status readout.";
-                Name = "OverboughtOversoldBackgroundBarsV2";
+                Description = "V3: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode (exhaustion/invalidation releases, flicker-proof bar-close latching), order-flow boosts and status readout.";
+                Name = "OverboughtOversoldBackgroundBarsV3";
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
                 DisplayInDataBox = true;
