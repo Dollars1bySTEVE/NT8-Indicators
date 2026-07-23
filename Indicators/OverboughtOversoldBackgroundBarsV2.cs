@@ -30,18 +30,18 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///  - Min Bars In Zone: zone must persist N consecutive bars (kills brief blips)
     ///  - Min RSI Depth: RSI must reach N points past the threshold during the run
     ///    (kills shallow zones). Thresholds define the ZONE; depth defines what's
-    ///    WORTH SHOWING. Both back-fill retroactively on confirmation — and
-    ///    retro-CLEAR if an intrabar confirmation flickers away before holding
-    ///    (prevents "ghost" bands from one-tick confirmations under
-    ///    Calculate.OnPriceChange).
+    ///    WORTH SHOWING. Historical/back-fill paint decisions are made once
+    ///    per bar close from completed-bar data (ApplyClosedBarPaintDecision),
+    ///    so one-tick confirmations under Calculate.OnPriceChange can never
+    ///    leak "ghost" bands into history.
     ///
     /// Flicker-proofing: under OnPriceChange a confirmation can pass for a single
     /// tick and die on the next. Two defenses:
     ///  - Follow latches are only taken from BAR-CLOSE-solid confirmations
     ///    (evaluated on the first tick of the next bar), never from intrabar
     ///    ticks — one-tick phantoms cannot spawn ghost follows.
-    ///  - Retro-clear runs even while a follow is active, protecting only the
-    ///    bars the active follow legitimately owns (from its origin bar forward).
+    ///  - Completed bars are painted authoritatively at bar close; intrabar
+    ///    paint only ever affects the live bar and is rewritten on close.
     ///
     /// Follow Mode (optional, default OFF — preserves classic behavior):
     ///  Once a band confirms (bar-close solid), it latches and keeps painting at
@@ -500,10 +500,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             for (int back = 1; back <= runLen; back++)
             {
+                if (fullConfirmed)
+                {
+                    double baseOp = ComputeBaseOpacity(closedZone, rsiSeries[back], threshold, extreme);
+                    // Preserve any live per-bar boost (e.g., delta boost max
+                    // opacity) applied while the bar was forming — never dim a
+                    // boosted bar back down to base on bar close.
+                    alphaSeries[back] = paintSeries[back] == closedZone
+                        ? Math.Max(alphaSeries[back], baseOp)
+                        : baseOp;
+                }
+                else
+                    alphaSeries[back] = whisperOpacity;
+
                 paintSeries[back] = closedZone;
-                alphaSeries[back] = fullConfirmed
-                    ? ComputeBaseOpacity(closedZone, rsiSeries[back], threshold, extreme)
-                    : whisperOpacity;
             }
         }
 
@@ -653,7 +663,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ---------------- Level 1 tape: cumulative bar delta ----------------
         protected override void OnMarketData(MarketDataEventArgs e)
         {
-            if ((!EnableDeltaBoost && !ShowStatusReadout) || e.MarketDataType != MarketDataType.Last)
+            if ((!EnableDeltaBoost && !RequireDeltaConfluence && !ShowStatusReadout) || e.MarketDataType != MarketDataType.Last)
                 return;
 
             if (e.Price >= e.Ask)      barDelta += e.Volume;  // aggressive buy
