@@ -366,7 +366,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Real-time only confluence marker for THIS bar (evaluated live).
             // STICKY: once a flush is seen this bar, keep it latched for the bar —
             // never clear it back to 0 on a later tick when delta normalizes.
-            if (State == State.Realtime && zone != 0 && IsConfluenceFlush(zone))
+            // Latch only from THIS bar's delta (barDelta != 0) so the
+            // prev-bar fallback in GetEffectiveDelta can't latch a stale flush.
+            if (State == State.Realtime && zone != 0 && barDelta != 0 && IsConfluenceFlush(zone))
                 confluenceSeries[0] = zone;
             else if (IsFirstTickOfBar)
                 confluenceSeries[0] = 0; // reset only at the start of a new bar
