@@ -73,6 +73,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int zoneRunLength;           // consecutive bars in current zone
         private bool runDepthReached;        // RSI reached threshold +/- depth during run
         private bool runConfirmed;           // both conditions met -> painting
+        private bool runFlushSeen;           // with-move opposing-flow flush seen during current run
 
         // Follow Mode state
         private int followZone;              // 0 = not following; else 1 / -1
@@ -194,16 +195,31 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int DeltaBoostThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Level 2 Boost (experimental)", GroupName = "4. Order Flow Boost", Order = 2,
+        [Display(Name = "Require Delta Confluence", GroupName = "4. Order Flow Boost", Order = 2,
+                 Description = "Real-time only. Soft gate: a run that passed Min Bars + Min RSI Depth stays at Unconfirmed Opacity until an opposing-flow with-move flush occurs during that run.")]
+        public bool RequireDeltaConfluence { get; set; }
+
+        [NinjaScriptProperty, Range(1, 100000)]
+        [Display(Name = "Confluence Threshold (contracts)", GroupName = "4. Order Flow Boost", Order = 3,
+                 Description = "Net opposing delta required to count as a run-confirming flush (separate from Delta Boost Threshold so it can be lower).")]
+        public int ConfluenceThreshold { get; set; }
+
+        [NinjaScriptProperty, Range(0, 100)]
+        [Display(Name = "Unconfirmed Opacity %", GroupName = "4. Order Flow Boost", Order = 4,
+                 Description = "Fixed opacity for runs that passed bars+depth but are still pending the confluence flush.")]
+        public int UnconfirmedOpacityPct { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Level 2 Boost (experimental)", GroupName = "4. Order Flow Boost", Order = 5,
                  Description = "Real-time only. Boosts tint when the resting book stacks against the extreme. Book data can be spoofed; treat as supplementary.")]
         public bool EnableLevel2Boost { get; set; }
 
         [NinjaScriptProperty, Range(1, 10)]
-        [Display(Name = "L2 Depth Levels", GroupName = "4. Order Flow Boost", Order = 3)]
+        [Display(Name = "L2 Depth Levels", GroupName = "4. Order Flow Boost", Order = 6)]
         public int DepthLevels { get; set; }
 
         [NinjaScriptProperty, Range(50, 95)]
-        [Display(Name = "L2 Imbalance % Trigger", GroupName = "4. Order Flow Boost", Order = 4,
+        [Display(Name = "L2 Imbalance % Trigger", GroupName = "4. Order Flow Boost", Order = 7,
                  Description = "One side must hold at least this % of visible size to trigger. 65-75 is reasonable.")]
         public int ImbalanceTriggerPct { get; set; }
         #endregion
@@ -243,6 +259,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 EnableDeltaBoost = true;
                 DeltaBoostThreshold = 100;
+                RequireDeltaConfluence = false;
+                ConfluenceThreshold = 100;
+                UnconfirmedOpacityPct = 15;
                 EnableLevel2Boost = false;
                 DepthLevels = 5;
                 ImbalanceTriggerPct = 70;
@@ -294,6 +313,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 zoneRunLength = 0;
                 runDepthReached = false;
                 runConfirmed = false;
+                runFlushSeen = false;
                 followZone = 0;
                 followOriginBar = -1;
                 return;
@@ -318,7 +338,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         int runLen; bool depthHeld; int originBar;
                         EvaluateRun(1, (int)closedZone, out runLen, out depthHeld, out originBar);
 
-                        if (runLen >= MinBarsInZone && depthHeld)
+                        bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
+                        if (runLen >= MinBarsInZone && depthHeld && (!requiresFlush || runFlushSeen))
                         {
                             followZone = (int)closedZone;
                             followOriginBar = originBar;
@@ -340,6 +361,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ---------------- In an RSI extreme zone ----------------
             if (zone != 0)
             {
+                if (zoneSeries[1] != zone)
+                    runFlushSeen = false;
+
+                if (State == State.Realtime && IsConfluenceFlush(zone))
+                    runFlushSeen = true;
+
                 int threshold = zone == 1 ? OverboughtThreshold : OversoldThreshold;
                 int extreme   = zone == 1 ? 100 : 0;
                 double depthTarget = zone == 1 ? threshold + MinRsiDepth : threshold - MinRsiDepth;
@@ -366,23 +393,37 @@ namespace NinjaTrader.NinjaScript.Indicators
                 runDepthReached = depthOk;
 
                 bool confirmedNow = run >= MinBarsInZone && depthOk;
+                bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
+                bool fullConfirmedNow = confirmedNow && (!requiresFlush || runFlushSeen);
+                double unconfirmedOpacity = UnconfirmedOpacityPct / 100.0;
 
                 if (confirmedNow)
                 {
-                    runConfirmed = true;
+                    runConfirmed = fullConfirmedNow;
                     paintSeries[0] = zone;
-                    alphaSeries[0] = ComputeOpacity(zone, rsiValue, threshold, extreme);
+                    alphaSeries[0] = fullConfirmedNow
+                        ? ComputeOpacity(zone, rsiValue, threshold, extreme)
+                        : unconfirmedOpacity;
 
                     // Retroactive fill: paint any unpainted bars of this run.
+                    // If the run graduates from whisper to full, upgrade earlier
+                    // whisper bars to full gradient opacity.
                     // NOTE: does NOT latch the follow — latching happens only from
                     // bar-close-solid confirmations (see IsFirstTickOfBar block).
                     for (int back = 1; back <= CurrentBar; back++)
                     {
                         if (zoneSeries[back] != zone) break;
-                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone)
+                        bool isWhisperBar = requiresFlush
+                            && paintSeries[back] == zone
+                            && alphaSeries[back] > 0
+                            && Math.Abs(alphaSeries[back] - unconfirmedOpacity) < 0.000001;
+
+                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone || (fullConfirmedNow && isWhisperBar))
                         {
                             paintSeries[back] = zone;
-                            alphaSeries[back] = ComputeOpacity(zone, rsiSeries[back], threshold, extreme);
+                            alphaSeries[back] = fullConfirmedNow
+                                ? ComputeOpacity(zone, rsiSeries[back], threshold, extreme)
+                                : unconfirmedOpacity;
                         }
                     }
                 }
@@ -426,6 +467,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             zoneRunLength = 0;
             runDepthReached = false;
             runConfirmed = false;
+            runFlushSeen = false;
 
             // Retroactive CLEAR on zone exit: if the just-ended run never held its
             // confirmation (an intrabar flicker back-filled it), un-paint it now.
@@ -590,6 +632,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             return false;
         }
 
+        /// <summary>
+        /// Run-confluence flush while IN the extreme: opposing tape with the move
+        /// against the extreme (capitulation).
+        /// </summary>
+        private bool IsConfluenceFlush(int zone)
+        {
+            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
+            if (zone == 1 && effDelta <= -ConfluenceThreshold) return true; // selling into OB
+            if (zone == -1 && effDelta >= ConfluenceThreshold) return true; // buying into OS
+            return false;
+        }
+
         // ---------------- Level 1 tape: cumulative bar delta ----------------
         protected override void OnMarketData(MarketDataEventArgs e)
         {
@@ -722,6 +776,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (MinRsiDepth > 0 && !runDepthReached)
                     zoneTxt += " (pending depth)";
             }
+
+            if (State == State.Realtime
+                && RequireDeltaConfluence
+                && zone != 0
+                && zoneRunLength >= MinBarsInZone
+                && (MinRsiDepth <= 0 || runDepthReached)
+                && !runFlushSeen)
+                zoneTxt += " (pending flush)";
 
             // Follow state
             if (EnableFollowMode && followZone != 0 && !runConfirmed)
