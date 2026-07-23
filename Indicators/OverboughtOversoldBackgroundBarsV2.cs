@@ -384,7 +384,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 textFormat = new TextFormat(NinjaTrader.Core.Globals.DirectWriteFactory,
                     "Consolas", FontWeight.Normal, FontStyle.Normal, 13f);
 
-            double rsiValue = rsi[0];
+            // Use GetValueAt: the [0] indexer is not reliable from the render thread
+            double rsiValue = rsi.GetValueAt(CurrentBar);
             double zone = zoneSeries.GetValueAt(CurrentBar);
             string zoneTxt = zone > 0 ? "OVERBOUGHT" : zone < 0 ? "OVERSOLD" : "NEUTRAL";
 
