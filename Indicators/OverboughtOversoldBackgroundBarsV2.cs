@@ -61,8 +61,6 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class OverboughtOversoldBackgroundBarsV2 : Indicator
     {
-        private const double OpacityComparisonEpsilon = 0.000001;
-
         private RSI rsi;
 
         // Per-bar records (written in OnBarUpdate, safely read at render time)
@@ -401,7 +399,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (confirmedNow)
                 {
+                    bool wasFullConfirmed = runConfirmed;
                     runConfirmed = fullConfirmedNow;
+                    bool graduatedNow = requiresFlush && fullConfirmedNow && !wasFullConfirmed;
                     paintSeries[0] = zone;
                     alphaSeries[0] = fullConfirmedNow
                         ? ComputeOpacity(zone, rsiValue, threshold, extreme)
@@ -415,12 +415,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     for (int back = 1; back <= CurrentBar; back++)
                     {
                         if (zoneSeries[back] != zone) break;
-                        bool isWhisperBar = requiresFlush
-                            && paintSeries[back] == zone
-                            && alphaSeries[back] > 0
-                            && Math.Abs(alphaSeries[back] - unconfirmedOpacity) < OpacityComparisonEpsilon;
-
-                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone || (fullConfirmedNow && isWhisperBar))
+                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone || graduatedNow)
                         {
                             paintSeries[back] = zone;
                             alphaSeries[back] = fullConfirmedNow
@@ -605,7 +600,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (EnableDeltaBoost)
             {
-                double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
+                double effDelta = GetEffectiveDelta();
                 if (zone == 1 && effDelta <= -DeltaBoostThreshold) return true;  // selling into OB
                 if (zone == -1 && effDelta >= DeltaBoostThreshold) return true;  // buying into OS
             }
@@ -628,10 +623,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!EnableDeltaBoost)
                 return false;
 
-            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
+            double effDelta = GetEffectiveDelta();
             if (followZone == 1 && effDelta <= -DeltaBoostThreshold) return true;
             if (followZone == -1 && effDelta >= DeltaBoostThreshold) return true;
             return false;
+        }
+
+        private double GetEffectiveDelta()
+        {
+            return barDelta != 0 ? barDelta : prevBarDelta;
         }
 
         /// <summary>
@@ -640,7 +640,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// </summary>
         private bool IsConfluenceFlush(int zone)
         {
-            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
+            double effDelta = GetEffectiveDelta();
             if (zone == 1 && effDelta <= -ConfluenceThreshold) return true; // selling into OB
             if (zone == -1 && effDelta >= ConfluenceThreshold) return true; // buying into OS
             return false;
@@ -791,7 +791,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (EnableFollowMode && followZone != 0 && !runConfirmed)
                 zoneTxt += followZone == 1 ? "  >> FOLLOWING SHORT" : "  >> FOLLOWING LONG";
 
-            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
+            double effDelta = GetEffectiveDelta();
             bool boosted = State == State.Realtime
                 && ((zone != 0 && IsBoosted((int)zone))
                     || (followZone != 0 && !runConfirmed && IsFollowBoosted(followZone)));
