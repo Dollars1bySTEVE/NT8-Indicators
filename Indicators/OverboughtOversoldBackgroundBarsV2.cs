@@ -25,9 +25,19 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// and Level 2 book-imbalance boosts intensify the tint when flow confirms
     /// the looming reversal. Optional on-chart status readout.
     ///
-    /// Min Bars In Zone filters out brief one/two-brick blips: tint only shows
-    /// once the zone has persisted N bars (with retroactive fill), so only the
-    /// larger, judgment-worthy bands paint. ZoneState stays unfiltered.
+    /// Signal filtering (visuals only; ZoneState stays raw):
+    ///  - Min Bars In Zone: zone must persist N consecutive bars (kills brief blips)
+    ///  - Min RSI Depth: RSI must reach N points past the threshold during the run
+    ///    (kills shallow zones). Thresholds define the ZONE; depth defines what's
+    ///    WORTH SHOWING. Both back-fill retroactively on confirmation.
+    ///
+    /// Follow Mode (optional, default OFF — preserves classic behavior):
+    ///  Once a band confirms, it latches and keeps painting at a steady reduced
+    ///  opacity until the move exhausts (RSI crossing back through the Release
+    ///  Level, default 50). Turns the band from a condition light ("RSI is
+    ///  extreme now") into a signal state ("reversal active — follow until
+    ///  exhausted"). Delta boost still overlays during the follow, so a
+    ///  capitulation flush lights the band to max = exhaustion cue.
     ///
     /// Built for renko-style charts (e.g. 6/3 NinZaRenko on NQ/MNQ) but
     /// instrument-agnostic — tune thresholds per instrument.
@@ -37,13 +47,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         private RSI rsi;
 
         // Per-bar records (written in OnBarUpdate, safely read at render time)
-        private Series<double> zoneSeries;   // 1 / -1 / 0 (raw, unfiltered)
+        private Series<double> zoneSeries;   // raw RSI zone: 1 / -1 / 0 (unfiltered)
+        private Series<double> paintSeries;  // zone actually painted (includes follow bars)
         private Series<double> alphaSeries;  // computed opacity per bar (0..1)
         private Series<double> rsiSeries;    // RSI value per bar (for readout)
 
-        // Persistence tracking for Min Bars In Zone
+        // Persistence + depth tracking for the current run
         private int zoneRunLength;           // consecutive bars in current zone
-        private int lastRunZone;             // zone of the current run
+        private bool runDepthReached;        // RSI reached threshold +/- depth during run
+        private bool runConfirmed;           // both conditions met -> painting
+
+        // Follow Mode state
+        private int followZone;              // 0 = not following; else 1 / -1
 
         // ---- SharpDX device-dependent resources ----
         private SharpDX.Direct2D1.SolidColorBrush dxObBrush;
@@ -81,26 +96,48 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty, Range(1, 50)]
         [Display(Name = "Min Bars In Zone", GroupName = "1. Parameters", Order = 4,
-                 Description = "Tint only shows once the zone has persisted this many consecutive bars (earlier bars back-fill on confirmation). Filters brief blips. Set 1 for classic always-on behavior.")]
+                 Description = "Band only shows once the zone has persisted this many consecutive bars (earlier bars back-fill on confirmation). Filters brief blips. Set 1 to disable.")]
         public int MinBarsInZone { get; set; }
+
+        [NinjaScriptProperty, Range(0, 25)]
+        [Display(Name = "Min RSI Depth", GroupName = "1. Parameters", Order = 5,
+                 Description = "RSI must reach this many points PAST the threshold at some point during the run before the band paints (e.g. 3 with OB 75 requires RSI 78+). Filters shallow zones. Set 0 to disable.")]
+        public int MinRsiDepth { get; set; }
         #endregion
 
-        #region 2. Visuals
+        #region 2. Follow Mode
         [NinjaScriptProperty]
-        [Display(Name = "Gradient Intensity", GroupName = "2. Visuals", Order = 0,
+        [Display(Name = "Enable Follow Mode", GroupName = "2. Follow Mode", Order = 0,
+                 Description = "Once a band confirms, it latches and keeps painting (reduced steady opacity) until RSI crosses back through the Release Level — the band follows the reversal move until exhausted, instead of ending when RSI leaves the extreme.")]
+        public bool EnableFollowMode { get; set; }
+
+        [NinjaScriptProperty, Range(20, 80)]
+        [Display(Name = "Release Level", GroupName = "2. Follow Mode", Order = 1,
+                 Description = "RSI level that ends a follow. Red releases when RSI drops below it; green releases when RSI rises above it. 50 = midline (symmetric).")]
+        public int ReleaseLevel { get; set; }
+
+        [NinjaScriptProperty, Range(0, 100)]
+        [Display(Name = "Follow Opacity %", GroupName = "2. Follow Mode", Order = 2,
+                 Description = "Steady opacity while following (after RSI leaves the extreme). Keep below Max Opacity so 'in the extreme' and 'following' stay visually distinct.")]
+        public int FollowOpacityPct { get; set; }
+        #endregion
+
+        #region 3. Visuals
+        [NinjaScriptProperty]
+        [Display(Name = "Gradient Intensity", GroupName = "3. Visuals", Order = 0,
                  Description = "Opacity scales with RSI depth into the zone.")]
         public bool UseGradientIntensity { get; set; }
 
         [NinjaScriptProperty, Range(0, 100)]
-        [Display(Name = "Min Opacity %", GroupName = "2. Visuals", Order = 1)]
+        [Display(Name = "Min Opacity %", GroupName = "3. Visuals", Order = 1)]
         public int MinOpacityPct { get; set; }
 
         [NinjaScriptProperty, Range(0, 100)]
-        [Display(Name = "Max Opacity %", GroupName = "2. Visuals", Order = 2)]
+        [Display(Name = "Max Opacity %", GroupName = "3. Visuals", Order = 2)]
         public int MaxOpacityPct { get; set; }
 
         [XmlIgnore]
-        [Display(Name = "Overbought Color", GroupName = "2. Visuals", Order = 3)]
+        [Display(Name = "Overbought Color", GroupName = "3. Visuals", Order = 3)]
         public System.Windows.Media.Brush OverboughtColor { get; set; }
 
         [Browsable(false)]
@@ -111,7 +148,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Oversold Color", GroupName = "2. Visuals", Order = 4)]
+        [Display(Name = "Oversold Color", GroupName = "3. Visuals", Order = 4)]
         public System.Windows.Media.Brush OversoldColor { get; set; }
 
         [Browsable(false)]
@@ -122,38 +159,38 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Status Readout", GroupName = "2. Visuals", Order = 5,
-                 Description = "On-chart corner readout: current RSI, zone, bar delta and L2 book imbalance. Useful while evaluating boost settings.")]
+        [Display(Name = "Show Status Readout", GroupName = "3. Visuals", Order = 5,
+                 Description = "On-chart corner readout: current RSI, zone/follow state, bar delta and L2 book imbalance. Useful while evaluating settings.")]
         public bool ShowStatusReadout { get; set; }
         #endregion
 
-        #region 3. Order Flow Boost (real-time only)
+        #region 4. Order Flow Boost (real-time only)
         [NinjaScriptProperty]
-        [Display(Name = "Enable Delta Boost", GroupName = "3. Order Flow Boost", Order = 0,
-                 Description = "Real-time only. Boosts tint to max opacity when aggressive flow turns against the extreme (selling into overbought / buying into oversold).")]
+        [Display(Name = "Enable Delta Boost", GroupName = "4. Order Flow Boost", Order = 0,
+                 Description = "Real-time only. Boosts tint to max opacity when aggressive flow turns against the extreme (selling into overbought / buying into oversold). During a follow, a with-move capitulation flush also boosts = exhaustion cue.")]
         public bool EnableDeltaBoost { get; set; }
 
         [NinjaScriptProperty, Range(1, 100000)]
-        [Display(Name = "Delta Boost Threshold (contracts)", GroupName = "3. Order Flow Boost", Order = 1,
+        [Display(Name = "Delta Boost Threshold (contracts)", GroupName = "4. Order Flow Boost", Order = 1,
                  Description = "Net opposing delta on the current bar required to trigger the boost. NQ start: 75-150. MNQ: scale up ~10x.")]
         public int DeltaBoostThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Level 2 Boost (experimental)", GroupName = "3. Order Flow Boost", Order = 2,
+        [Display(Name = "Enable Level 2 Boost (experimental)", GroupName = "4. Order Flow Boost", Order = 2,
                  Description = "Real-time only. Boosts tint when the resting book stacks against the extreme. Book data can be spoofed; treat as supplementary.")]
         public bool EnableLevel2Boost { get; set; }
 
         [NinjaScriptProperty, Range(1, 10)]
-        [Display(Name = "L2 Depth Levels", GroupName = "3. Order Flow Boost", Order = 3)]
+        [Display(Name = "L2 Depth Levels", GroupName = "4. Order Flow Boost", Order = 3)]
         public int DepthLevels { get; set; }
 
         [NinjaScriptProperty, Range(50, 95)]
-        [Display(Name = "L2 Imbalance % Trigger", GroupName = "3. Order Flow Boost", Order = 4,
+        [Display(Name = "L2 Imbalance % Trigger", GroupName = "4. Order Flow Boost", Order = 4,
                  Description = "One side must hold at least this % of visible size to trigger. 65-75 is reasonable.")]
         public int ImbalanceTriggerPct { get; set; }
         #endregion
 
-        /// <summary>1 = overbought, -1 = oversold, 0 = neutral. Raw/unfiltered — persistence filter applies to visuals only.</summary>
+        /// <summary>1 = overbought, -1 = oversold, 0 = neutral. Raw/unfiltered — persistence, depth and follow logic apply to visuals only.</summary>
         [Browsable(false), XmlIgnore]
         public Series<double> ZoneState { get { return zoneSeries; } }
 
@@ -161,7 +198,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence filter, optional order-flow boosts and status readout.";
+                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode, order-flow boosts and status readout.";
                 Name = "OverboughtOversoldBackgroundBarsV2";
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
@@ -170,18 +207,23 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 RsiPeriod = 14;
                 RsiSmooth = 1;
-                OverboughtThreshold = 70;
-                OversoldThreshold = 30;
+                OverboughtThreshold = 75;
+                OversoldThreshold = 25;
                 MinBarsInZone = 3;
+                MinRsiDepth = 3;
+
+                EnableFollowMode = false;
+                ReleaseLevel = 50;
+                FollowOpacityPct = 20;
 
                 UseGradientIntensity = true;
-                MinOpacityPct = 15;
-                MaxOpacityPct = 60;
+                MinOpacityPct = 5;
+                MaxOpacityPct = 40;
                 OverboughtColor = System.Windows.Media.Brushes.Crimson;
                 OversoldColor = System.Windows.Media.Brushes.MediumSeaGreen;
                 ShowStatusReadout = false;
 
-                EnableDeltaBoost = false;
+                EnableDeltaBoost = true;
                 DeltaBoostThreshold = 100;
                 EnableLevel2Boost = false;
                 DepthLevels = 5;
@@ -190,6 +232,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Configure)
             {
                 zoneSeries = new Series<double>(this);
+                paintSeries = new Series<double>(this);
                 alphaSeries = new Series<double>(this);
                 rsiSeries = new Series<double>(this);
             }
@@ -224,10 +267,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < RsiPeriod)
             {
                 zoneSeries[0] = 0;
+                paintSeries[0] = 0;
                 alphaSeries[0] = 0;
                 rsiSeries[0] = 0;
                 zoneRunLength = 0;
-                lastRunZone = 0;
+                runDepthReached = false;
+                runConfirmed = false;
+                followZone = 0;
                 return;
             }
 
@@ -247,54 +293,117 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             zoneSeries[0] = zone;
 
-            // ---- Persistence tracking (intrabar-safe: recompute run from prior bars) ----
-            if (zone == 0)
+            // ---------------- In an RSI extreme zone ----------------
+            if (zone != 0)
             {
-                alphaSeries[0] = 0;
-                zoneRunLength = 0;
-                lastRunZone = 0;
+                int threshold = zone == 1 ? OverboughtThreshold : OversoldThreshold;
+                int extreme   = zone == 1 ? 100 : 0;
+                double depthTarget = zone == 1 ? threshold + MinRsiDepth : threshold - MinRsiDepth;
+
+                int run = 1;
+                bool depthOk = MinRsiDepth <= 0
+                    || (zone == 1 ? rsiValue >= depthTarget : rsiValue <= depthTarget);
+
+                for (int back = 1; back <= CurrentBar; back++)
+                {
+                    if (zoneSeries[back] != zone) break;
+                    run++;
+                    if (!depthOk && MinRsiDepth > 0)
+                    {
+                        double backRsi = rsiSeries[back];
+                        if (zone == 1 ? backRsi >= depthTarget : backRsi <= depthTarget)
+                            depthOk = true;
+                    }
+                    if (run >= MinBarsInZone && (depthOk || MinRsiDepth <= 0) && back >= 50)
+                        break;
+                }
+
+                zoneRunLength = run;
+                runDepthReached = depthOk;
+
+                // An opposite follow ends immediately when the other extreme confirms
+                bool confirmedNow = run >= MinBarsInZone && depthOk;
+
+                if (confirmedNow)
+                {
+                    runConfirmed = true;
+                    paintSeries[0] = zone;
+                    alphaSeries[0] = ComputeOpacity(zone, rsiValue, threshold, extreme);
+
+                    // Retroactive fill: paint any unpainted bars of this run
+                    for (int back = 1; back <= CurrentBar; back++)
+                    {
+                        if (zoneSeries[back] != zone) break;
+                        if (alphaSeries[back] <= 0 || paintSeries[back] != zone)
+                        {
+                            paintSeries[back] = zone;
+                            alphaSeries[back] = ComputeOpacity(zone, rsiSeries[back], threshold, extreme);
+                        }
+                    }
+
+                    // Latch follow state
+                    followZone = EnableFollowMode ? zone : 0;
+                }
+                else
+                {
+                    runConfirmed = false;
+
+                    // Still following a previous confirmed band? Keep painting through
+                    // this unconfirmed same-side or opposite pending zone.
+                    if (EnableFollowMode && followZone != 0)
+                        PaintFollow(rsiValue);
+                    else
+                    {
+                        paintSeries[0] = 0;
+                        alphaSeries[0] = 0;
+                    }
+                }
                 return;
             }
 
-            // Count consecutive prior bars in this same zone (current bar = 1)
-            int run = 1;
-            for (int back = 1; back <= CurrentBar && run < MinBarsInZone; back++)
+            // ---------------- Neutral RSI ----------------
+            zoneRunLength = 0;
+            runDepthReached = false;
+            runConfirmed = false;
+
+            if (EnableFollowMode && followZone != 0)
             {
-                if (zoneSeries[back] == zone) run++;
-                else break;
-            }
-            zoneRunLength = run;
-            lastRunZone = zone;
-
-            double opacity = ComputeOpacity(zone, rsiValue,
-                zone == 1 ? OverboughtThreshold : OversoldThreshold,
-                zone == 1 ? 100 : 0);
-
-            if (run >= MinBarsInZone)
-            {
-                // Confirmed: paint this bar and retroactively fill the run-up bars
-                alphaSeries[0] = opacity;
-
-                for (int back = 1; back < MinBarsInZone && back <= CurrentBar; back++)
+                // Release check: red releases when RSI falls below ReleaseLevel,
+                // green releases when RSI rises above it.
+                bool released = followZone == 1 ? rsiValue < ReleaseLevel
+                                                : rsiValue > ReleaseLevel;
+                if (released)
                 {
-                    if (zoneSeries[back] != zone) break;
-                    if (alphaSeries[back] <= 0)
-                    {
-                        double backRsi = rsiSeries[back];
-                        alphaSeries[back] = ComputeOpacity(zone, backRsi,
-                            zone == 1 ? OverboughtThreshold : OversoldThreshold,
-                            zone == 1 ? 100 : 0);
-                    }
+                    followZone = 0;
+                    paintSeries[0] = 0;
+                    alphaSeries[0] = 0;
                 }
+                else
+                    PaintFollow(rsiValue);
             }
             else
             {
-                // Not yet confirmed: track but don't paint
+                paintSeries[0] = 0;
                 alphaSeries[0] = 0;
             }
         }
 
-        /// <summary>Returns opacity 0..1 for the zone, including boost logic.</summary>
+        /// <summary>Paints the current bar in follow state (steady reduced opacity; boost overlays).</summary>
+        private void PaintFollow(double rsiValue)
+        {
+            paintSeries[0] = followZone;
+
+            double op = FollowOpacityPct / 100.0;
+
+            // Boost still overlays during the follow — a capitulation flush
+            // (with-move extreme delta) is the exhaustion cue.
+            if (State == State.Realtime && IsFollowBoosted(followZone))
+                op = MaxOpacityPct / 100.0;
+
+            alphaSeries[0] = op;
+        }
+
+        /// <summary>Returns opacity 0..1 for an in-zone bar, including boost logic.</summary>
         private double ComputeOpacity(int zone, double rsiValue, int threshold, int extreme)
         {
             double minOp = MinOpacityPct / 100.0;
@@ -314,9 +423,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             return minOp + pct * (maxOp - minOp);
         }
 
+        /// <summary>Boost while IN the extreme: opposing flow (reversal starting).</summary>
         private bool IsBoosted(int zone)
         {
-            // Delta boost: aggressive flow turning against the extreme
             if (EnableDeltaBoost)
             {
                 double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
@@ -324,7 +433,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zone == -1 && effDelta >= DeltaBoostThreshold) return true;  // buying into OS
             }
 
-            // L2 boost: resting book stacked against the extreme
             if (EnableLevel2Boost)
             {
                 double trig = ImbalanceTriggerPct / 100.0 * 2 - 1; // map 70% -> 0.4 imbalance
@@ -332,6 +440,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (zone == -1 && bookImbalance >= trig) return true;  // bids dominant in OS
             }
 
+            return false;
+        }
+
+        /// <summary>Boost while FOLLOWING: with-move capitulation flush (exhaustion cue).
+        /// Red follow (move down) boosts on extreme NEGATIVE delta (sellers puking into lows);
+        /// green follow (move up) boosts on extreme POSITIVE delta (buyers chasing into highs).</summary>
+        private bool IsFollowBoosted(int followZone)
+        {
+            if (!EnableDeltaBoost)
+                return false;
+
+            double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
+            if (followZone == 1 && effDelta <= -DeltaBoostThreshold) return true;
+            if (followZone == -1 && effDelta >= DeltaBoostThreshold) return true;
             return false;
         }
 
@@ -416,8 +538,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (idx < 0 || idx > CurrentBar)
                     continue;
 
-                double zone = zoneSeries.GetValueAt(idx);
-                if (zone == 0)
+                double paintZone = paintSeries.GetValueAt(idx);
+                if (paintZone == 0)
                     continue;
 
                 float opacity = (float)alphaSeries.GetValueAt(idx);
@@ -427,7 +549,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float x = chartControl.GetXByBarIndex(ChartBars, idx);
                 var rect = new RectangleF(x - halfBarWidth, top, halfBarWidth * 2f, height);
 
-                var brush = zone > 0 ? dxObBrush : dxOsBrush;
+                var brush = paintZone > 0 ? dxObBrush : dxOsBrush;
                 float saved = brush.Opacity;
                 brush.Opacity = opacity;
                 RenderTarget.FillRectangle(rect, brush);
@@ -453,12 +575,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             double zone = zoneSeries.GetValueAt(CurrentBar);
             string zoneTxt = zone > 0 ? "OVERBOUGHT" : zone < 0 ? "OVERSOLD" : "NEUTRAL";
 
-            // Show pending confirmation state, e.g. "OVERBOUGHT (2/3)"
-            if (zone != 0 && zoneRunLength < MinBarsInZone)
-                zoneTxt += " (" + zoneRunLength + "/" + MinBarsInZone + ")";
+            // Pending-state detail: bars count and/or depth still unmet
+            if (zone != 0 && !runConfirmed)
+            {
+                if (zoneRunLength < MinBarsInZone)
+                    zoneTxt += " (" + zoneRunLength + "/" + MinBarsInZone + ")";
+                if (MinRsiDepth > 0 && !runDepthReached)
+                    zoneTxt += " (pending depth)";
+            }
+
+            // Follow state
+            if (EnableFollowMode && followZone != 0 && !runConfirmed)
+                zoneTxt += followZone == 1 ? "  >> FOLLOWING SHORT" : "  >> FOLLOWING LONG";
 
             double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
-            bool boosted = State == State.Realtime && zone != 0 && IsBoosted((int)zone);
+            bool boosted = State == State.Realtime
+                && ((zone != 0 && IsBoosted((int)zone))
+                    || (followZone != 0 && !runConfirmed && IsFollowBoosted(followZone)));
 
             string bookTxt = !EnableLevel2Boost ? "off"
                 : State == State.Realtime ? (bookImbalance * 100).ToString("+0;-0;0") + "% bid"
