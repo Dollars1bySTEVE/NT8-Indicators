@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///
     /// Always-on background "warning light": red while price is overbought,
     /// green while oversold, clear otherwise. Rendered via SharpDX for clean,
-    /// fast visuals (drawn behind the chart bars; ZOrder is re-enforced every
+    /// fast visuals (drawn behind the chart bars; ZOrder is reinforced every
     /// render pass because NT8 can reshuffle Z-orders at runtime). Optional
     /// order-flow (delta) and Level 2 book-imbalance boosts intensify the tint
     /// when flow confirms the looming reversal. Optional on-chart status readout.
@@ -288,7 +288,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Historical)
             {
                 // Render behind the chart bars so the tint never overpowers them.
-                // (Also re-enforced every render pass — NT8 can reshuffle Z-orders
+                // (Also reinforced every render pass — NT8 can reshuffle Z-orders
                 // at runtime when indicators/templates change.)
                 if (ChartBars != null)
                     ZOrder = ChartBars.ZOrder - 1;

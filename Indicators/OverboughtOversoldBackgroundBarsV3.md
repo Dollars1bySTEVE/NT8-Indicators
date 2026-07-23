@@ -21,7 +21,7 @@ V3 is a direct continuation of V2. The version bump packages the production-vali
 **Feature set carried forward from V2:**
 - SharpDX background rendering (ZOrder behind bars, self-healing every render pass)
 - RSI gradient intensity with min/max opacity
-- **Min Bars In Zone** persistence filter with **bar-close-authoritative** back-fill (no retroactive cleanup path)
+- **Min Bars In Zone** persistence filter with **bar-close-only** back-fill (no retroactive cleanup path)
 - **Min RSI Depth** shallow-zone filter
 - **Follow Mode** — bar-close-solid latching, exhaustion/invalidation releases, delta-boost overlay during follow
 - **Delta-Confluence soft gate** — whisper/full two-state grammar, real-time only, retro-upgrade on flush
@@ -186,7 +186,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 | Date | Change |
 |---|---|
-| 2026-07-23 | V3/V2 ghost-leak fix: removed retro-clear cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
+| 2026-07-23 | V3/V2 ghost-leak fix: removed retroactive cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
 | 2026-07-23 | **V3 released**: production rename of V2 complete feature set; all settings, logic, and validated baselines carried forward unchanged |
 | 2026-07-23 | V2 → V3: added Min RSI Depth feature reference to documentation; clarified follow-latch flicker-proof rules |
 | 2026-07-23 | V2: SharpDX rendering, gradient intensity, delta boost, experimental L2 boost, status readout |
