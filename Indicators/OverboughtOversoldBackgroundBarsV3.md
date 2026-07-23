@@ -186,6 +186,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 | Date | Change |
 |---|---|
+| 2026-07-23 | Fixed Delta-Confluence flush stickiness: the flush marker now latches for the whole bar (was cleared each tick under OnPriceChange), so a mid-bar flush survives to bar close and correctly graduates a whisper run to full gradient, including retro-upgrade of earlier bars. Removed dead `followOriginBar` state. |
 | 2026-07-23 | V3/V2 ghost-leak fix: removed retroactive cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
 | 2026-07-23 | **V3 released**: production rename of V2 complete feature set; all settings, logic, and validated baselines carried forward unchanged |
 | 2026-07-23 | V2 → V3: added Min RSI Depth feature reference to documentation; clarified follow-latch flicker-proof rules |
