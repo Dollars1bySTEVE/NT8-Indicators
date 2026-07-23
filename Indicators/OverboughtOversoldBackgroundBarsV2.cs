@@ -33,11 +33,15 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///
     /// Follow Mode (optional, default OFF — preserves classic behavior):
     ///  Once a band confirms, it latches and keeps painting at a steady reduced
-    ///  opacity until the move exhausts (RSI crossing back through the Release
-    ///  Level, default 50). Turns the band from a condition light ("RSI is
-    ///  extreme now") into a signal state ("reversal active — follow until
-    ///  exhausted"). Delta boost still overlays during the follow, so a
-    ///  capitulation flush lights the band to max = exhaustion cue.
+    ///  opacity until one of two exits fires (Release Offset from the 50 midline):
+    ///   - EXHAUSTION: RSI crosses deep through the midline WITH the move
+    ///     (red releases at RSI < 50-offset; green at RSI > 50+offset) — the
+    ///     reversal ran its course.
+    ///   - INVALIDATION: RSI recovers AGAINST the signal past the opposite side
+    ///     (red releases at RSI > 50+offset; green at RSI < 50-offset) — the
+    ///     reversal never came; signal failed, stop painting.
+    ///  Delta boost still overlays during the follow, so a with-move capitulation
+    ///  flush lights the band to max = exhaustion cue.
     ///
     /// Built for renko-style charts (e.g. 6/3 NinZaRenko on NQ/MNQ) but
     /// instrument-agnostic — tune thresholds per instrument.
@@ -108,13 +112,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region 2. Follow Mode
         [NinjaScriptProperty]
         [Display(Name = "Enable Follow Mode", GroupName = "2. Follow Mode", Order = 0,
-                 Description = "Once a band confirms, it latches and keeps painting (reduced steady opacity) until RSI crosses back through the Release Level — the band follows the reversal move until exhausted, instead of ending when RSI leaves the extreme.")]
+                 Description = "Once a band confirms, it latches and keeps painting (reduced steady opacity) until the move exhausts (RSI crosses deep through the midline with the move) or the signal invalidates (RSI recovers against it). See Release Offset.")]
         public bool EnableFollowMode { get; set; }
 
-        [NinjaScriptProperty, Range(20, 80)]
-        [Display(Name = "Release Level", GroupName = "2. Follow Mode", Order = 1,
-                 Description = "RSI level that ends a follow. Red releases when RSI drops below it; green releases when RSI rises above it. 50 = midline (symmetric).")]
-        public int ReleaseLevel { get; set; }
+        [NinjaScriptProperty, Range(0, 30)]
+        [Display(Name = "Release Offset", GroupName = "2. Follow Mode", Order = 1,
+                 Description = "Offset from the RSI 50 midline for both follow exits. Red follow: exhaustion release at RSI < (50 - offset), invalidation release at RSI > (50 + offset). Green mirrored. 0 = release at midline; 10 = red holds to 40 / invalidates at 60. Larger = follows run longer.")]
+        public int ReleaseOffset { get; set; }
 
         [NinjaScriptProperty, Range(0, 100)]
         [Display(Name = "Follow Opacity %", GroupName = "2. Follow Mode", Order = 2,
@@ -198,7 +202,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode, order-flow boosts and status readout.";
+                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode (exhaustion/invalidation releases), order-flow boosts and status readout.";
                 Name = "OverboughtOversoldBackgroundBarsV2";
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
@@ -213,7 +217,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 MinRsiDepth = 3;
 
                 EnableFollowMode = false;
-                ReleaseLevel = 50;
+                ReleaseOffset = 10;
                 FollowOpacityPct = 20;
 
                 UseGradientIntensity = true;
@@ -368,10 +372,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (EnableFollowMode && followZone != 0)
             {
-                // Release check: red releases when RSI falls below ReleaseLevel,
-                // green releases when RSI rises above it.
-                bool released = followZone == 1 ? rsiValue < ReleaseLevel
-                                                : rsiValue > ReleaseLevel;
+                // Two release conditions, both offset from the 50 midline:
+                //
+                // EXHAUSTION — RSI crossed deep through the midline WITH the move:
+                //   red (move down):  RSI < 50 - offset
+                //   green (move up):  RSI > 50 + offset
+                //
+                // INVALIDATION — RSI recovered AGAINST the signal:
+                //   red:   RSI > 50 + offset (rally resumed; reversal never came)
+                //   green: RSI < 50 - offset (selloff resumed)
+                double lowRelease  = 50 - ReleaseOffset;
+                double highRelease = 50 + ReleaseOffset;
+
+                bool released = followZone == 1
+                    ? (rsiValue < lowRelease || rsiValue > highRelease)
+                    : (rsiValue > highRelease || rsiValue < lowRelease);
+
                 if (released)
                 {
                     followZone = 0;
