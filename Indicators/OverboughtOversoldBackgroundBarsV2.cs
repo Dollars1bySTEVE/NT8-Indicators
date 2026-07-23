@@ -35,9 +35,18 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///    (prevents "ghost" bands from one-tick confirmations under
     ///    Calculate.OnPriceChange).
     ///
+    /// Flicker-proofing: under OnPriceChange a confirmation can pass for a single
+    /// tick and die on the next. Two defenses:
+    ///  - Follow latches are only taken from BAR-CLOSE-solid confirmations
+    ///    (evaluated on the first tick of the next bar), never from intrabar
+    ///    ticks — one-tick phantoms cannot spawn ghost follows.
+    ///  - Retro-clear runs even while a follow is active, protecting only the
+    ///    bars the active follow legitimately owns (from its origin bar forward).
+    ///
     /// Follow Mode (optional, default OFF — preserves classic behavior):
-    ///  Once a band confirms, it latches and keeps painting at a steady reduced
-    ///  opacity until one of two exits fires (Release Offset from the 50 midline):
+    ///  Once a band confirms (bar-close solid), it latches and keeps painting at
+    ///  a steady reduced opacity until one of two exits fires (Release Offset
+    ///  from the 50 midline):
     ///   - EXHAUSTION: RSI crosses deep through the midline WITH the move
     ///     (red releases at RSI < 50-offset; green at RSI > 50+offset) — the
     ///     reversal ran its course.
@@ -67,6 +76,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Follow Mode state
         private int followZone;              // 0 = not following; else 1 / -1
+        private int followOriginBar;         // CurrentBar index where the latched run started (paint ownership)
 
         // ---- SharpDX device-dependent resources ----
         private SharpDX.Direct2D1.SolidColorBrush dxObBrush;
@@ -116,7 +126,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region 2. Follow Mode
         [NinjaScriptProperty]
         [Display(Name = "Enable Follow Mode", GroupName = "2. Follow Mode", Order = 0,
-                 Description = "Once a band confirms, it latches and keeps painting (reduced steady opacity) until the move exhausts (RSI crosses deep through the midline with the move) or the signal invalidates (RSI recovers against it). See Release Offset.")]
+                 Description = "Once a band confirms (held to a bar close), it latches and keeps painting (reduced steady opacity) until the move exhausts (RSI crosses deep through the midline with the move) or the signal invalidates (RSI recovers against it). See Release Offset.")]
         public bool EnableFollowMode { get; set; }
 
         [NinjaScriptProperty, Range(0, 30)]
@@ -206,7 +216,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode (exhaustion/invalidation releases), order-flow boosts and status readout.";
+                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence + depth filters, optional follow mode (exhaustion/invalidation releases, flicker-proof bar-close latching), order-flow boosts and status readout.";
                 Name = "OverboughtOversoldBackgroundBarsV2";
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
@@ -247,6 +257,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.DataLoaded)
             {
                 rsi = RSI(RsiPeriod, RsiSmooth);
+                followOriginBar = -1;
 
                 if (MinOpacityPct > MaxOpacityPct)
                 {
@@ -284,6 +295,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 runDepthReached = false;
                 runConfirmed = false;
                 followZone = 0;
+                followOriginBar = -1;
                 return;
             }
 
@@ -291,6 +303,28 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 prevBarDelta = barDelta;
                 barDelta = 0;
+
+                // ---- Bar-close-solid follow latch (flicker-proof) ----
+                // Follows may ONLY latch from a confirmation that held through a
+                // completed bar. Evaluate the just-closed bar (index 1): if its
+                // run passed Min Bars + Min Depth at the close, latch the follow.
+                // Intrabar tick-confirmations can paint live but can never latch —
+                // so a one-tick phantom cannot spawn a ghost follow.
+                if (EnableFollowMode && CurrentBar > 0)
+                {
+                    double closedZone = zoneSeries[1];
+                    if (closedZone != 0)
+                    {
+                        int runLen; bool depthHeld; int originBar;
+                        EvaluateRun(1, (int)closedZone, out runLen, out depthHeld, out originBar);
+
+                        if (runLen >= MinBarsInZone && depthHeld)
+                        {
+                            followZone = (int)closedZone;
+                            followOriginBar = originBar;
+                        }
+                    }
+                }
             }
 
             double rsiValue = rsi[0];
@@ -331,7 +365,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 zoneRunLength = run;
                 runDepthReached = depthOk;
 
-                // An opposite follow ends immediately when the other extreme confirms
                 bool confirmedNow = run >= MinBarsInZone && depthOk;
 
                 if (confirmedNow)
@@ -340,7 +373,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     paintSeries[0] = zone;
                     alphaSeries[0] = ComputeOpacity(zone, rsiValue, threshold, extreme);
 
-                    // Retroactive fill: paint any unpainted bars of this run
+                    // Retroactive fill: paint any unpainted bars of this run.
+                    // NOTE: does NOT latch the follow — latching happens only from
+                    // bar-close-solid confirmations (see IsFirstTickOfBar block).
                     for (int back = 1; back <= CurrentBar; back++)
                     {
                         if (zoneSeries[back] != zone) break;
@@ -350,30 +385,27 @@ namespace NinjaTrader.NinjaScript.Indicators
                             alphaSeries[back] = ComputeOpacity(zone, rsiSeries[back], threshold, extreme);
                         }
                     }
-
-                    // Latch follow state
-                    followZone = EnableFollowMode ? zone : 0;
                 }
                 else
                 {
                     runConfirmed = false;
 
-                    // Retroactive CLEAR: with Calculate.OnPriceChange, a confirmation
-                    // can flicker true for a tick (run/depth momentarily pass), back-fill
-                    // the run, then flicker away — leaving orphaned "ghost" paint on the
-                    // earlier bars of the run. If this run is NOT currently confirmed and
-                    // we're not following, un-paint any zone-paint on its bars.
-                    // (Follow bars from a previously confirmed latch are legit and kept.)
-                    if (!(EnableFollowMode && followZone != 0))
+                    // Retroactive CLEAR: a tick-confirmation may have back-filled
+                    // this run and then died. Un-paint the run's bars — but never
+                    // touch bars owned by an active bar-close-solid follow (those
+                    // are at or after followOriginBar).
+                    for (int back = 1; back <= CurrentBar; back++)
                     {
-                        for (int back = 1; back <= CurrentBar; back++)
+                        if (zoneSeries[back] != zone) break;
+
+                        int barIdx = CurrentBar - back;
+                        bool ownedByFollow = EnableFollowMode && followZone != 0
+                            && followOriginBar >= 0 && barIdx >= followOriginBar;
+
+                        if (!ownedByFollow && paintSeries[back] == zone)
                         {
-                            if (zoneSeries[back] != zone) break;
-                            if (paintSeries[back] == zone)
-                            {
-                                paintSeries[back] = 0;
-                                alphaSeries[back] = 0;
-                            }
+                            paintSeries[back] = 0;
+                            alphaSeries[back] = 0;
                         }
                     }
 
@@ -397,36 +429,26 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Retroactive CLEAR on zone exit: if the just-ended run never held its
             // confirmation (an intrabar flicker back-filled it), un-paint it now.
-            // Only clear when there is no active follow claiming those bars.
-            if (!(EnableFollowMode && followZone != 0) && CurrentBar > 0)
+            // Runs even while following — bars owned by the active follow (at or
+            // after followOriginBar) are protected.
+            if (CurrentBar > 0)
             {
                 double prevZone = zoneSeries[1];
                 if (prevZone != 0)
                 {
-                    // Re-verify the completed run actually met both conditions
-                    int runLen = 0;
-                    bool depthHeld = MinRsiDepth <= 0;
-                    double thr = prevZone == 1 ? OverboughtThreshold : OversoldThreshold;
-                    double dTarget = prevZone == 1 ? thr + MinRsiDepth : thr - MinRsiDepth;
-
-                    for (int back = 1; back <= CurrentBar; back++)
-                    {
-                        if (zoneSeries[back] != prevZone) break;
-                        runLen++;
-                        if (!depthHeld)
-                        {
-                            double backRsi = rsiSeries[back];
-                            if (prevZone == 1 ? backRsi >= dTarget : backRsi <= dTarget)
-                                depthHeld = true;
-                        }
-                    }
+                    int runLen; bool depthHeld; int originBar;
+                    EvaluateRun(1, (int)prevZone, out runLen, out depthHeld, out originBar);
 
                     bool runWasValid = runLen >= MinBarsInZone && depthHeld;
                     if (!runWasValid)
                     {
                         for (int back = 1; back <= runLen; back++)
                         {
-                            if (paintSeries[back] == prevZone)
+                            int barIdx = CurrentBar - back;
+                            bool ownedByFollow = EnableFollowMode && followZone != 0
+                                && followOriginBar >= 0 && barIdx >= followOriginBar;
+
+                            if (!ownedByFollow && paintSeries[back] == prevZone)
                             {
                                 paintSeries[back] = 0;
                                 alphaSeries[back] = 0;
@@ -457,6 +479,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (released)
                 {
                     followZone = 0;
+                    followOriginBar = -1;
                     paintSeries[0] = 0;
                     alphaSeries[0] = 0;
                 }
@@ -468,6 +491,34 @@ namespace NinjaTrader.NinjaScript.Indicators
                 paintSeries[0] = 0;
                 alphaSeries[0] = 0;
             }
+        }
+
+        /// <summary>
+        /// Walks the consecutive same-zone run ending at barsAgo (inclusive, going
+        /// back in time). Returns its length, whether Min RSI Depth was reached,
+        /// and the absolute CurrentBar-index of the run's first (oldest) bar.
+        /// </summary>
+        private void EvaluateRun(int startBarsAgo, int zone, out int runLen, out bool depthHeld, out int originBar)
+        {
+            runLen = 0;
+            depthHeld = MinRsiDepth <= 0;
+            double thr = zone == 1 ? OverboughtThreshold : OversoldThreshold;
+            double dTarget = zone == 1 ? thr + MinRsiDepth : thr - MinRsiDepth;
+
+            int back = startBarsAgo;
+            for (; back <= CurrentBar; back++)
+            {
+                if (zoneSeries[back] != zone) break;
+                runLen++;
+                if (!depthHeld)
+                {
+                    double backRsi = rsiSeries[back];
+                    if (zone == 1 ? backRsi >= dTarget : backRsi <= dTarget)
+                        depthHeld = true;
+                }
+            }
+
+            originBar = CurrentBar - (back - 1);
         }
 
         /// <summary>Paints the current bar in follow state (steady reduced opacity; boost overlays).</summary>
