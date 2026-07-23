@@ -61,6 +61,8 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class OverboughtOversoldBackgroundBarsV2 : Indicator
     {
+        private const double OpacityComparisonEpsilon = 0.000001;
+
         private RSI rsi;
 
         // Per-bar records (written in OnBarUpdate, safely read at render time)
@@ -416,7 +418,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         bool isWhisperBar = requiresFlush
                             && paintSeries[back] == zone
                             && alphaSeries[back] > 0
-                            && Math.Abs(alphaSeries[back] - unconfirmedOpacity) < 0.000001;
+                            && Math.Abs(alphaSeries[back] - unconfirmedOpacity) < OpacityComparisonEpsilon;
 
                         if (alphaSeries[back] <= 0 || paintSeries[back] != zone || (fullConfirmedNow && isWhisperBar))
                         {

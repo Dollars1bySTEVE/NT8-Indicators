@@ -145,6 +145,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 ## Ideas / Backlog (accuracy work)
 
 - **Depth-based confirmation** — optionally require RSI to reach N points past the threshold before painting (filters shallow zones entirely rather than just dimming them)
+- **Delta-confluence marker** — *soft-gate/readout version shipped 2026-07-23*; optional future enhancement is an explicit per-bar marker when a full-confirmed run and extreme opposing delta coincide
 - **L2 boost evaluation session** — one live session with L2 on to see if the book adds anything the tape doesn't
 - **RTH-open delta calibration** — verify 100–150 threshold behavior in the 9:30–10:00 burst
 
