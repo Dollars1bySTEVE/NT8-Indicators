@@ -25,6 +25,10 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// and Level 2 book-imbalance boosts intensify the tint when flow confirms
     /// the looming reversal. Optional on-chart status readout.
     ///
+    /// Min Bars In Zone filters out brief one/two-brick blips: tint only shows
+    /// once the zone has persisted N bars (with retroactive fill), so only the
+    /// larger, judgment-worthy bands paint. ZoneState stays unfiltered.
+    ///
     /// Built for renko-style charts (e.g. 6/3 NinZaRenko on NQ/MNQ) but
     /// instrument-agnostic — tune thresholds per instrument.
     /// </summary>
@@ -33,9 +37,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private RSI rsi;
 
         // Per-bar records (written in OnBarUpdate, safely read at render time)
-        private Series<double> zoneSeries;   // 1 / -1 / 0
+        private Series<double> zoneSeries;   // 1 / -1 / 0 (raw, unfiltered)
         private Series<double> alphaSeries;  // computed opacity per bar (0..1)
         private Series<double> rsiSeries;    // RSI value per bar (for readout)
+
+        // Persistence tracking for Min Bars In Zone
+        private int zoneRunLength;           // consecutive bars in current zone
+        private int lastRunZone;             // zone of the current run
 
         // ---- SharpDX device-dependent resources ----
         private SharpDX.Direct2D1.SolidColorBrush dxObBrush;
@@ -70,6 +78,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty, Range(0, 50)]
         [Display(Name = "Oversold Threshold", GroupName = "1. Parameters", Order = 3)]
         public int OversoldThreshold { get; set; }
+
+        [NinjaScriptProperty, Range(1, 50)]
+        [Display(Name = "Min Bars In Zone", GroupName = "1. Parameters", Order = 4,
+                 Description = "Tint only shows once the zone has persisted this many consecutive bars (earlier bars back-fill on confirmation). Filters brief blips. Set 1 for classic always-on behavior.")]
+        public int MinBarsInZone { get; set; }
         #endregion
 
         #region 2. Visuals
@@ -140,7 +153,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int ImbalanceTriggerPct { get; set; }
         #endregion
 
-        /// <summary>1 = overbought, -1 = oversold, 0 = neutral. Strategy-readable.</summary>
+        /// <summary>1 = overbought, -1 = oversold, 0 = neutral. Raw/unfiltered — persistence filter applies to visuals only.</summary>
         [Browsable(false), XmlIgnore]
         public Series<double> ZoneState { get { return zoneSeries; } }
 
@@ -148,7 +161,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with optional order-flow boosts and status readout.";
+                Description = "V2: Continuous background warning light for RSI overbought (red) / oversold (green), SharpDX-rendered behind the bars, with persistence filter, optional order-flow boosts and status readout.";
                 Name = "OverboughtOversoldBackgroundBarsV2";
                 IsOverlay = true;
                 IsSuspendedWhileInactive = true;
@@ -159,6 +172,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RsiSmooth = 1;
                 OverboughtThreshold = 70;
                 OversoldThreshold = 30;
+                MinBarsInZone = 3;
 
                 UseGradientIntensity = true;
                 MinOpacityPct = 15;
@@ -212,6 +226,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 zoneSeries[0] = 0;
                 alphaSeries[0] = 0;
                 rsiSeries[0] = 0;
+                zoneRunLength = 0;
+                lastRunZone = 0;
                 return;
             }
 
@@ -224,19 +240,56 @@ namespace NinjaTrader.NinjaScript.Indicators
             double rsiValue = rsi[0];
             rsiSeries[0] = rsiValue;
 
-            if (rsiValue >= OverboughtThreshold)
+            int zone;
+            if (rsiValue >= OverboughtThreshold)      zone = 1;
+            else if (rsiValue <= OversoldThreshold)   zone = -1;
+            else                                      zone = 0;
+
+            zoneSeries[0] = zone;
+
+            // ---- Persistence tracking (intrabar-safe: recompute run from prior bars) ----
+            if (zone == 0)
             {
-                zoneSeries[0] = 1;
-                alphaSeries[0] = ComputeOpacity(1, rsiValue, OverboughtThreshold, 100);
+                alphaSeries[0] = 0;
+                zoneRunLength = 0;
+                lastRunZone = 0;
+                return;
             }
-            else if (rsiValue <= OversoldThreshold)
+
+            // Count consecutive prior bars in this same zone (current bar = 1)
+            int run = 1;
+            for (int back = 1; back <= CurrentBar && run < MinBarsInZone; back++)
             {
-                zoneSeries[0] = -1;
-                alphaSeries[0] = ComputeOpacity(-1, rsiValue, OversoldThreshold, 0);
+                if (zoneSeries[back] == zone) run++;
+                else break;
+            }
+            zoneRunLength = run;
+            lastRunZone = zone;
+
+            double opacity = ComputeOpacity(zone, rsiValue,
+                zone == 1 ? OverboughtThreshold : OversoldThreshold,
+                zone == 1 ? 100 : 0);
+
+            if (run >= MinBarsInZone)
+            {
+                // Confirmed: paint this bar and retroactively fill the run-up bars
+                alphaSeries[0] = opacity;
+
+                for (int back = 1; back < MinBarsInZone && back <= CurrentBar; back++)
+                {
+                    if (zoneSeries[back] != zone) break;
+                    if (alphaSeries[back] <= 0)
+                    {
+                        double backRsi = rsiSeries[back];
+                        alphaSeries[back] = ComputeOpacity(zone, backRsi,
+                            zone == 1 ? OverboughtThreshold : OversoldThreshold,
+                            zone == 1 ? 100 : 0);
+                    }
+                }
             }
             else
             {
-                zoneSeries[0] = 0;
+                // Not yet confirmed: track but don't paint
                 alphaSeries[0] = 0;
             }
         }
@@ -399,6 +452,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             double rsiValue = rsiSeries.GetValueAt(CurrentBar);
             double zone = zoneSeries.GetValueAt(CurrentBar);
             string zoneTxt = zone > 0 ? "OVERBOUGHT" : zone < 0 ? "OVERSOLD" : "NEUTRAL";
+
+            // Show pending confirmation state, e.g. "OVERBOUGHT (2/3)"
+            if (zone != 0 && zoneRunLength < MinBarsInZone)
+                zoneTxt += " (" + zoneRunLength + "/" + MinBarsInZone + ")";
 
             double effDelta = barDelta != 0 ? barDelta : prevBarDelta;
             bool boosted = State == State.Realtime && zone != 0 && IsBoosted((int)zone);
