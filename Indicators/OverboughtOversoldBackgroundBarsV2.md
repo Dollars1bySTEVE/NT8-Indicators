@@ -154,6 +154,7 @@ Drawn behind the chart bars (`ZOrder = ChartBars.ZOrder - 1`) so even max-opacit
 
 | Date | Change |
 |---|---|
+| 2026-07-23 | Fixed Delta-Confluence flush stickiness: the flush marker now latches for the whole bar (was cleared each tick under OnPriceChange), so a mid-bar flush survives to bar close and correctly graduates a whisper run to full gradient, including retro-upgrade of earlier bars. Removed dead `followOriginBar` state. |
 | 2026-07-23 | Ghost-leak fix: removed retroactive cleanup strategy; closed-bar confirmation + back-fill are now authoritative at bar close only. Current bar remains live/intrabar. |
 | 2026-07-23 | V2 released: SharpDX rendering, gradient intensity, delta boost, experimental L2 boost, status readout |
 | 2026-07-23 | Fixed compile errors (escaped `&&`, missing `NinjaTrader.Cbi` using) |

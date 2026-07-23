@@ -78,7 +78,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         // Follow Mode state
         private int followZone;              // 0 = not following; else 1 / -1
-        private int followOriginBar;         // CurrentBar index where the latched run started (paint ownership)
 
         // ---- SharpDX device-dependent resources ----
         private SharpDX.Direct2D1.SolidColorBrush dxObBrush;
@@ -278,7 +277,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.DataLoaded)
             {
                 rsi = RSI(RsiPeriod, RsiSmooth);
-                followOriginBar = -1;
 
                 if (MinOpacityPct > MaxOpacityPct)
                 {
@@ -318,7 +316,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 runConfirmed = false;
                 runFlushSeen = false;
                 followZone = 0;
-                followOriginBar = -1;
                 return;
             }
 
@@ -343,15 +340,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     double closedZone = zoneSeries[1];
                     if (closedZone != 0)
                     {
-                        int runLen; bool depthHeld; int originBar;
-                        EvaluateRun(1, (int)closedZone, out runLen, out depthHeld, out originBar);
+                        int runLen; bool depthHeld;
+                        EvaluateRun(1, (int)closedZone, out runLen, out depthHeld);
 
                         bool requiresFlush = RequireDeltaConfluence && State == State.Realtime;
                         bool flushSeen = !requiresFlush || RunHasConfluenceFlush(1, (int)closedZone, runLen);
                         if (runLen >= MinBarsInZone && depthHeld && flushSeen)
                         {
                             followZone = (int)closedZone;
-                            followOriginBar = originBar;
                         }
                     }
                 }
@@ -368,7 +364,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             zoneSeries[0] = zone;
 
             // Real-time only confluence marker for THIS bar (evaluated live).
-            confluenceSeries[0] = (State == State.Realtime && zone != 0 && IsConfluenceFlush(zone)) ? zone : 0;
+            // STICKY: once a flush is seen this bar, keep it latched for the bar —
+            // never clear it back to 0 on a later tick when delta normalizes.
+            // Latch only from THIS bar's delta (barDelta != 0) so the
+            // prev-bar fallback in GetEffectiveDelta can't latch a stale flush.
+            if (State == State.Realtime && zone != 0 && barDelta != 0 && IsConfluenceFlush(zone))
+                confluenceSeries[0] = zone;
+            else if (IsFirstTickOfBar)
+                confluenceSeries[0] = 0; // reset only at the start of a new bar
 
             // ---------------- In an RSI extreme zone ----------------
             if (zone != 0)
@@ -459,7 +462,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (released)
                 {
                     followZone = 0;
-                    followOriginBar = -1;
                     paintSeries[0] = 0;
                     alphaSeries[0] = 0;
                 }
@@ -484,8 +486,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (closedZone == 0)
                 return;
 
-            int runLen; bool depthHeld; int originBar;
-            EvaluateRun(1, closedZone, out runLen, out depthHeld, out originBar);
+            int runLen; bool depthHeld;
+            EvaluateRun(1, closedZone, out runLen, out depthHeld);
 
             bool confirmed = runLen >= MinBarsInZone && depthHeld;
             if (!confirmed)
@@ -558,18 +560,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         /// <summary>
         /// Walks the consecutive same-zone run ending at barsAgo (inclusive, going
-        /// back in time). Returns its length, whether Min RSI Depth was reached,
-        /// and the absolute CurrentBar-index of the run's first (oldest) bar.
+        /// back in time). Returns its length and whether Min RSI Depth was reached.
         /// </summary>
-        private void EvaluateRun(int startBarsAgo, int zone, out int runLen, out bool depthHeld, out int originBar)
+        private void EvaluateRun(int startBarsAgo, int zone, out int runLen, out bool depthHeld)
         {
             runLen = 0;
             depthHeld = MinRsiDepth <= 0;
             double thr = zone == 1 ? OverboughtThreshold : OversoldThreshold;
             double dTarget = zone == 1 ? thr + MinRsiDepth : thr - MinRsiDepth;
 
-            int back = startBarsAgo;
-            for (; back <= CurrentBar; back++)
+            for (int back = startBarsAgo; back <= CurrentBar; back++)
             {
                 if (zoneSeries[back] != zone) break;
                 runLen++;
@@ -580,8 +580,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                         depthHeld = true;
                 }
             }
-
-            originBar = CurrentBar - (back - 1);
         }
 
         /// <summary>Paints the current bar in follow state (steady reduced opacity; boost overlays).</summary>
