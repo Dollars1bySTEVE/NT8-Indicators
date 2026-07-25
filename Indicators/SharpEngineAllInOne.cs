@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -73,7 +72,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 swingHtf = Swing(BarsArray[1], SwingStrength);
                 swingConfirm = Swing(BarsArray[2], SwingStrength);
-                signalSeries = new Series<int>(this);
+                signalSeries = new Series<int>(this, MaximumBarsLookBack.Infinite);
             }
             else if (State == State.Terminated)
             {
