@@ -133,21 +133,33 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowBiasDebug = false;
 
                 ShowPreviousDayLevels = true;
+                ShowPreviousDayOpenLevel = true;
+                ShowPreviousDayHighLevel = true;
+                ShowPreviousDayLowLevel = true;
                 PreviousDayOpenColor = System.Windows.Media.Brushes.Gold;
                 PreviousDayHighColor = System.Windows.Media.Brushes.LimeGreen;
                 PreviousDayLowColor = System.Windows.Media.Brushes.OrangeRed;
 
                 ShowPreviousWeekLevels = true;
+                ShowPreviousWeekOpenLevel = true;
+                ShowPreviousWeekHighLevel = true;
+                ShowPreviousWeekLowLevel = true;
                 PreviousWeekOpenColor = System.Windows.Media.Brushes.Goldenrod;
                 PreviousWeekHighColor = System.Windows.Media.Brushes.DeepSkyBlue;
                 PreviousWeekLowColor = System.Windows.Media.Brushes.MediumVioletRed;
 
                 ShowPreviousSessionLevels = true;
+                ShowPreviousSessionOpenLevel = true;
+                ShowPreviousSessionHighLevel = true;
+                ShowPreviousSessionLowLevel = true;
                 PreviousSessionOpenColor = System.Windows.Media.Brushes.Khaki;
                 PreviousSessionHighColor = System.Windows.Media.Brushes.LightGreen;
                 PreviousSessionLowColor = System.Windows.Media.Brushes.LightCoral;
 
                 ShowCurrentSessionLevels = true;
+                ShowCurrentSessionOpenLevel = true;
+                ShowCurrentSessionHighLevel = true;
+                ShowCurrentSessionLowLevel = true;
                 CurrentSessionOpenColor = System.Windows.Media.Brushes.WhiteSmoke;
                 CurrentSessionHighColor = System.Windows.Media.Brushes.Cyan;
                 CurrentSessionLowColor = System.Windows.Media.Brushes.Magenta;
@@ -159,6 +171,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 ShowSessionProfileLevels = true;
                 ShowWeeklyProfileLevels = true;
+                ShowSessionPoc = true;
+                ShowSessionVah = true;
+                ShowSessionVal = true;
+                ShowWeeklyPoc = true;
+                ShowWeeklyVah = true;
+                ShowWeeklyVal = true;
                 ShowSessionVwap = true;
                 ShowWeeklyVwap = true;
                 ValueAreaPercent = 70;
@@ -689,30 +707,42 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowPreviousDayLevels)
             {
-                RenderLevel(chartControl, chartScale, priorDayOpen, "PD Open", dxPrevDayOpen, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, priorDayHigh, "PD High", dxPrevDayHigh, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, priorDayLow, "PD Low", dxPrevDayLow, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousDayOpenLevel)
+                    RenderLevel(chartControl, chartScale, priorDayOpen, "PD Open", dxPrevDayOpen, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousDayHighLevel)
+                    RenderLevel(chartControl, chartScale, priorDayHigh, "PD High", dxPrevDayHigh, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousDayLowLevel)
+                    RenderLevel(chartControl, chartScale, priorDayLow, "PD Low", dxPrevDayLow, ReferenceLineWidth, referenceStrokeStyle);
             }
 
             if (ShowPreviousWeekLevels)
             {
-                RenderLevel(chartControl, chartScale, priorWeekOpen, "PW Open", dxPrevWeekOpen, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, priorWeekHigh, "PW High", dxPrevWeekHigh, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, priorWeekLow, "PW Low", dxPrevWeekLow, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousWeekOpenLevel)
+                    RenderLevel(chartControl, chartScale, priorWeekOpen, "PW Open", dxPrevWeekOpen, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousWeekHighLevel)
+                    RenderLevel(chartControl, chartScale, priorWeekHigh, "PW High", dxPrevWeekHigh, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousWeekLowLevel)
+                    RenderLevel(chartControl, chartScale, priorWeekLow, "PW Low", dxPrevWeekLow, ReferenceLineWidth, referenceStrokeStyle);
             }
 
             if (ShowPreviousSessionLevels)
             {
-                RenderLevel(chartControl, chartScale, priorSessionOpen, "PS Open", dxPrevSessionOpen, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, priorSessionHigh, "PS High", dxPrevSessionHigh, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, priorSessionLow, "PS Low", dxPrevSessionLow, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousSessionOpenLevel)
+                    RenderLevel(chartControl, chartScale, priorSessionOpen, "PS Open", dxPrevSessionOpen, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousSessionHighLevel)
+                    RenderLevel(chartControl, chartScale, priorSessionHigh, "PS High", dxPrevSessionHigh, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowPreviousSessionLowLevel)
+                    RenderLevel(chartControl, chartScale, priorSessionLow, "PS Low", dxPrevSessionLow, ReferenceLineWidth, referenceStrokeStyle);
             }
 
             if (ShowCurrentSessionLevels)
             {
-                RenderLevel(chartControl, chartScale, currentSessionOpen, "Session Open", dxCurrentSessionOpen, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, currentSessionHigh, "Session High", dxCurrentSessionHigh, ReferenceLineWidth, referenceStrokeStyle);
-                RenderLevel(chartControl, chartScale, currentSessionLow, "Session Low", dxCurrentSessionLow, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowCurrentSessionOpenLevel)
+                    RenderLevel(chartControl, chartScale, currentSessionOpen, "Session Open", dxCurrentSessionOpen, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowCurrentSessionHighLevel)
+                    RenderLevel(chartControl, chartScale, currentSessionHigh, "Session High", dxCurrentSessionHigh, ReferenceLineWidth, referenceStrokeStyle);
+                if (ShowCurrentSessionLowLevel)
+                    RenderLevel(chartControl, chartScale, currentSessionLow, "Session Low", dxCurrentSessionLow, ReferenceLineWidth, referenceStrokeStyle);
             }
         }
 
@@ -720,16 +750,22 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (ShowSessionProfileLevels)
             {
-                RenderLevel(chartControl, chartScale, sessionPoc, "Session POC", dxSessionPoc, ProfileLineWidth, profileStrokeStyle);
-                RenderLevel(chartControl, chartScale, sessionVah, "Session VAH", dxSessionVah, ProfileLineWidth, profileStrokeStyle);
-                RenderLevel(chartControl, chartScale, sessionVal, "Session VAL", dxSessionVal, ProfileLineWidth, profileStrokeStyle);
+                if (ShowSessionPoc)
+                    RenderLevel(chartControl, chartScale, sessionPoc, "Session POC", dxSessionPoc, ProfileLineWidth, profileStrokeStyle);
+                if (ShowSessionVah)
+                    RenderLevel(chartControl, chartScale, sessionVah, "Session VAH", dxSessionVah, ProfileLineWidth, profileStrokeStyle);
+                if (ShowSessionVal)
+                    RenderLevel(chartControl, chartScale, sessionVal, "Session VAL", dxSessionVal, ProfileLineWidth, profileStrokeStyle);
             }
 
             if (ShowWeeklyProfileLevels)
             {
-                RenderLevel(chartControl, chartScale, weeklyPoc, "Weekly POC", dxWeeklyPoc, ProfileLineWidth, profileStrokeStyle);
-                RenderLevel(chartControl, chartScale, weeklyVah, "Weekly VAH", dxWeeklyVah, ProfileLineWidth, profileStrokeStyle);
-                RenderLevel(chartControl, chartScale, weeklyVal, "Weekly VAL", dxWeeklyVal, ProfileLineWidth, profileStrokeStyle);
+                if (ShowWeeklyPoc)
+                    RenderLevel(chartControl, chartScale, weeklyPoc, "Weekly POC", dxWeeklyPoc, ProfileLineWidth, profileStrokeStyle);
+                if (ShowWeeklyVah)
+                    RenderLevel(chartControl, chartScale, weeklyVah, "Weekly VAH", dxWeeklyVah, ProfileLineWidth, profileStrokeStyle);
+                if (ShowWeeklyVal)
+                    RenderLevel(chartControl, chartScale, weeklyVal, "Weekly VAL", dxWeeklyVal, ProfileLineWidth, profileStrokeStyle);
             }
 
             if (ShowSessionVwap)
@@ -945,8 +981,20 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Show Previous Day OH/L", Order = 1, GroupName = "2. Reference Levels")]
         public bool ShowPreviousDayLevels { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Day Open", Order = 2, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousDayOpenLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Day High", Order = 3, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousDayHighLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Day Low", Order = 4, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousDayLowLevel { get; set; }
+
         [XmlIgnore]
-        [Display(Name = "Previous Day Open Color", Order = 2, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Day Open Color", Order = 5, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousDayOpenColor { get; set; }
 
         [Browsable(false)]
@@ -957,7 +1005,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Previous Day High Color", Order = 3, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Day High Color", Order = 6, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousDayHighColor { get; set; }
 
         [Browsable(false)]
@@ -968,7 +1016,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Previous Day Low Color", Order = 4, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Day Low Color", Order = 7, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousDayLowColor { get; set; }
 
         [Browsable(false)]
@@ -979,11 +1027,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Previous Week OH/L", Order = 5, GroupName = "2. Reference Levels")]
+        [Display(Name = "Show Previous Week OH/L", Order = 8, GroupName = "2. Reference Levels")]
         public bool ShowPreviousWeekLevels { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Week Open", Order = 9, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousWeekOpenLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Week High", Order = 10, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousWeekHighLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Week Low", Order = 11, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousWeekLowLevel { get; set; }
+
         [XmlIgnore]
-        [Display(Name = "Previous Week Open Color", Order = 6, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Week Open Color", Order = 12, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousWeekOpenColor { get; set; }
 
         [Browsable(false)]
@@ -994,7 +1054,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Previous Week High Color", Order = 7, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Week High Color", Order = 13, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousWeekHighColor { get; set; }
 
         [Browsable(false)]
@@ -1005,7 +1065,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Previous Week Low Color", Order = 8, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Week Low Color", Order = 14, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousWeekLowColor { get; set; }
 
         [Browsable(false)]
@@ -1016,11 +1076,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Previous Session OH/L", Order = 9, GroupName = "2. Reference Levels")]
+        [Display(Name = "Show Previous Session OH/L", Order = 15, GroupName = "2. Reference Levels")]
         public bool ShowPreviousSessionLevels { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Session Open", Order = 16, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousSessionOpenLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Session High", Order = 17, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousSessionHighLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Previous Session Low", Order = 18, GroupName = "2. Reference Levels")]
+        public bool ShowPreviousSessionLowLevel { get; set; }
+
         [XmlIgnore]
-        [Display(Name = "Previous Session Open Color", Order = 10, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Session Open Color", Order = 19, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousSessionOpenColor { get; set; }
 
         [Browsable(false)]
@@ -1031,7 +1103,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Previous Session High Color", Order = 11, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Session High Color", Order = 20, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousSessionHighColor { get; set; }
 
         [Browsable(false)]
@@ -1042,7 +1114,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Previous Session Low Color", Order = 12, GroupName = "2. Reference Levels")]
+        [Display(Name = "Previous Session Low Color", Order = 21, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush PreviousSessionLowColor { get; set; }
 
         [Browsable(false)]
@@ -1053,11 +1125,23 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Current Session OH/L", Order = 13, GroupName = "2. Reference Levels")]
+        [Display(Name = "Show Current Session OH/L", Order = 22, GroupName = "2. Reference Levels")]
         public bool ShowCurrentSessionLevels { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Show Current Session Open", Order = 23, GroupName = "2. Reference Levels")]
+        public bool ShowCurrentSessionOpenLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Current Session High", Order = 24, GroupName = "2. Reference Levels")]
+        public bool ShowCurrentSessionHighLevel { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Current Session Low", Order = 25, GroupName = "2. Reference Levels")]
+        public bool ShowCurrentSessionLowLevel { get; set; }
+
         [XmlIgnore]
-        [Display(Name = "Current Session Open Color", Order = 14, GroupName = "2. Reference Levels")]
+        [Display(Name = "Current Session Open Color", Order = 26, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush CurrentSessionOpenColor { get; set; }
 
         [Browsable(false)]
@@ -1068,7 +1152,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Current Session High Color", Order = 15, GroupName = "2. Reference Levels")]
+        [Display(Name = "Current Session High Color", Order = 27, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush CurrentSessionHighColor { get; set; }
 
         [Browsable(false)]
@@ -1079,7 +1163,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Current Session Low Color", Order = 16, GroupName = "2. Reference Levels")]
+        [Display(Name = "Current Session Low Color", Order = 28, GroupName = "2. Reference Levels")]
         public System.Windows.Media.Brush CurrentSessionLowColor { get; set; }
 
         [Browsable(false)]
@@ -1091,20 +1175,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 5)]
-        [Display(Name = "Reference Line Width", Order = 17, GroupName = "2. Reference Levels")]
+        [Display(Name = "Reference Line Width", Order = 29, GroupName = "2. Reference Levels")]
         public int ReferenceLineWidth { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Reference Line Style", Order = 18, GroupName = "2. Reference Levels")]
+        [Display(Name = "Reference Line Style", Order = 30, GroupName = "2. Reference Levels")]
         public DashStyleHelper ReferenceLineStyle { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Level Labels", Order = 19, GroupName = "2. Reference Levels")]
+        [Display(Name = "Show Level Labels", Order = 31, GroupName = "2. Reference Levels")]
         public bool ShowLevelLabels { get; set; }
 
         [NinjaScriptProperty]
         [Range(8, 18)]
-        [Display(Name = "Label Font Size", Order = 20, GroupName = "2. Reference Levels")]
+        [Display(Name = "Label Font Size", Order = 32, GroupName = "2. Reference Levels")]
         public int LevelLabelFontSize { get; set; }
 
         // Uses only NinjaTrader's built-in BarsPeriodType enum values.
@@ -1137,24 +1221,48 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowSessionProfileLevels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly VAH/VAL/POC", Order = 2, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Show Session POC", Order = 2, GroupName = "4. Volume Profile Levels")]
+        public bool ShowSessionPoc { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session VAH", Order = 3, GroupName = "4. Volume Profile Levels")]
+        public bool ShowSessionVah { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session VAL", Order = 4, GroupName = "4. Volume Profile Levels")]
+        public bool ShowSessionVal { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Weekly VAH/VAL/POC", Order = 5, GroupName = "4. Volume Profile Levels")]
         public bool ShowWeeklyProfileLevels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session VWAP", Order = 3, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Show Weekly POC", Order = 6, GroupName = "4. Volume Profile Levels")]
+        public bool ShowWeeklyPoc { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Weekly VAH", Order = 7, GroupName = "4. Volume Profile Levels")]
+        public bool ShowWeeklyVah { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Weekly VAL", Order = 8, GroupName = "4. Volume Profile Levels")]
+        public bool ShowWeeklyVal { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session VWAP", Order = 9, GroupName = "4. Volume Profile Levels")]
         public bool ShowSessionVwap { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly VWAP", Order = 4, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Show Weekly VWAP", Order = 10, GroupName = "4. Volume Profile Levels")]
         public bool ShowWeeklyVwap { get; set; }
 
         [NinjaScriptProperty]
         [Range(50, 99)]
-        [Display(Name = "Value Area %", Order = 5, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Value Area %", Order = 11, GroupName = "4. Volume Profile Levels")]
         public int ValueAreaPercent { get; set; }
 
         [XmlIgnore]
-        [Display(Name = "Session POC Color", Order = 6, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Session POC Color", Order = 12, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush SessionPocColor { get; set; }
 
         [Browsable(false)]
@@ -1165,7 +1273,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Session VAH Color", Order = 7, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Session VAH Color", Order = 13, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush SessionVahColor { get; set; }
 
         [Browsable(false)]
@@ -1176,7 +1284,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Session VAL Color", Order = 8, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Session VAL Color", Order = 14, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush SessionValColor { get; set; }
 
         [Browsable(false)]
@@ -1187,7 +1295,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Session VWAP Color", Order = 9, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Session VWAP Color", Order = 15, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush SessionVwapColor { get; set; }
 
         [Browsable(false)]
@@ -1198,7 +1306,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Weekly POC Color", Order = 10, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Weekly POC Color", Order = 16, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush WeeklyPocColor { get; set; }
 
         [Browsable(false)]
@@ -1209,7 +1317,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Weekly VAH Color", Order = 11, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Weekly VAH Color", Order = 17, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush WeeklyVahColor { get; set; }
 
         [Browsable(false)]
@@ -1220,7 +1328,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Weekly VAL Color", Order = 12, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Weekly VAL Color", Order = 18, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush WeeklyValColor { get; set; }
 
         [Browsable(false)]
@@ -1231,7 +1339,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
-        [Display(Name = "Weekly VWAP Color", Order = 13, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Weekly VWAP Color", Order = 19, GroupName = "4. Volume Profile Levels")]
         public System.Windows.Media.Brush WeeklyVwapColor { get; set; }
 
         [Browsable(false)]
@@ -1243,11 +1351,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 5)]
-        [Display(Name = "Profile Line Width", Order = 14, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Profile Line Width", Order = 20, GroupName = "4. Volume Profile Levels")]
         public int ProfileLineWidth { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Profile Line Style", Order = 15, GroupName = "4. Volume Profile Levels")]
+        [Display(Name = "Profile Line Style", Order = 21, GroupName = "4. Volume Profile Levels")]
         public DashStyleHelper ProfileLineStyle { get; set; }
         #endregion
     }
