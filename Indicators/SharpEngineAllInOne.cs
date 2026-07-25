@@ -65,10 +65,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double weeklyCumPv;
         private double weeklyCumVol;
 
-        private int lastProfileBar = -1;
-        private double lastBarPv;
-        private double lastBarVolume;
-        private double lastBarBucketPrice = double.NaN;
+        private int developingBarIndex = -1;
+        private double developingBarPv;
+        private double developingBarVolume;
+        private double developingBarBucketPrice = double.NaN;
 
         private readonly SortedDictionary<double, double> sessionProfile = new SortedDictionary<double, double>();
         private readonly SortedDictionary<double, double> weeklyProfile = new SortedDictionary<double, double>();
@@ -363,24 +363,24 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Volume[0] is cumulative within the developing bar, so with Calculate.OnEachTick the
             // previous in-bar contribution must be removed before adding the updated one to avoid
             // over-counting volume in the VWAP accumulators and profiles.
-            if (CurrentBar != lastProfileBar)
+            if (CurrentBar != developingBarIndex)
             {
-                lastProfileBar = CurrentBar;
-                lastBarPv = 0;
-                lastBarVolume = 0;
-                lastBarBucketPrice = double.NaN;
+                developingBarIndex = CurrentBar;
+                developingBarPv = 0;
+                developingBarVolume = 0;
+                developingBarBucketPrice = double.NaN;
             }
             else
             {
-                sessionCumPv -= lastBarPv;
-                sessionCumVol -= lastBarVolume;
-                weeklyCumPv -= lastBarPv;
-                weeklyCumVol -= lastBarVolume;
+                sessionCumPv -= developingBarPv;
+                sessionCumVol -= developingBarVolume;
+                weeklyCumPv -= developingBarPv;
+                weeklyCumVol -= developingBarVolume;
 
-                if (!double.IsNaN(lastBarBucketPrice))
+                if (!double.IsNaN(developingBarBucketPrice))
                 {
-                    RemoveProfileVolume(sessionProfile, lastBarBucketPrice, lastBarVolume);
-                    RemoveProfileVolume(weeklyProfile, lastBarBucketPrice, lastBarVolume);
+                    RemoveProfileVolume(sessionProfile, developingBarBucketPrice, developingBarVolume);
+                    RemoveProfileVolume(weeklyProfile, developingBarBucketPrice, developingBarVolume);
                 }
             }
 
@@ -395,9 +395,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             AddProfileVolume(sessionProfile, bucketPrice, barVolume);
             AddProfileVolume(weeklyProfile, bucketPrice, barVolume);
 
-            lastBarPv = barPv;
-            lastBarVolume = barVolume;
-            lastBarBucketPrice = barVolume > 0 ? bucketPrice : double.NaN;
+            developingBarPv = barPv;
+            developingBarVolume = barVolume;
+            developingBarBucketPrice = bucketPrice;
 
             // Recomputing the value area on every tick is unnecessary; refresh it once per bar.
             if (State == State.Historical || IsFirstTickOfBar)
