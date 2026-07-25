@@ -629,7 +629,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         continue;
 
                     float cx = chartControl.GetXByBarIndex(ChartBars, bar);
-                    RenderTarget.FillRectangle(new RectangleF(cx - halfWidth, ChartPanel.Y, chartControl.BarWidth, ChartPanel.H), shadeBrush);
+                    RenderTarget.FillRectangle(new RectangleF(cx - halfWidth, ChartPanel.Y, halfWidth * 2f, ChartPanel.H), shadeBrush);
                 }
             }
 
