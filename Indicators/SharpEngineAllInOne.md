@@ -18,4 +18,4 @@ The indicator now exposes both secondary confirmation series in the UI under **3
 - **Swing Strength** (default: `5`)
 
 > Note: Selecting `Renko` uses NinjaTrader's **native** `BarsPeriodType.Renko`.
-> Custom add-on bar types (for example NinjaRenko/UniRenko) are intentionally not supported so this indicator stays dependency-free in a stock NT8 install.
+> Custom add-on bar types (e.g. NinjaRenko/UniRenko) are intentionally not supported so this indicator stays dependency-free in a stock NT8 install.
