@@ -443,7 +443,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool EnableOrderFlowSignals { get; set; }
 
         // Uses only NinjaTrader's built-in BarsPeriodType enum values.
-        // Selecting Renko here uses native NT8 Renko; custom add-on bar types (e.g. NinzaRenko/UniRenko) are intentionally not supported.
+        // Selecting Renko here uses native NT8 Renko; custom add-on bar types (e.g. NinjaRenko/UniRenko) are intentionally not supported.
         [NinjaScriptProperty]
         [Display(Name = "HTF Bars Period Type", Order = 6, GroupName = "3. Data Series Settings")]
         public BarsPeriodType HtfBarsPeriodType { get; set; }
