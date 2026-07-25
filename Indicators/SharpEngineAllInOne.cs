@@ -21,6 +21,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 {
     public class SharpEngineAllInOne : Indicator
     {
+        private const float LabelVerticalPadding = 2f;
+        private const float LabelHorizontalPadding = 4f;
+        private const float LabelLayoutWidth = 220f;
+        private const float LabelLayoutHeightPadding = 4f;
+
         private readonly Dictionary<double, long> askDepth = new Dictionary<double, long>();
         private readonly Dictionary<double, long> bidDepth = new Dictionary<double, long>();
 
@@ -119,7 +124,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DrawOnPricePanel = true;
                 PaintPriceMarkers = false;
                 IsSuspendedWhileInactive = true;
-                MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
 
                 EnableL2Walls = true;
                 MinLotThreshold = 35;
@@ -371,7 +375,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             List<double> volumes = new List<double>(profile.Values);
             double totalVolume = 0;
             int pocIndex = 0;
-            double maxVolume = double.MinValue;
+            double maxVolume = 0;
 
             for (int i = 0; i < volumes.Count; i++)
             {
@@ -393,8 +397,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             while (cumVolume < targetVolume && (lowIndex > 0 || highIndex < prices.Count - 1))
             {
-                double downVolume = lowIndex > 0 ? volumes[lowIndex - 1] : double.MinValue;
-                double upVolume = highIndex < prices.Count - 1 ? volumes[highIndex + 1] : double.MinValue;
+                double downVolume = lowIndex > 0 ? volumes[lowIndex - 1] : -1d;
+                double upVolume = highIndex < prices.Count - 1 ? volumes[highIndex + 1] : -1d;
 
                 if (upVolume >= downVolume && highIndex < prices.Count - 1)
                 {
@@ -511,9 +515,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxWeeklyVal = CreateDxBrush(WeeklyValColor);
                 dxWeeklyVwap = CreateDxBrush(WeeklyVwapColor);
 
-                hudFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", SharpDX.DirectWrite.FontWeight.SemiBold, SharpDX.DirectWrite.FontStyle.Normal, 12f);
-                wallFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", SharpDX.DirectWrite.FontWeight.Bold, SharpDX.DirectWrite.FontStyle.Normal, 10f);
-                levelLabelFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", SharpDX.DirectWrite.FontWeight.Normal, SharpDX.DirectWrite.FontStyle.Normal, LevelLabelFontSize);
+                hudFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.SemiBold, FontStyle.Normal, 12f);
+                wallFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Bold, FontStyle.Normal, 10f);
+                levelLabelFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI", FontWeight.Normal, FontStyle.Normal, LevelLabelFontSize);
 
                 wallStrokeStyle = CreateStrokeStyle(WallDashStyle);
                 referenceStrokeStyle = CreateStrokeStyle(ReferenceLineStyle);
@@ -570,19 +574,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                             continue;
 
                         float y = chartScale.GetYByValue(level.Key);
-                        if (wallStrokeStyle != null)
-                            RenderTarget.DrawLine(
-                                new Vector2(ChartPanel.X, y),
-                                new Vector2(ChartPanel.X + ChartPanel.W, y),
-                                dxAskWall,
-                                1.5f,
-                                wallStrokeStyle);
-                        else
-                            RenderTarget.DrawLine(
-                                new Vector2(ChartPanel.X, y),
-                                new Vector2(ChartPanel.X + ChartPanel.W, y),
-                                dxAskWall,
-                                1.5f);
+                        DrawDxLine(
+                            new Vector2(ChartPanel.X, y),
+                            new Vector2(ChartPanel.X + ChartPanel.W, y),
+                            dxAskWall,
+                            1.5f,
+                            wallStrokeStyle);
 
                         if (wallFormat != null)
                         {
@@ -602,19 +599,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                             continue;
 
                         float y = chartScale.GetYByValue(level.Key);
-                        if (wallStrokeStyle != null)
-                            RenderTarget.DrawLine(
-                                new Vector2(ChartPanel.X, y),
-                                new Vector2(ChartPanel.X + ChartPanel.W, y),
-                                dxBidWall,
-                                1.5f,
-                                wallStrokeStyle);
-                        else
-                            RenderTarget.DrawLine(
-                                new Vector2(ChartPanel.X, y),
-                                new Vector2(ChartPanel.X + ChartPanel.W, y),
-                                dxBidWall,
-                                1.5f);
+                        DrawDxLine(
+                            new Vector2(ChartPanel.X, y),
+                            new Vector2(ChartPanel.X + ChartPanel.W, y),
+                            dxBidWall,
+                            1.5f,
+                            wallStrokeStyle);
 
                         if (wallFormat != null)
                         {
@@ -760,10 +750,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             Vector2 p1 = new Vector2(xStart, y);
             Vector2 p2 = new Vector2(xEnd, y);
 
-            if (strokeStyle != null)
-                RenderTarget.DrawLine(p1, p2, brush, width, strokeStyle);
-            else
-                RenderTarget.DrawLine(p1, p2, brush, width);
+            DrawDxLine(p1, p2, brush, width, strokeStyle);
 
             if (ShowLevelLabels)
                 RenderRightLabel(chartControl, chartScale, price, label, brush);
@@ -771,7 +758,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void RenderSeriesLine(ChartControl chartControl, ChartScale chartScale, Series<double> series, SharpDX.Direct2D1.SolidColorBrush brush, float width, StrokeStyle strokeStyle, int firstBar, int renderLastBar, string label)
         {
-            if (series == null || brush == null || renderLastBar <= firstBar)
+            if (series == null || brush == null || renderLastBar < firstBar)
                 return;
 
             bool hasSegment = false;
@@ -793,10 +780,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (hasSegment)
                 {
-                    if (strokeStyle != null)
-                        RenderTarget.DrawLine(new Vector2(lastX, lastY), new Vector2(x, y), brush, width, strokeStyle);
-                    else
-                        RenderTarget.DrawLine(new Vector2(lastX, lastY), new Vector2(x, y), brush, width);
+                    DrawDxLine(new Vector2(lastX, lastY), new Vector2(x, y), brush, width, strokeStyle);
                 }
 
                 hasSegment = true;
@@ -815,12 +799,23 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             float xEnd = chartControl.GetXByBarIndex(ChartBars, ChartBars.ToIndex);
-            float y = chartScale.GetYByValue(price) - levelLabelFormat.FontSize - 2;
+            float y = chartScale.GetYByValue(price) - levelLabelFormat.FontSize - LabelVerticalPadding;
 
-            using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, text, levelLabelFormat, 220f, levelLabelFormat.FontSize + 4))
+            using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, text, levelLabelFormat, LabelLayoutWidth, levelLabelFormat.FontSize + LabelLayoutHeightPadding))
             {
-                RenderTarget.DrawTextLayout(new Vector2(xEnd - layout.Metrics.Width - 4f, y), layout, brush);
+                RenderTarget.DrawTextLayout(new Vector2(xEnd - layout.Metrics.Width - LabelHorizontalPadding, y), layout, brush);
             }
+        }
+
+        private void DrawDxLine(Vector2 start, Vector2 end, SharpDX.Direct2D1.SolidColorBrush brush, float width, StrokeStyle strokeStyle)
+        {
+            if (brush == null)
+                return;
+
+            if (strokeStyle != null)
+                RenderTarget.DrawLine(start, end, brush, width, strokeStyle);
+            else
+                RenderTarget.DrawLine(start, end, brush, width);
         }
 
         private bool IsRenderablePrice(double value)
