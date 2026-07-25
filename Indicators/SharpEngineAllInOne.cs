@@ -237,6 +237,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 float halfWidth = (float)(chartControl.BarWidth * 0.5);
                 for (int bar = firstBar; bar <= lastBar; bar++)
                 {
+                    if (bar > CurrentBar) continue;
+
                     int bias = biasSeries.GetValueAt(bar);
                     if (bias == 0) continue;
 
@@ -313,14 +315,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (ShowBiasDebug && biasSeries != null && swingHtf != null && swingConfirm != null)
                 {
-                    int curBias = biasSeries.GetValueAt(lastBar);
+                    int curBias = (lastBar <= CurrentBar) ? biasSeries.GetValueAt(lastBar) : 0;
                     double dbgLo    = swingHtf.SwingLow[0];
                     double dbgHi    = swingHtf.SwingHigh[0];
                     double dbgCLo   = swingConfirm.SwingLow[0];
                     double dbgCHi   = swingConfirm.SwingHigh[0];
                     string debugLine = string.Format(
                         "BIAS: BULL={0} BEAR={1} | HtfLo={2:F2} HtfHi={3:F2} ConfLo={4:F2} ConfHi={5:F2}",
-                        curBias > 0, curBias < 0, dbgLo, dbgHi, dbgCLo, dbgCHi);
+                        curBias > 0 ? "Y" : "N", curBias < 0 ? "Y" : "N", dbgLo, dbgHi, dbgCLo, dbgCHi);
                     using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, debugLine, hudFormat, ChartPanel.W, 22f))
                     {
                         RenderTarget.DrawTextLayout(new Vector2(ChartPanel.X + 8f, ChartPanel.Y + ChartPanel.H - 46f), layout, dxHudText);
