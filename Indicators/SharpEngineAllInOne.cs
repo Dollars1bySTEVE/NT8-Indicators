@@ -25,6 +25,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Swing swingHtf;
         private Swing swingConfirm;
         private Series<int> signalSeries;
+        private Series<int> biasSeries;
 
         private SharpDX.Direct2D1.SolidColorBrush dxBullShade;
         private SharpDX.Direct2D1.SolidColorBrush dxBearShade;
@@ -56,6 +57,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 WallDashStyle = DashStyleHelper.Dash;
                 EnableHtfShading = true;
                 EnableOrderFlowSignals = true;
+                ShowBiasDebug = false;
 
                 HtfBarsPeriodType = BarsPeriodType.Minute;
                 HtfBarsValue = 240;
@@ -73,6 +75,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 swingHtf = Swing(BarsArray[1], SwingStrength);
                 swingConfirm = Swing(BarsArray[2], SwingStrength);
                 signalSeries = new Series<int>(this, MaximumBarsLookBack.Infinite);
+                biasSeries = new Series<int>(this, MaximumBarsLookBack.Infinite);
             }
             else if (State == State.Terminated)
             {
@@ -89,6 +92,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (signalSeries != null)
                     signalSeries[0] = 0;
+                if (biasSeries != null)
+                    biasSeries[0] = 0;
                 return;
             }
 
@@ -104,6 +109,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             bool htfBull = hasLowHtf && hasLowConf && Close[0] > sLowHtf && Close[0] > sLowConf;
             bool htfBear = hasHighHtf && hasHighConf && Close[0] < sHighHtf && Close[0] < sHighConf;
+
+            biasSeries[0] = htfBull ? 1 : (htfBear ? -1 : 0);
 
             if (!EnableOrderFlowSignals)
             {
@@ -225,32 +232,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (firstBar < 0 || lastBar < firstBar)
                 return;
 
-            if (EnableHtfShading && swingHtf != null && swingConfirm != null)
+            if (EnableHtfShading && biasSeries != null)
             {
-                double sLowHtf = swingHtf.SwingLow[0];
-                double sHighHtf = swingHtf.SwingHigh[0];
-                double sLowConf = swingConfirm.SwingLow[0];
-                double sHighConf = swingConfirm.SwingHigh[0];
-
-                bool hasLowHtf = !double.IsNaN(sLowHtf) && sLowHtf.ApproxCompare(0) > 0;
-                bool hasLowConf = !double.IsNaN(sLowConf) && sLowConf.ApproxCompare(0) > 0;
-                bool hasHighHtf = !double.IsNaN(sHighHtf) && sHighHtf.ApproxCompare(0) > 0;
-                bool hasHighConf = !double.IsNaN(sHighConf) && sHighConf.ApproxCompare(0) > 0;
-
-                bool htfBull = hasLowHtf && hasLowConf && Close[0] > sLowHtf && Close[0] > sLowConf;
-                bool htfBear = hasHighHtf && hasHighConf && Close[0] < sHighHtf && Close[0] < sHighConf;
-
-                if (htfBull && dxBullShade != null)
+                float halfWidth = (float)(chartControl.BarWidth * 0.5);
+                for (int bar = firstBar; bar <= lastBar; bar++)
                 {
+                    int bias = biasSeries.GetValueAt(bar);
+                    if (bias == 0) continue;
+
+                    var shadeBrush = bias > 0 ? dxBullShade : dxBearShade;
+                    if (shadeBrush == null) continue;
+
+                    float cx = chartControl.GetXByBarIndex(ChartBars, bar);
                     RenderTarget.FillRectangle(
-                        new RectangleF(ChartPanel.X, ChartPanel.Y, ChartPanel.W, ChartPanel.H),
-                        dxBullShade);
-                }
-                else if (htfBear && dxBearShade != null)
-                {
-                    RenderTarget.FillRectangle(
-                        new RectangleF(ChartPanel.X, ChartPanel.Y, ChartPanel.W, ChartPanel.H),
-                        dxBearShade);
+                        new RectangleF(cx - halfWidth, ChartPanel.Y, chartControl.BarWidth, ChartPanel.H),
+                        shadeBrush);
                 }
             }
 
@@ -313,6 +309,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, hud, hudFormat, ChartPanel.W, 22f))
                 {
                     RenderTarget.DrawTextLayout(new Vector2(ChartPanel.X + 8f, ChartPanel.Y + ChartPanel.H - 24f), layout, dxHudText);
+                }
+
+                if (ShowBiasDebug && biasSeries != null && swingHtf != null && swingConfirm != null)
+                {
+                    int curBias = biasSeries.GetValueAt(lastBar);
+                    double dbgLo    = swingHtf.SwingLow[0];
+                    double dbgHi    = swingHtf.SwingHigh[0];
+                    double dbgCLo   = swingConfirm.SwingLow[0];
+                    double dbgCHi   = swingConfirm.SwingHigh[0];
+                    string debugLine = string.Format(
+                        "BIAS: BULL={0} BEAR={1} | HtfLo={2:F2} HtfHi={3:F2} ConfLo={4:F2} ConfHi={5:F2}",
+                        curBias > 0, curBias < 0, dbgLo, dbgHi, dbgCLo, dbgCHi);
+                    using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, debugLine, hudFormat, ChartPanel.W, 22f))
+                    {
+                        RenderTarget.DrawTextLayout(new Vector2(ChartPanel.X + 8f, ChartPanel.Y + ChartPanel.H - 46f), layout, dxHudText);
+                    }
                 }
             }
 
@@ -440,6 +452,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Enable Order Flow Signals", Order = 5, GroupName = "1. Main Settings")]
         public bool EnableOrderFlowSignals { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Bias Debug", Order = 6, GroupName = "1. Main Settings")]
+        public bool ShowBiasDebug { get; set; }
 
         // Uses only NinjaTrader's built-in BarsPeriodType enum values.
         // Selecting Renko here uses native NT8 Renko; custom add-on bar types (e.g. NinjaRenko/UniRenko) are intentionally not supported.
