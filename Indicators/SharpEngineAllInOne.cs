@@ -65,6 +65,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double weeklyCumPv;
         private double weeklyCumVol;
 
+        private int lastProfileBar = -1;
+        private double lastBarPv;
+        private double lastBarVolume;
+        private double lastBarBucketPrice = double.NaN;
+
         private readonly SortedDictionary<double, double> sessionProfile = new SortedDictionary<double, double>();
         private readonly SortedDictionary<double, double> weeklyProfile = new SortedDictionary<double, double>();
 
@@ -353,10 +358,35 @@ namespace NinjaTrader.NinjaScript.Indicators
             double barVolume = Math.Max(0d, Volume[0]);
             double typicalPrice = (High[0] + Low[0] + Close[0]) / 3.0;
             double bucketPrice = Instrument.MasterInstrument.RoundToTickSize(typicalPrice);
+            double barPv = typicalPrice * barVolume;
 
-            sessionCumPv += typicalPrice * barVolume;
+            // Volume[0] is cumulative within the developing bar, so with Calculate.OnEachTick the
+            // previous in-bar contribution must be removed before adding the updated one to avoid
+            // over-counting volume in the VWAP accumulators and profiles.
+            if (CurrentBar != lastProfileBar)
+            {
+                lastProfileBar = CurrentBar;
+                lastBarPv = 0;
+                lastBarVolume = 0;
+                lastBarBucketPrice = double.NaN;
+            }
+            else
+            {
+                sessionCumPv -= lastBarPv;
+                sessionCumVol -= lastBarVolume;
+                weeklyCumPv -= lastBarPv;
+                weeklyCumVol -= lastBarVolume;
+
+                if (!double.IsNaN(lastBarBucketPrice))
+                {
+                    RemoveProfileVolume(sessionProfile, lastBarBucketPrice, lastBarVolume);
+                    RemoveProfileVolume(weeklyProfile, lastBarBucketPrice, lastBarVolume);
+                }
+            }
+
+            sessionCumPv += barPv;
             sessionCumVol += barVolume;
-            weeklyCumPv += typicalPrice * barVolume;
+            weeklyCumPv += barPv;
             weeklyCumVol += barVolume;
 
             sessionVwapSeries[0] = sessionCumVol > 0 ? sessionCumPv / sessionCumVol : double.NaN;
@@ -365,8 +395,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             AddProfileVolume(sessionProfile, bucketPrice, barVolume);
             AddProfileVolume(weeklyProfile, bucketPrice, barVolume);
 
-            ComputeValueArea(sessionProfile, out sessionPoc, out sessionVah, out sessionVal);
-            ComputeValueArea(weeklyProfile, out weeklyPoc, out weeklyVah, out weeklyVal);
+            lastBarPv = barPv;
+            lastBarVolume = barVolume;
+            lastBarBucketPrice = barVolume > 0 ? bucketPrice : double.NaN;
+
+            // Recomputing the value area on every tick is unnecessary; refresh it once per bar.
+            if (State == State.Historical || IsFirstTickOfBar)
+            {
+                ComputeValueArea(sessionProfile, out sessionPoc, out sessionVah, out sessionVal);
+                ComputeValueArea(weeklyProfile, out weeklyPoc, out weeklyVah, out weeklyVal);
+            }
         }
 
         private void AddProfileVolume(SortedDictionary<double, double> profile, double price, double volume)
@@ -378,6 +416,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 profile[price] += volume;
             else
                 profile[price] = volume;
+        }
+
+        private void RemoveProfileVolume(SortedDictionary<double, double> profile, double price, double volume)
+        {
+            if (volume <= 0)
+                return;
+
+            double existing;
+            if (!profile.TryGetValue(price, out existing))
+                return;
+
+            double remaining = existing - volume;
+            if (remaining > 0)
+                profile[price] = remaining;
+            else
+                profile.Remove(price);
         }
 
         private void ComputeValueArea(SortedDictionary<double, double> profile, out double poc, out double vah, out double val)
@@ -579,7 +633,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            RenderReferenceLevels(chartControl, chartScale, renderLastBar);
+            RenderReferenceLevels(chartControl, chartScale);
             RenderProfileLevels(chartControl, chartScale, firstBar, renderLastBar);
 
             if (EnableL2Walls && dxAskWall != null && dxBidWall != null)
@@ -700,7 +754,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderReferenceLevels(ChartControl chartControl, ChartScale chartScale, int renderLastBar)
+        private void RenderReferenceLevels(ChartControl chartControl, ChartScale chartScale)
         {
             if (referenceStrokeStyle == null && ReferenceLineStyle != DashStyleHelper.Solid)
                 return;
