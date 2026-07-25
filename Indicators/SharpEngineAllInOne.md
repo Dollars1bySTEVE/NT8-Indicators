@@ -128,6 +128,32 @@ Because the indicator adds two configurable series, run it on a **fast primary c
 
 ---
 
+## 🧱 Renko Brick Sizing (Index Futures)
+
+When you set a **Period Type** to **Renko**, the matching **Value** field is the **brick size in ticks**. Because the indicator uses native NT8 Renko here — which drives the *bias shading*, not your primary chart — a **slightly larger brick keeps the shading from flickering.**
+
+> ⚠️ **Note on native Renko:** NT8's built-in Renko "cleans" wicks and can hide gaps, so swing levels read a little differently than raw price. If the bias feels off, try a **Minute or Tick** confirmation series instead of Renko.
+
+### Quick reference
+
+| Instrument | Tick | Scalp brick | **Balanced (recommended)** | Smooth brick |
+|---|---|---|---|---|
+| **ES** (S&P 500) | 0.25 | 4 (1.0 pt) | **8 (2.0 pt)** | 12 (3.0 pt) |
+| **NQ** (Nasdaq 100) | 0.25 | 8 (2.0 pt) | **12 (3.0 pt)** | 16–20 (4–5 pt) |
+| **RTY** (Russell 2000) | 0.10 | 5 (0.5 pt) | **10 (1.0 pt)** | 15 (1.5 pt) |
+| **YM** (Dow 30) | 1.0 | 5 (5 pts) | **10 (10 pts)** | 20 (20 pts) |
+| **MES / MNQ / M2K / MYM** (micros) | same as full-size | mirror parent | mirror parent | mirror parent |
+
+> 💡 **NQ tip:** Start at **Confirm Bars → Renko / 12** (a 3-point brick) with **Swing Strength 4–5**. Bump to **16** if the shading whipsaws; drop to **8** if it reacts too slowly.
+
+**How to think about brick size for the bias:**
+- **Smaller brick** → bias flips more often, more responsive, more noise
+- **Larger brick** → bias is smoother and stickier, fewer whipsaws in the shading
+
+> Reminder: RTY tick = 0.10 and YM tick = 1.0, so their brick *tick counts* differ from ES/NQ even though the concept is identical. Micros mirror their full-size parent exactly.
+
+---
+
 ## 💡 Trading Tips
 
 1. **Trade with the shade** — take longs during green shading, shorts during red. Skip signals when the background is neutral.
