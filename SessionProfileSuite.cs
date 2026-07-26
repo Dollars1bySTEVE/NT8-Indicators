@@ -309,8 +309,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (currentSession == null)
                 return;
 
-            double price = Instrument.MasterInstrument.RoundToTickSize(Close[0]);
-            long volume = Math.Max(0L, Convert.ToInt64(Volume[0]));
+            double price = Instrument.MasterInstrument.RoundToTickSize(Closes[1][0]);
+            long volume = Math.Max(0L, Convert.ToInt64(Volumes[1][0]));
             if (volume <= 0)
                 return;
 
