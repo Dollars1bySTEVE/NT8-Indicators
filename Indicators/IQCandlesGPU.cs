@@ -2103,7 +2103,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (previous.SessionEndBarIndex < 0)
                 previous.SessionEndBarIndex = Math.Max(previous.EndBarIndex, CurrentBar - 1);
-            previous.IsComplete = previous.IsComplete || previous.EndBarIndex >= previous.StartBarIndex;
+            previous.IsComplete = previous.IsComplete ||
+                                  (previous.StartBarIndex >= 0 && previous.EndBarIndex >= previous.StartBarIndex);
         }
 
         private void TrimInitialBalanceHistory()
@@ -2331,7 +2332,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                         return generalOptionsTimeZone;
                 }
             }
-            catch
+            catch (Exception ex) when (
+                ex is ArgumentException ||
+                ex is InvalidCastException ||
+                ex is MethodAccessException ||
+                ex is AmbiguousMatchException ||
+                ex is System.Reflection.TargetException ||
+                ex is System.Reflection.TargetInvocationException)
             {
             }
 
