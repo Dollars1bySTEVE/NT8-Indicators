@@ -639,13 +639,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             double lowerBand = vwap - stdDev;
             double tolerance = ConfluenceTolerance * TickSize;
 
-            EnsureValueArea(currentSession);
-
             double barHigh = High[0];
             double barLow = Low[0];
 
+            bool probesUpperBand = barHigh >= upperBand - tolerance;
+            bool probesLowerBand = barLow <= lowerBand + tolerance;
+
+            // Only compute value-area levels when the bar actually probes a band,
+            // so most ticks skip the expensive ComputeValueArea sort/allocation work.
+            if (!probesUpperBand && !probesLowerBand)
+                return;
+
+            EnsureValueArea(currentSession);
+
             // Bearish fade: bar High reaches the upper +1σ band AND coincides with a key resistance level
-            if (barHigh >= upperBand - tolerance)
+            if (probesUpperBand)
             {
                 bool nearVah  = IsNearLevel(barHigh, currentSession.Vah, tolerance);
                 bool nearPoc  = currentSession.Poc >= vwap && IsNearLevel(barHigh, currentSession.Poc, tolerance);
@@ -657,7 +665,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Bullish fade: bar Low reaches the lower −1σ band AND coincides with a key support level
-            if (barLow <= lowerBand + tolerance)
+            if (probesLowerBand)
             {
                 bool nearVal  = IsNearLevel(barLow, currentSession.Val, tolerance);
                 bool nearPoc  = currentSession.Poc <= vwap && IsNearLevel(barLow, currentSession.Poc, tolerance);
