@@ -1296,9 +1296,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return barCloseEt.AddMinutes(-BarsPeriod.Value);
             if (BarsPeriod.BarsPeriodType == BarsPeriodType.Second)
                 return barCloseEt.AddSeconds(-BarsPeriod.Value);
-            if (BarsPeriod.BarsPeriodType == BarsPeriodType.Day)
-                return barCloseEt.AddDays(-BarsPeriod.Value);
-            return barCloseEt; // tick/volume/range bars: close time ≈ activity time, leave as-is
+            // Day (and larger) bars: the close stamp is the session end time; the open
+            // time can't be derived by subtracting the period, so leave the stamp as-is.
+            return barCloseEt; // day/tick/volume/range bars: leave as-is
         }
 
         private void UpdateHourlyOpens(DateTime barEt)
