@@ -1205,12 +1205,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (range == null || range.StartEt < cutoffEt)
                     continue;
+                if (!IsIBSessionTypeEnabled(range.SessionType))
+                    continue;
                 if (range.High <= double.MinValue || range.Low >= double.MaxValue || range.High < range.Low)
                     continue;
 
-                int anchorBar = range.EndBarIndex;
-                if (!range.IsComplete)
-                    anchorBar = Math.Max(range.StartBarIndex, Math.Min(CurrentBar, toBar));
+                int anchorBar = range.StartBarIndex;
 
                 if (anchorBar > toBar)
                     continue;
@@ -1900,8 +1900,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private string BuildInitialBalanceStatusLine(DateTime barEt)
         {
-            if (!EnableInitialBalance || ibRanges == null || ibRanges.Count == 0)
+            if (!EnableInitialBalance)
                 return "IB: off";
+            if (ibRanges == null || ibRanges.Count == 0 || activeIbByType == null)
+                return "IB: waiting…";
 
             InitialBalanceRange best = null;
             foreach (var kv in activeIbByType)
