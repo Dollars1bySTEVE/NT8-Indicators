@@ -13,6 +13,7 @@ using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.Tools;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.Core.FloatingPoint;
@@ -51,6 +52,17 @@ public enum IQCCandleColorMode
     Imbalance,
     FakeBreakout,
     Classic
+}
+
+/// <summary>Initial Balance session selector.</summary>
+public enum IQCIBSessionType
+{
+    AsiaEth,
+    AsiaRth,
+    LondonEth,
+    LondonRth,
+    NewYorkEth,
+    NewYorkRth
 }
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -122,6 +134,20 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double PartialRecoveryLow;    // current unrecovered lower boundary
         }
 
+        /// <summary>Single Initial Balance (IB) range instance for one session open.</summary>
+        private class InitialBalanceRange
+        {
+            public IQCIBSessionType SessionType;
+            public string Label;
+            public DateTime StartEt;
+            public DateTime EndEt;
+            public int StartBarIndex;
+            public int EndBarIndex;
+            public double High;
+            public double Low;
+            public bool IsComplete;
+        }
+
         #endregion
         // ════════════════════════════════════════════════════════════════════════
         #region Private fields
@@ -191,6 +217,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string dashLine5 = "";
         private string dashLine6 = "";
         private string dashLine7 = "";
+        private string dashLine8 = "";
 
         // ── Unrecovered Liquidity Zones ───────────────────────────────────────
         private List<LiquidityZone> liquidityZones;
@@ -213,6 +240,22 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxULZBearishBrush;  // crimson red — RED climax   (bearish)
         private SharpDX.Direct2D1.SolidColorBrush dxULZBlueBrush;     // royal blue  — BLUE absorption (bullish)
         private SharpDX.Direct2D1.SolidColorBrush dxULZPinkBrush;     // hot pink    — PINK absorption (bearish)
+
+        // ── Initial Balance state and brushes ─────────────────────────────────
+        private List<InitialBalanceRange> ibRanges;
+        private Dictionary<IQCIBSessionType, InitialBalanceRange> activeIbByType;
+        private static readonly TimeZoneInfo EtZone = SafeFindEtZone();
+        private SharpDX.Direct2D1.SolidColorBrush dxIbAsiaLineBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxIbLondonLineBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkLineBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxIbAsiaFillBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxIbLondonFillBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkFillBrush;
+        private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
+        // 300 keeps roughly several weeks of multi-session IB history while staying lightweight.
+        private const int MaxInitialBalanceRanges = 300;
+        // Keep the latest IB visible in dashboard context for one full trading day.
+        private const int InitialBalanceDashboardActiveHours = 24;
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -489,6 +532,108 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 8. Initial Balance
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Initial Balance", Order = 1, GroupName = "8. Initial Balance",
+            Description = "Track and render Initial Balance (first N minutes) levels from selected session opens.")]
+        public bool EnableInitialBalance { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia ETH IB (18:00 ET)", Order = 2, GroupName = "8. Initial Balance")]
+        public bool ShowAsiaEthIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Asia RTH IB (19:00 ET)", Order = 3, GroupName = "8. Initial Balance")]
+        public bool ShowAsiaRthIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London ETH IB (02:00 ET)", Order = 4, GroupName = "8. Initial Balance")]
+        public bool ShowLondonEthIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show London RTH IB (03:00 ET)", Order = 5, GroupName = "8. Initial Balance")]
+        public bool ShowLondonRthIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show NY ETH IB (18:00 ET, Globex)", Order = 6, GroupName = "8. Initial Balance")]
+        public bool ShowNyEthIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show NY RTH IB (09:30 ET)", Order = 7, GroupName = "8. Initial Balance")]
+        public bool ShowNyRthIB { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(15, 120)]
+        [Display(Name = "IB Duration (minutes)", Order = 8, GroupName = "8. Initial Balance")]
+        public int IBDurationMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Render Last N Days", Order = 9, GroupName = "8. Initial Balance")]
+        public int IBRenderDays { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show IB Midpoint", Order = 10, GroupName = "8. Initial Balance")]
+        public bool ShowIBMidpoint { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show IB Region Fill", Order = 11, GroupName = "8. Initial Balance")]
+        public bool ShowIBRegionFill { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 80)]
+        [Display(Name = "IB Region Opacity %", Order = 12, GroupName = "8. Initial Balance")]
+        public int IBRegionOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "IB Line Width", Order = 13, GroupName = "8. Initial Balance")]
+        public int IBLineWidth { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "IB Line Dash Style", Order = 14, GroupName = "8. Initial Balance")]
+        public DashStyleHelper IBLineDash { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show IB Status on Dashboard", Order = 15, GroupName = "8. Initial Balance")]
+        public bool ShowIBStatusOnDashboard { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Asia IB Color", Order = 16, GroupName = "8. Initial Balance")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush AsiaIBColor { get; set; }
+        [Browsable(false)]
+        public string AsiaIBColorSerializable
+        {
+            get { return Serialize.BrushToString(AsiaIBColor); }
+            set { AsiaIBColor = Serialize.StringToBrush(value); }
+        }
+
+        [NinjaScriptProperty]
+        [Display(Name = "London IB Color", Order = 17, GroupName = "8. Initial Balance")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush LondonIBColor { get; set; }
+        [Browsable(false)]
+        public string LondonIBColorSerializable
+        {
+            get { return Serialize.BrushToString(LondonIBColor); }
+            set { LondonIBColor = Serialize.StringToBrush(value); }
+        }
+
+        [NinjaScriptProperty]
+        [Display(Name = "NY IB Color", Order = 18, GroupName = "8. Initial Balance")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush NewYorkIBColor { get; set; }
+        [Browsable(false)]
+        public string NewYorkIBColorSerializable
+        {
+            get { return Serialize.BrushToString(NewYorkIBColor); }
+            set { NewYorkIBColor = Serialize.StringToBrush(value); }
+        }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
         #region State management — OnStateChange
 
         protected override void OnStateChange()
@@ -555,6 +700,26 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ZoneOpacity          = 30;
                 ULZBullishColor      = Brushes.LimeGreen;
                 ULZBearishColor      = Brushes.IndianRed;
+
+                // Initial Balance
+                EnableInitialBalance  = true;
+                ShowAsiaEthIB         = true;
+                ShowAsiaRthIB         = true;
+                ShowLondonEthIB       = false;
+                ShowLondonRthIB       = true;
+                ShowNyEthIB           = false;
+                ShowNyRthIB           = true;
+                IBDurationMinutes     = 60;
+                IBRenderDays          = 5;
+                ShowIBMidpoint        = true;
+                ShowIBRegionFill      = true;
+                IBRegionOpacity       = 14;
+                IBLineWidth           = 2;
+                IBLineDash            = DashStyleHelper.Solid;
+                ShowIBStatusOnDashboard = true;
+                AsiaIBColor           = Brushes.Goldenrod;
+                LondonIBColor         = Brushes.CornflowerBlue;
+                NewYorkIBColor        = Brushes.OrangeRed;
             }
             else if (State == State.DataLoaded)
             {
@@ -564,6 +729,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 bidBook       = new Dictionary<double, BookLevel>(200);
                 askBook       = new Dictionary<double, BookLevel>(200);
                 liquidityZones = new List<LiquidityZone>(100);
+                ibRanges      = new List<InitialBalanceRange>(MaxInitialBalanceRanges);
+                activeIbByType = new Dictionary<IQCIBSessionType, InitialBalanceRange>(6);
 
                 cumDelta      = 0;
                 sessionBuyVol = 0;
@@ -589,6 +756,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
+            DateTime barEt = ToEasternTime(Time[0]);
+            if (EnableInitialBalance)
+                UpdateInitialBalanceRanges(barEt);
+
             // ── PVSRA-based liquidity zone creation (completed bar) ───────────
             // Zones are created ONLY from classified PVSRA candles (GREEN/RED/BLUE/PINK).
             // In OnBarClose mode the bar that just closed is bar[0]; in OnEachTick and
@@ -717,7 +888,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 9. Update dashboard strings ───────────────────────────────────
-            UpdateDashboardText(barBuy, barSell, delta, deltaPct, isAbsorption, isImbalance, isFakeBreakout);
+            UpdateDashboardText(barEt, barBuy, barSell, delta, deltaPct, isAbsorption, isImbalance, isFakeBreakout);
 
             // ── 10. Alerts ────────────────────────────────────────────────────
             if (IsFirstTickOfBar)
@@ -840,6 +1011,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // ── Draw candles ──────────────────────────────────────────────────
             RenderCandles(chartControl, chartScale, fromBar, toBar);
+
+            // ── Draw Initial Balance levels ───────────────────────────────────
+            if (EnableInitialBalance)
+                RenderInitialBalanceLevels(chartControl, chartScale, fromBar, toBar);
 
             // ── Draw wall lines ───────────────────────────────────────────────
             if (ShowWallLines && EnableLevel2 && level2Available)
@@ -1017,6 +1192,102 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        // ── Initial Balance rendering ──────────────────────────────────────────
+        private void RenderInitialBalanceLevels(ChartControl cc, ChartScale cs, int fromBar, int toBar)
+        {
+            if (ibRanges == null || ibRanges.Count == 0 || RenderTarget == null)
+                return;
+
+            DateTime cutoffEt = ToEasternTime(Time[0]).Date.AddDays(-IBRenderDays);
+            float chartWidth = (float)RenderTarget.Size.Width;
+
+            foreach (InitialBalanceRange range in ibRanges)
+            {
+                if (range == null || range.StartEt < cutoffEt)
+                    continue;
+                if (!IsIBSessionTypeEnabled(range.SessionType))
+                    continue;
+                if (range.High <= double.MinValue || range.Low >= double.MaxValue || range.High < range.Low)
+                    continue;
+
+                int anchorBar = range.StartBarIndex;
+
+                if (anchorBar > toBar)
+                    continue;
+
+                float xStart = anchorBar < fromBar ? 0f : cc.GetXByBarIndex(ChartBars, anchorBar);
+                if (float.IsNaN(xStart))
+                    continue;
+
+                float xEnd = Math.Max(xStart + 1f, chartWidth);
+                float yHigh = cs.GetYByValue(range.High);
+                float yLow  = cs.GetYByValue(range.Low);
+                if (float.IsNaN(yHigh) || float.IsNaN(yLow))
+                    continue;
+
+                float top = Math.Min(yHigh, yLow);
+                float bottom = Math.Max(yHigh, yLow);
+                float height = bottom - top;
+
+                var lineBrush = GetIBLineBrush(range.SessionType);
+                var fillBrush = GetIBFillBrush(range.SessionType);
+                if (lineBrush == null)
+                    continue;
+
+                if (ShowIBRegionFill && fillBrush != null && height > 0.5f)
+                    RenderTarget.FillRectangle(new SharpDX.RectangleF(xStart, top, xEnd - xStart, height), fillBrush);
+
+                var pHigh1 = new SharpDX.Vector2(xStart, yHigh);
+                var pHigh2 = new SharpDX.Vector2(xEnd, yHigh);
+                var pLow1  = new SharpDX.Vector2(xStart, yLow);
+                var pLow2  = new SharpDX.Vector2(xEnd, yLow);
+                if (dxIbLineStrokeStyle != null)
+                {
+                    RenderTarget.DrawLine(pHigh1, pHigh2, lineBrush, IBLineWidth, dxIbLineStrokeStyle);
+                    RenderTarget.DrawLine(pLow1, pLow2, lineBrush, IBLineWidth, dxIbLineStrokeStyle);
+                }
+                else
+                {
+                    RenderTarget.DrawLine(pHigh1, pHigh2, lineBrush, IBLineWidth);
+                    RenderTarget.DrawLine(pLow1, pLow2, lineBrush, IBLineWidth);
+                }
+
+                double mid = (range.High + range.Low) * 0.5;
+                float yMid = cs.GetYByValue(mid);
+                if (ShowIBMidpoint && !float.IsNaN(yMid))
+                {
+                    var pMid1 = new SharpDX.Vector2(xStart, yMid);
+                    var pMid2 = new SharpDX.Vector2(xEnd, yMid);
+                    RenderTarget.DrawLine(pMid1, pMid2, lineBrush, Math.Max(1f, IBLineWidth - 1f));
+                }
+
+                if (dxLabelFormat != null)
+                {
+                    string priceHigh = Instrument.MasterInstrument.FormatPrice(range.High);
+                    string priceLow  = Instrument.MasterInstrument.FormatPrice(range.Low);
+                    RenderTarget.DrawText(
+                        range.Label + " IB High " + priceHigh,
+                        dxLabelFormat,
+                        new SharpDX.RectangleF(xStart + 3f, yHigh - 14f, 220f, 14f),
+                        lineBrush);
+                    RenderTarget.DrawText(
+                        range.Label + " IB Low " + priceLow,
+                        dxLabelFormat,
+                        new SharpDX.RectangleF(xStart + 3f, yLow + 1f, 220f, 14f),
+                        lineBrush);
+                    if (ShowIBMidpoint && !float.IsNaN(yMid))
+                    {
+                        string priceMid = Instrument.MasterInstrument.FormatPrice(mid);
+                        RenderTarget.DrawText(
+                            range.Label + " IB Mid " + priceMid,
+                            dxLabelFormat,
+                            new SharpDX.RectangleF(xStart + 3f, yMid - 7f, 220f, 14f),
+                            lineBrush);
+                    }
+                }
+            }
+        }
+
         // ── Wall line rendering ───────────────────────────────────────────────
         private void RenderWallLines(ChartControl cc, ChartScale cs)
         {
@@ -1041,6 +1312,36 @@ namespace NinjaTrader.NinjaScript.Indicators
                 rt.DrawLine(new SharpDX.Vector2(0, y), new SharpDX.Vector2(chartWidth, y), dxWallAskBrush, 1.5f);
                 if (dxLabelFormat != null)
                     rt.DrawText(label, dxLabelFormat, new SharpDX.RectangleF(4f, y + 2f, 160f, 14f), dxWallAskBrush);
+            }
+        }
+
+        private SharpDX.Direct2D1.SolidColorBrush GetIBLineBrush(IQCIBSessionType sessionType)
+        {
+            switch (sessionType)
+            {
+                case IQCIBSessionType.AsiaEth:
+                case IQCIBSessionType.AsiaRth:
+                    return dxIbAsiaLineBrush;
+                case IQCIBSessionType.LondonEth:
+                case IQCIBSessionType.LondonRth:
+                    return dxIbLondonLineBrush;
+                default:
+                    return dxIbNewYorkLineBrush;
+            }
+        }
+
+        private SharpDX.Direct2D1.SolidColorBrush GetIBFillBrush(IQCIBSessionType sessionType)
+        {
+            switch (sessionType)
+            {
+                case IQCIBSessionType.AsiaEth:
+                case IQCIBSessionType.AsiaRth:
+                    return dxIbAsiaFillBrush;
+                case IQCIBSessionType.LondonEth:
+                case IQCIBSessionType.LondonRth:
+                    return dxIbLondonFillBrush;
+                default:
+                    return dxIbNewYorkFillBrush;
             }
         }
 
@@ -1144,7 +1445,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 dashLine1, dashLine2, dashLine3,
                 dashLine4, dashLine5, dashLine6,
-                dashLine7, l2StatusText
+                dashLine7, dashLine8, l2StatusText
             };
 
             int    nonEmpty    = lines.Count(s => !string.IsNullOrEmpty(s));
@@ -1551,6 +1852,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         private void UpdateDashboardText(
+            DateTime barEt,
             double barBuy, double barSell, double delta, double deltaPct,
             bool isAbsorption, bool isImbalance, bool isFake)
         {
@@ -1591,6 +1893,138 @@ namespace NinjaTrader.NinjaScript.Indicators
             else
             {
                 dashLine7 = "";
+            }
+
+            dashLine8 = ShowIBStatusOnDashboard ? BuildInitialBalanceStatusLine(barEt) : "";
+        }
+
+        private string BuildInitialBalanceStatusLine(DateTime barEt)
+        {
+            if (!EnableInitialBalance)
+                return "IB: off";
+            if (ibRanges == null || ibRanges.Count == 0 || activeIbByType == null)
+                return "IB: waiting…";
+
+            InitialBalanceRange best = null;
+            foreach (var kv in activeIbByType)
+            {
+                InitialBalanceRange r = kv.Value;
+                if (r == null || r.StartEt == DateTime.MinValue)
+                    continue;
+                if (!IsIBSessionTypeEnabled(r.SessionType))
+                    continue;
+                if (barEt >= r.StartEt && barEt < r.EndEt.AddHours(InitialBalanceDashboardActiveHours))
+                {
+                    if (best == null || r.StartEt > best.StartEt)
+                        best = r;
+                }
+            }
+
+            if (best == null)
+            {
+                for (int i = ibRanges.Count - 1; i >= 0; i--)
+                {
+                    InitialBalanceRange r = ibRanges[i];
+                    if (r != null && IsIBSessionTypeEnabled(r.SessionType))
+                    {
+                        best = r;
+                        break;
+                    }
+                }
+            }
+
+            if (best == null || best.High <= double.MinValue || best.Low >= double.MaxValue)
+                return "IB: waiting…";
+
+            return string.Format("IB: {0} {1}-{2} ({3})",
+                best.Label,
+                Instrument.MasterInstrument.FormatPrice(best.High),
+                Instrument.MasterInstrument.FormatPrice(best.Low),
+                best.IsComplete ? "complete" : "forming");
+        }
+
+        private void UpdateInitialBalanceRanges(DateTime barEt)
+        {
+            if (ibRanges == null || activeIbByType == null)
+                return;
+
+            bool bothEthAnchorsEnabled = ShowAsiaEthIB && ShowNyEthIB;
+
+            // Asia ETH and NY ETH share the same 18:00 ET Globex anchor.
+            // When both toggles are on, track one shared range to avoid duplicate overlapping lines.
+            UpdateSingleInitialBalance(
+                barEt, IQCIBSessionType.AsiaEth, ShowAsiaEthIB,
+                18, 0, bothEthAnchorsEnabled ? "Globex ETH" : "Asia ETH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.AsiaRth,   ShowAsiaRthIB,   19, 0, "Asia RTH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.LondonEth, ShowLondonEthIB,  2, 0, "London ETH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.LondonRth, ShowLondonRthIB,  3, 0, "London RTH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.NewYorkEth, !ShowAsiaEthIB && ShowNyEthIB, 18, 0, "NY ETH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.NewYorkRth, ShowNyRthIB,     9, 30, "NY RTH");
+        }
+
+        private void UpdateSingleInitialBalance(
+            DateTime barEt,
+            IQCIBSessionType sessionType, bool enabled,
+            int openHourEt, int openMinuteEt, string label)
+        {
+            if (!enabled)
+                return;
+
+            DateTime startEt = GetMostRecentSessionOpenEt(barEt, openHourEt, openMinuteEt);
+            DateTime endEt   = startEt.AddMinutes(IBDurationMinutes);
+
+            InitialBalanceRange range;
+            if (!activeIbByType.TryGetValue(sessionType, out range) || range.StartEt != startEt)
+            {
+                range = new InitialBalanceRange
+                {
+                    SessionType   = sessionType,
+                    Label         = label,
+                    StartEt       = startEt,
+                    EndEt         = endEt,
+                    StartBarIndex = CurrentBar,
+                    EndBarIndex   = CurrentBar,
+                    High          = double.MinValue,
+                    Low           = double.MaxValue,
+                    IsComplete    = false
+                };
+                activeIbByType[sessionType] = range;
+                ibRanges.Add(range);
+                while (ibRanges.Count > MaxInitialBalanceRanges)
+                    ibRanges.RemoveAt(0);
+            }
+
+            bool isInsideWindow = barEt >= startEt && barEt < endEt;
+            if (isInsideWindow)
+            {
+                if (High[0] > range.High || range.High == double.MinValue)
+                    range.High = High[0];
+                if (Low[0] < range.Low || range.Low == double.MaxValue)
+                    range.Low = Low[0];
+                range.EndBarIndex = CurrentBar;
+            }
+
+            if (!range.IsComplete && barEt >= endEt)
+                range.IsComplete = true;
+        }
+
+        private static DateTime GetMostRecentSessionOpenEt(DateTime barEt, int openHourEt, int openMinuteEt)
+        {
+            DateTime openToday = barEt.Date.AddHours(openHourEt).AddMinutes(openMinuteEt);
+            return barEt >= openToday ? openToday : openToday.AddDays(-1);
+        }
+
+        private bool IsIBSessionTypeEnabled(IQCIBSessionType sessionType)
+        {
+            switch (sessionType)
+            {
+                case IQCIBSessionType.AsiaEth:    return ShowAsiaEthIB;
+                case IQCIBSessionType.AsiaRth:    return ShowAsiaRthIB;
+                case IQCIBSessionType.LondonEth:  return ShowLondonEthIB;
+                case IQCIBSessionType.LondonRth:  return ShowLondonRthIB;
+                case IQCIBSessionType.NewYorkEth: return ShowNyEthIB;
+                case IQCIBSessionType.NewYorkRth: return ShowNyRthIB;
+                default: return false;
             }
         }
 
@@ -1742,6 +2176,25 @@ namespace NinjaTrader.NinjaScript.Indicators
             return Math.Max(0, Math.Min(1, (value - min) / (max - min)));
         }
 
+        private static TimeZoneInfo SafeFindEtZone()
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
+            catch
+            {
+                try { return TimeZoneInfo.FindSystemTimeZoneById("America/New_York"); }
+                catch { return TimeZoneInfo.Local; }
+            }
+        }
+
+        private DateTime ToEasternTime(DateTime chartBarTime)
+        {
+            TimeZoneInfo chartTz = Bars != null && Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null
+                ? Bars.TradingHours.TimeZoneInfo
+                : TimeZoneInfo.Local;
+            DateTime unspecified = DateTime.SpecifyKind(chartBarTime, DateTimeKind.Unspecified);
+            return TimeZoneInfo.ConvertTime(unspecified, chartTz, EtZone);
+        }
+
         private static string FormatDelta(double delta)
         {
             if (Math.Abs(delta) >= 1_000_000)
@@ -1810,6 +2263,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxULZPinkBrush = new SharpDX.Direct2D1.SolidColorBrush(rt,
                     new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF)); // PINK   absorption
 
+                // ── Initial Balance brushes ────────────────────────────────────
+                float ibFillAlpha = Math.Max(0f, IBRegionOpacity / 100f);
+                dxIbAsiaLineBrush    = MakeBrush(rt, AsiaIBColor, 0.95f);
+                dxIbLondonLineBrush  = MakeBrush(rt, LondonIBColor, 0.95f);
+                dxIbNewYorkLineBrush = MakeBrush(rt, NewYorkIBColor, 0.95f);
+                dxIbAsiaFillBrush    = MakeBrush(rt, AsiaIBColor, ibFillAlpha);
+                dxIbLondonFillBrush  = MakeBrush(rt, LondonIBColor, ibFillAlpha);
+                dxIbNewYorkFillBrush = MakeBrush(rt, NewYorkIBColor, ibFillAlpha);
+
+                if (IBLineDash != DashStyleHelper.Solid)
+                {
+                    var strokeProps = new SharpDX.Direct2D1.StrokeStyleProperties();
+                    switch (IBLineDash)
+                    {
+                        case DashStyleHelper.Dash:       strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dash;       break;
+                        case DashStyleHelper.DashDot:    strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.DashDot;    break;
+                        case DashStyleHelper.DashDotDot: strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.DashDotDot; break;
+                        case DashStyleHelper.Dot:        strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Dot;        break;
+                        default:                         strokeProps.DashStyle = SharpDX.Direct2D1.DashStyle.Solid;      break;
+                    }
+                    dxIbLineStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(rt.Factory, strokeProps);
+                }
+
                 dxWriteFactory = new SharpDX.DirectWrite.Factory();
                 dxDashFormat  = new SharpDX.DirectWrite.TextFormat(
                     dxWriteFactory, "Consolas", DashFontSize);
@@ -1865,6 +2341,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxULZBearishBrush);
             DisposeRef(ref dxULZBlueBrush);
             DisposeRef(ref dxULZPinkBrush);
+            DisposeRef(ref dxIbAsiaLineBrush);
+            DisposeRef(ref dxIbLondonLineBrush);
+            DisposeRef(ref dxIbNewYorkLineBrush);
+            DisposeRef(ref dxIbAsiaFillBrush);
+            DisposeRef(ref dxIbLondonFillBrush);
+            DisposeRef(ref dxIbNewYorkFillBrush);
+            DisposeRef(ref dxIbLineStrokeStyle);
             DisposeRef(ref dxDashFormat);
             DisposeRef(ref dxLabelFormat);
             DisposeRef(ref dxWriteFactory);
