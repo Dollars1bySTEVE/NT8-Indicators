@@ -252,9 +252,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxIbLondonFillBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkFillBrush;
         private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
+        // 300 keeps roughly several weeks of multi-session IB history while staying lightweight.
         private const int MaxInitialBalanceRanges = 300;
         // Keep the latest IB visible in dashboard context for one full trading day.
-        private const int IbDashboardActiveHours  = 24;
+        private const int InitialBalanceDashboardActiveHours = 24;
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1204,7 +1205,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (range == null || range.StartEt < cutoffEt)
                     continue;
-                if (range.High <= double.MinValue || range.Low >= double.MaxValue || range.High <= range.Low)
+                if (range.High <= double.MinValue || range.Low >= double.MaxValue || range.High < range.Low)
                     continue;
 
                 int anchorBar = range.EndBarIndex;
@@ -1910,7 +1911,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 if (!IsIBSessionTypeEnabled(r.SessionType))
                     continue;
-                if (barEt >= r.StartEt && barEt < r.EndEt.AddHours(IbDashboardActiveHours))
+                if (barEt >= r.StartEt && barEt < r.EndEt.AddHours(InitialBalanceDashboardActiveHours))
                 {
                     if (best == null || r.StartEt > best.StartEt)
                         best = r;
@@ -1945,26 +1946,22 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ibRanges == null || activeIbByType == null)
                 return;
 
-            DateTime prevBarEt = barEt;
-            if (CurrentBar > 0)
-                prevBarEt = ToEasternTime(Time[1]);
-
             bool bothEthAnchorsEnabled = ShowAsiaEthIB && ShowNyEthIB;
 
             // Asia ETH and NY ETH share the same 18:00 ET Globex anchor.
             // When both toggles are on, track one shared range to avoid duplicate overlapping lines.
             UpdateSingleInitialBalance(
-                barEt, prevBarEt, IQCIBSessionType.AsiaEth, ShowAsiaEthIB,
-                18, 0, bothEthAnchorsEnabled ? "Asia/NY ETH" : "Asia ETH");
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.AsiaRth,   ShowAsiaRthIB,   19, 0, "Asia RTH");
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.LondonEth, ShowLondonEthIB,  2, 0, "London ETH");
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.LondonRth, ShowLondonRthIB,  3, 0, "London RTH");
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkEth, !ShowAsiaEthIB && ShowNyEthIB, 18, 0, "NY ETH");
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkRth, ShowNyRthIB,     9, 30, "NY RTH");
+                barEt, IQCIBSessionType.AsiaEth, ShowAsiaEthIB,
+                18, 0, bothEthAnchorsEnabled ? "Globex ETH" : "Asia ETH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.AsiaRth,   ShowAsiaRthIB,   19, 0, "Asia RTH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.LondonEth, ShowLondonEthIB,  2, 0, "London ETH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.LondonRth, ShowLondonRthIB,  3, 0, "London RTH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.NewYorkEth, !ShowAsiaEthIB && ShowNyEthIB, 18, 0, "NY ETH");
+            UpdateSingleInitialBalance(barEt, IQCIBSessionType.NewYorkRth, ShowNyRthIB,     9, 30, "NY RTH");
         }
 
         private void UpdateSingleInitialBalance(
-            DateTime barEt, DateTime prevBarEt,
+            DateTime barEt,
             IQCIBSessionType sessionType, bool enabled,
             int openHourEt, int openMinuteEt, string label)
         {
@@ -1996,8 +1993,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             bool isInsideWindow = barEt >= startEt && barEt < endEt;
-            bool crossedOpen = CurrentBar > 0 && prevBarEt < startEt && barEt >= startEt;
-            if (isInsideWindow || crossedOpen)
+            if (isInsideWindow)
             {
                 if (High[0] > range.High || range.High == double.MinValue)
                     range.High = High[0];
@@ -2266,7 +2262,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     new SharpDX.Color4(255f / 255f, 105f / 255f, 180f / 255f, zoneAlphaF)); // PINK   absorption
 
                 // ── Initial Balance brushes ────────────────────────────────────
-                float ibFillAlpha = Math.Max(0f, Math.Min(0.8f, IBRegionOpacity / 100f));
+                float ibFillAlpha = Math.Max(0f, IBRegionOpacity / 100f);
                 dxIbAsiaLineBrush    = MakeBrush(rt, AsiaIBColor, 0.95f);
                 dxIbLondonLineBrush  = MakeBrush(rt, LondonIBColor, 0.95f);
                 dxIbNewYorkLineBrush = MakeBrush(rt, NewYorkIBColor, 0.95f);
