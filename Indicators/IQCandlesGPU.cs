@@ -253,6 +253,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private List<InitialBalanceRange> ibRanges;
         private Dictionary<IQCIBSessionType, InitialBalanceRange> activeIbByType;
         private static readonly TimeZoneInfo EtZone = SafeFindEtZone();
+        private static readonly System.Reflection.PropertyInfo GeneralOptionsProperty =
+            typeof(NinjaTrader.Core.Globals).GetProperty(
+                "GeneralOptions",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
         private SharpDX.Direct2D1.SolidColorBrush dxIbAsiaLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbLondonLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkLineBrush;
@@ -260,6 +264,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxIbLondonFillBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkFillBrush;
         private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
+        private TimeZoneInfo chartTimeZone;
+        private bool loggedChartTimeZoneFallback;
         // 300 keeps roughly several weeks of multi-session IB history while staying lightweight.
         private const int MaxInitialBalanceRanges = 300;
         // Keep the latest IB visible in dashboard context for one full trading day.
@@ -744,6 +750,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 liquidityZones = new List<LiquidityZone>(100);
                 ibRanges      = new List<InitialBalanceRange>(MaxInitialBalanceRanges);
                 activeIbByType = new Dictionary<IQCIBSessionType, InitialBalanceRange>(6);
+                loggedChartTimeZoneFallback = false;
+                chartTimeZone = ResolveChartTimeZone();
 
                 cumDelta      = 0;
                 sessionBuyVol = 0;
@@ -2117,8 +2125,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (removed == null)
                     continue;
 
-                List<IQCIBSessionType> activeKeys = new List<IQCIBSessionType>(activeIbByType.Keys);
-                foreach (IQCIBSessionType key in activeKeys)
+                foreach (IQCIBSessionType key in activeIbByType.Keys.ToArray())
                 {
                     InitialBalanceRange activeRange;
                     if (activeIbByType.TryGetValue(key, out activeRange) && object.ReferenceEquals(activeRange, removed))
@@ -2307,20 +2314,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private DateTime ToEasternTime(DateTime chartBarTime)
         {
-            TimeZoneInfo chartTz = GetChartTimeZone();
+            TimeZoneInfo chartTz = chartTimeZone ?? (chartTimeZone = ResolveChartTimeZone());
             DateTime unspecified = DateTime.SpecifyKind(chartBarTime, DateTimeKind.Unspecified);
             return TimeZoneInfo.ConvertTime(unspecified, chartTz, EtZone);
         }
 
-        private TimeZoneInfo GetChartTimeZone()
+        private TimeZoneInfo ResolveChartTimeZone()
         {
             try
             {
-                var generalOptionsProperty = typeof(NinjaTrader.Core.Globals).GetProperty(
-                    "GeneralOptions",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                object generalOptions = generalOptionsProperty != null
-                    ? generalOptionsProperty.GetValue(null, null)
+                object generalOptions = GeneralOptionsProperty != null
+                    ? GeneralOptionsProperty.GetValue(null, null)
                     : null;
                 if (generalOptions != null)
                 {
@@ -2340,6 +2344,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ex is System.Reflection.TargetException ||
                 ex is System.Reflection.TargetInvocationException)
             {
+                if (!loggedChartTimeZoneFallback)
+                {
+                    Print("IQCandlesGPU: unable to read GeneralOptions.TimeZoneInfo; falling back to Bars.TradingHours.TimeZoneInfo. " + ex.Message);
+                    loggedChartTimeZoneFallback = true;
+                }
             }
 
             if (Bars != null && Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null)
