@@ -1289,11 +1289,24 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ════════════════════════════════════════════════════════════════════════
         #region Hourly open helpers
 
+        // ET time of the current bar's OPEN (time-based bars are stamped at close)
+        private DateTime BarOpenTimeEt(DateTime barCloseEt)
+        {
+            if (BarsPeriod.BarsPeriodType == BarsPeriodType.Minute)
+                return barCloseEt.AddMinutes(-BarsPeriod.Value);
+            if (BarsPeriod.BarsPeriodType == BarsPeriodType.Second)
+                return barCloseEt.AddSeconds(-BarsPeriod.Value);
+            if (BarsPeriod.BarsPeriodType == BarsPeriodType.Day)
+                return barCloseEt.AddDays(-BarsPeriod.Value);
+            return barCloseEt; // tick/volume/range bars: close time ≈ activity time, leave as-is
+        }
+
         private void UpdateHourlyOpens(DateTime barEt)
         {
             if (!ShowHourlyOpens) return;
 
-            int hour = barEt.Hour;
+            DateTime openEt = BarOpenTimeEt(barEt);
+            int hour = openEt.Hour;
             if (!IsHourInRange(hour)) return;
 
             if (hour != _lastHour)
@@ -1309,7 +1322,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     OpenPrice     = Open[0],
                     StartBarIndex = CurrentBar,
                     EndBarIndex   = CurrentBar,
-                    BarDate       = barEt.Date
+                    BarDate       = openEt.Date
                 };
                 _currentHourlyOpen = ho;
                 lock (_sessionLock)
