@@ -50,6 +50,14 @@ Everything needed for session detection, DST-aware ET conversion, volume profile
 - Safe resource lifecycle with `CreateResources`, `DisposeResources`, and `OnRenderTargetChanged`
 - Label and line rendering stays on the price panel as an overlay
 
+### 6. Confluence Fade Signal
+- Detects high-probability **mean-reversion / fade** opportunities on the primary bar series
+- Fires a **bearish arrow** (↓) when the bar's High touches the **+1σ upper VWAP band** AND coincides (within the configured tolerance) with at least one resistance level: **VAH**, **POC** (if above VWAP), or **OB High** (when the Opening Balance window is complete)
+- Fires a **bullish arrow** (↑) when the bar's Low touches the **−1σ lower VWAP band** AND coincides with at least one support level: **VAL**, **POC** (if below VWAP), or **OB Low** (when the Opening Balance window is complete)
+- Fully reuses the live `currentSession` state — no recomputation of VWAP, bands, or profile data
+- Configurable **tolerance** (0–20 ticks) and independent **bullish / bearish arrow colors**
+- Arrows are drawn via NinjaTrader's native `Draw.ArrowDown` / `Draw.ArrowUp`; one per bar, identified by bar index so they update cleanly on developing bars
+
 ---
 
 ## ⚙️ Parameter Groups
@@ -63,6 +71,7 @@ Everything needed for session detection, DST-aware ET conversion, volume profile
 | **5. Opening Balance** | Show Opening Balance, Opening Balance Minutes, Project Closed OB, OB Line Width, OB Line Style |
 | **6. Midnight Open** | Show Midnight Open, Midnight Line Width, Midnight Line Style |
 | **7. Colors & Style** | Profile colors, VWAP above/below colors, band colors, OB colors, midnight-open color, label size, profile line width |
+| **8. Confluence Signal** | Enable Confluence Signal, Confluence Tolerance (ticks), Bullish Signal Color, Bearish Signal Color |
 
 ---
 
@@ -122,6 +131,29 @@ The profile always stores raw **1-tick bins** internally. The value-area engine:
 
 `TicksPerRow` only changes the **rendered histogram grouping** — it does **not** change POC / VAH / VAL math.
 
+### Confluence Fade Signal engine
+The signal engine runs inside `ProcessPrimarySeriesBar()` on every primary bar update and reads directly from the live `currentSession` object — no separate accumulators.
+
+**Bearish fade check (each bar):**
+1. Compute `upperBand = Vwap + StdDev` and `tolerance = ConfluenceTolerance × TickSize`
+2. If `High[0] >= upperBand − tolerance` → bar High probed the +1σ band
+3. Check for a confluent resistance level within the same tolerance window:
+   - `Vah` (Value Area High)
+   - `Poc` when `Poc ≥ Vwap`
+   - `OpeningBalanceHigh` when `OpeningBalanceComplete = true`
+4. If any level matches → draw a bearish arrow `↓` just above `High[0]`
+
+**Bullish fade check (each bar):**
+1. Compute `lowerBand = Vwap − StdDev`
+2. If `Low[0] <= lowerBand + tolerance` → bar Low probed the −1σ band
+3. Check for a confluent support level:
+   - `Val` (Value Area Low)
+   - `Poc` when `Poc ≤ Vwap`
+   - `OpeningBalanceLow` when `OpeningBalanceComplete = true`
+4. If any level matches → draw a bullish arrow `↑` just below `Low[0]`
+
+Arrow tags are keyed to `CurrentBar` so there is **at most one arrow per bar**; if a developing bar's profile shifts and the condition becomes false the arrow silently becomes stale but is not erased (the last valid state is kept until the next bar begins).
+
 ---
 
 ## 🐛 Troubleshooting
@@ -144,6 +176,12 @@ That is expected when **Dynamic London Open** is enabled during DST mismatch per
 1. Press **F5** in the NinjaScript Editor and inspect the error list
 2. Confirm SharpDX is available in your NT8 install (standard for custom GPU-rendered indicators)
 3. Make sure there is only one active working copy in your NT8 `Indicators` folder if you are manually testing edits
+
+### No Confluence Fade arrows appear
+1. Confirm **Enable Confluence Signal** is on
+2. The signal requires a valid session VWAP with a non-zero standard deviation — it will not fire on the very first bar of a session or when `Profile Source = BarDistributed` and only one bar has been processed
+3. Try increasing **Confluence Tolerance (ticks)** if the band and level are close but not quite overlapping
+4. For bearish signals, the Opening Balance must have completed its full window (`Opening Balance Minutes`) before the OB High is eligible as a confluence level
 
 ---
 

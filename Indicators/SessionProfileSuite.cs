@@ -204,6 +204,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 MidnightOpenLineWidth = 1;
                 MidnightOpenLineStyle = DashStyleHelper.Dot;
 
+                EnableConfluenceSignal = true;
+                ConfluenceTolerance = 4;
+                SignalBullishColor = System.Windows.Media.Brushes.Lime;
+                SignalBearishColor = System.Windows.Media.Brushes.OrangeRed;
+
                 ProfileLineWidth = 2;
                 LabelFontSize = 10;
                 PocColor = System.Windows.Media.Brushes.Gold;
@@ -292,6 +297,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sessionVwapSeries[0] = currentSession.Vwap;
                 sessionUpperBandSeries[0] = currentSession.Vwap + currentSession.StdDev;
                 sessionLowerBandSeries[0] = currentSession.Vwap - currentSession.StdDev;
+
+                CheckConfluenceSignal();
             }
             else
             {
@@ -615,6 +622,65 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 session.OpeningBalanceComplete = true;
             }
+        }
+
+        private void CheckConfluenceSignal()
+        {
+            if (!EnableConfluenceSignal || currentSession == null)
+                return;
+
+            double vwap = currentSession.Vwap;
+            double stdDev = currentSession.StdDev;
+
+            if (double.IsNaN(vwap) || stdDev <= 0)
+                return;
+
+            double upperBand = vwap + stdDev;
+            double lowerBand = vwap - stdDev;
+            double tolerance = ConfluenceTolerance * TickSize;
+
+            double barHigh = High[0];
+            double barLow = Low[0];
+
+            bool probesUpperBand = barHigh >= upperBand - tolerance;
+            bool probesLowerBand = barLow <= lowerBand + tolerance;
+
+            // Only compute value-area levels when the bar actually probes a band,
+            // so most ticks skip the expensive ComputeValueArea sort/allocation work.
+            if (!probesUpperBand && !probesLowerBand)
+                return;
+
+            EnsureValueArea(currentSession);
+
+            // Bearish fade: bar High reaches the upper +1σ band AND coincides with a key resistance level
+            if (probesUpperBand)
+            {
+                bool nearVah  = IsNearLevel(barHigh, currentSession.Vah, tolerance);
+                bool nearPoc  = currentSession.Poc >= vwap && IsNearLevel(barHigh, currentSession.Poc, tolerance);
+                bool nearObHi = currentSession.OpeningBalanceComplete
+                                && IsNearLevel(barHigh, currentSession.OpeningBalanceHigh, tolerance);
+
+                if (nearVah || nearPoc || nearObHi)
+                    Draw.ArrowDown(this, "CF_Bear_" + CurrentBar, false, 0, barHigh + 2.0 * TickSize, SignalBearishColor);
+            }
+
+            // Bullish fade: bar Low reaches the lower −1σ band AND coincides with a key support level
+            if (probesLowerBand)
+            {
+                bool nearVal  = IsNearLevel(barLow, currentSession.Val, tolerance);
+                bool nearPoc  = currentSession.Poc <= vwap && IsNearLevel(barLow, currentSession.Poc, tolerance);
+                bool nearObLo = currentSession.OpeningBalanceComplete
+                                && IsNearLevel(barLow, currentSession.OpeningBalanceLow, tolerance);
+
+                if (nearVal || nearPoc || nearObLo)
+                    Draw.ArrowUp(this, "CF_Bull_" + CurrentBar, false, 0, barLow - 2.0 * TickSize, SignalBullishColor);
+            }
+        }
+
+        private bool IsNearLevel(double price, double level, double tolerance)
+        {
+            return !double.IsNaN(level) && !double.IsInfinity(level)
+                && Math.Abs(price - level) <= tolerance;
         }
 
         private void CaptureMidnightOpen(DateTime chartTime)
@@ -1505,6 +1571,37 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             get { return Serialize.BrushToString(MidnightOpenColor); }
             set { MidnightOpenColor = Serialize.StringToBrush(value); }
+        }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Confluence Signal", Order = 1, GroupName = "8. Confluence Signal")]
+        public bool EnableConfluenceSignal { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Confluence Tolerance (ticks)", Order = 2, GroupName = "8. Confluence Signal")]
+        public int ConfluenceTolerance { get; set; }
+
+        [XmlIgnore]
+        [Display(Name = "Bullish Signal Color", Order = 3, GroupName = "8. Confluence Signal")]
+        public System.Windows.Media.Brush SignalBullishColor { get; set; }
+
+        [Browsable(false)]
+        public string SignalBullishColorSerializable
+        {
+            get { return Serialize.BrushToString(SignalBullishColor); }
+            set { SignalBullishColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Bearish Signal Color", Order = 4, GroupName = "8. Confluence Signal")]
+        public System.Windows.Media.Brush SignalBearishColor { get; set; }
+
+        [Browsable(false)]
+        public string SignalBearishColorSerializable
+        {
+            get { return Serialize.BrushToString(SignalBearishColor); }
+            set { SignalBearishColor = Serialize.StringToBrush(value); }
         }
         #endregion
     }
