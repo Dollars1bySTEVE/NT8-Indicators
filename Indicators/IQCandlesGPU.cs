@@ -2335,7 +2335,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ex is ArgumentException ||
                 ex is InvalidCastException ||
                 ex is MethodAccessException ||
-                ex is AmbiguousMatchException ||
+                ex is System.Reflection.AmbiguousMatchException ||
                 ex is System.Reflection.TargetException ||
                 ex is System.Reflection.TargetInvocationException)
             {
@@ -2368,7 +2368,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             catch (Exception ex) when (
                 ex is ArgumentException ||
                 ex is MethodAccessException ||
-                ex is AmbiguousMatchException)
+                ex is System.Reflection.AmbiguousMatchException)
             {
                 if (!loggedChartTimeZoneFallback)
                 {
