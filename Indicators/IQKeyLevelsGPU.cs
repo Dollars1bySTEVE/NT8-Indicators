@@ -673,7 +673,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 UpdateSessionOC(barEt);
 
                 // ── Hourly open tracking ──────────────────────────────────────
-                UpdateHourlyOpens(barEt);
+                UpdateHourlyOpens(barTime);
 
                 // ── Cache rounded Psy levels once per bar (invariant until next bar) ──
                 double psyStep = PsyRoundIncrement * TickSize;
@@ -1289,12 +1289,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ════════════════════════════════════════════════════════════════════════
         #region Hourly open helpers
 
-        private void UpdateHourlyOpens(DateTime barEt)
+        private void UpdateHourlyOpens(DateTime barTime)
         {
             if (!ShowHourlyOpens) return;
 
-            DateTime barTime = Time[0]; // bar's own timestamp — matches the chart axis
-            int hour = barTime.Hour;
+            int hour = barTime.Hour; // bar's own timestamp — matches the chart axis
             if (!IsHourInRange(hour)) return;
 
             if (hour != _lastHour)
