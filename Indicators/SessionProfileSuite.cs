@@ -72,6 +72,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Poc = double.NaN;
             public double Vah = double.NaN;
             public double Val = double.NaN;
+            public bool ValueAreaDirty;
             public double Vwap = double.NaN;
             public double StdDev;
             public double LastPrice = double.NaN;
@@ -453,7 +454,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                 session.StdDev = 0d;
             }
 
+            // Recomputing POC/VAH/VAL requires sorting the profile and allocating lists,
+            // which is too expensive to run on every tick. Mark the value area as stale
+            // and let consumers (rendering, session finalization) refresh it on demand.
+            session.ValueAreaDirty = true;
+        }
+
+        private void EnsureValueArea(SessionState session)
+        {
+            if (session == null || !session.ValueAreaDirty)
+                return;
+
             ComputeValueArea(session.Profile, out session.Poc, out session.Vah, out session.Val);
+            session.ValueAreaDirty = false;
         }
 
         private void ComputeValueArea(Dictionary<double, long> profile, out double poc, out double vah, out double val)
@@ -562,6 +575,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             UpdateDerivedSessionLevels(session);
+            EnsureValueArea(session);
 
             ClosedSessionRecord record = new ClosedSessionRecord();
             record.Kind = session.Window.Kind;
@@ -870,6 +884,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (currentSession == null)
                 return;
+
+            EnsureValueArea(currentSession);
 
             float startX = chartControl.GetXByTime(currentSession.Window.StartChart);
             float endX = chartControl.GetXByTime(currentSession.LastUpdateChart);
