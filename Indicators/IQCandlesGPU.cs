@@ -1212,6 +1212,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 int anchorBar = range.StartBarIndex;
 
+                // StartBarIndex == -1 means no bars have been seen inside this window yet.
+                if (anchorBar < 0)
+                    continue;
+
                 if (anchorBar > toBar)
                     continue;
 
@@ -1982,7 +1986,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Label         = label,
                     StartEt       = startEt,
                     EndEt         = endEt,
-                    StartBarIndex = CurrentBar,
+                    StartBarIndex = -1,          // set to first bar inside window, not creation bar
                     EndBarIndex   = CurrentBar,
                     High          = double.MinValue,
                     Low           = double.MaxValue,
@@ -1994,9 +1998,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     ibRanges.RemoveAt(0);
             }
 
-            bool isInsideWindow = barEt >= startEt && barEt < endEt;
+            // NT8 bar timestamps are bar-CLOSE times.  A 5-min bar stamped 09:35 opened at 09:30,
+            // so it belongs to the window that opened at 09:30.  The correct inclusion test is
+            // strictly-after-open and at-or-before-end (close-time semantics):
+            //   barEt > startEt  &&  barEt <= endEt
+            bool isInsideWindow = barEt > startEt && barEt <= endEt;
             if (isInsideWindow)
             {
+                // Lock in the anchor bar index on the very first bar inside the window.
+                if (range.StartBarIndex < 0)
+                    range.StartBarIndex = CurrentBar;
                 if (High[0] > range.High || range.High == double.MinValue)
                     range.High = High[0];
                 if (Low[0] < range.Low || range.Low == double.MaxValue)
@@ -2004,7 +2015,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 range.EndBarIndex = CurrentBar;
             }
 
-            if (!range.IsComplete && barEt >= endEt)
+            if (!range.IsComplete && barEt > endEt)
                 range.IsComplete = true;
         }
 
