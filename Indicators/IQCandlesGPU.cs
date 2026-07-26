@@ -253,10 +253,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private List<InitialBalanceRange> ibRanges;
         private Dictionary<IQCIBSessionType, InitialBalanceRange> activeIbByType;
         private static readonly TimeZoneInfo EtZone = SafeFindEtZone();
-        private static readonly System.Reflection.PropertyInfo GeneralOptionsProperty =
-            typeof(NinjaTrader.Core.Globals).GetProperty(
-                "GeneralOptions",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
         private SharpDX.Direct2D1.SolidColorBrush dxIbAsiaLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbLondonLineBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkLineBrush;
@@ -266,6 +262,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
         private TimeZoneInfo chartTimeZone;
         private bool loggedChartTimeZoneFallback;
+        private bool attemptedGeneralOptionsPropertyLookup;
+        private System.Reflection.PropertyInfo generalOptionsProperty;
         // 300 keeps roughly several weeks of multi-session IB history while staying lightweight.
         private const int MaxInitialBalanceRanges = 300;
         // Keep the latest IB visible in dashboard context for one full trading day.
@@ -2111,8 +2109,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (previous.SessionEndBarIndex < 0)
                 previous.SessionEndBarIndex = Math.Max(previous.EndBarIndex, CurrentBar - 1);
-            previous.IsComplete = previous.IsComplete ||
-                                  (previous.StartBarIndex >= 0 && previous.EndBarIndex >= previous.StartBarIndex);
+            previous.IsComplete = previous.IsComplete || HasInitialBalanceData(previous);
         }
 
         private void TrimInitialBalanceHistory()
@@ -2125,12 +2122,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (removed == null)
                     continue;
 
-                foreach (IQCIBSessionType key in activeIbByType.Keys.ToArray())
-                {
-                    InitialBalanceRange activeRange;
-                    if (activeIbByType.TryGetValue(key, out activeRange) && object.ReferenceEquals(activeRange, removed))
-                        activeIbByType.Remove(key);
-                }
+                InitialBalanceRange activeRange;
+                if (activeIbByType.TryGetValue(removed.SessionType, out activeRange) && object.ReferenceEquals(activeRange, removed))
+                    activeIbByType.Remove(removed.SessionType);
             }
         }
 
@@ -2323,8 +2317,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             try
             {
-                object generalOptions = GeneralOptionsProperty != null
-                    ? GeneralOptionsProperty.GetValue(null, null)
+                var property = GetGeneralOptionsProperty();
+                object generalOptions = property != null
+                    ? property.GetValue(null, null)
                     : null;
                 if (generalOptions != null)
                 {
@@ -2355,6 +2350,34 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return Bars.TradingHours.TimeZoneInfo;
 
             return TimeZoneInfo.Local;
+        }
+
+        private System.Reflection.PropertyInfo GetGeneralOptionsProperty()
+        {
+            if (attemptedGeneralOptionsPropertyLookup)
+                return generalOptionsProperty;
+
+            attemptedGeneralOptionsPropertyLookup = true;
+
+            try
+            {
+                generalOptionsProperty = typeof(NinjaTrader.Core.Globals).GetProperty(
+                    "GeneralOptions",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            }
+            catch (Exception ex) when (
+                ex is ArgumentException ||
+                ex is MethodAccessException ||
+                ex is AmbiguousMatchException)
+            {
+                if (!loggedChartTimeZoneFallback)
+                {
+                    Print("IQCandlesGPU: unable to inspect GeneralOptions property; falling back to Bars.TradingHours.TimeZoneInfo. " + ex.Message);
+                    loggedChartTimeZoneFallback = true;
+                }
+            }
+
+            return generalOptionsProperty;
         }
 
         private static string FormatDelta(double delta)
