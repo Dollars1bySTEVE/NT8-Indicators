@@ -252,6 +252,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxIbLondonFillBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkFillBrush;
         private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
+        private const int MaxInitialBalanceRanges = 300;
+        private const int IbDashboardActiveHours  = 24;
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -552,7 +554,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowLondonRthIB { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show NY ETH IB (18:00 ET)", Order = 6, GroupName = "8. Initial Balance")]
+        [Display(Name = "Show NY ETH IB (18:00 ET, Globex)", Order = 6, GroupName = "8. Initial Balance")]
         public bool ShowNyEthIB { get; set; }
 
         [NinjaScriptProperty]
@@ -725,7 +727,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 bidBook       = new Dictionary<double, BookLevel>(200);
                 askBook       = new Dictionary<double, BookLevel>(200);
                 liquidityZones = new List<LiquidityZone>(100);
-                ibRanges      = new List<InitialBalanceRange>(200);
+                ibRanges      = new List<InitialBalanceRange>(MaxInitialBalanceRanges);
                 activeIbByType = new Dictionary<IQCIBSessionType, InitialBalanceRange>(6);
 
                 cumDelta      = 0;
@@ -1907,7 +1909,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 if (!IsIBSessionTypeEnabled(r.SessionType))
                     continue;
-                if (barEt >= r.StartEt && barEt < r.EndEt.AddHours(24))
+                if (barEt >= r.StartEt && barEt < r.EndEt.AddHours(IbDashboardActiveHours))
                 {
                     if (best == null || r.StartEt > best.StartEt)
                         best = r;
@@ -1950,6 +1952,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.AsiaRth,   ShowAsiaRthIB,   19, 0, "Asia RTH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.LondonEth, ShowLondonEthIB,  2, 0, "London ETH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.LondonRth, ShowLondonRthIB,  3, 0, "London RTH");
+            // NY ETH uses the same 18:00 ET Globex anchor as Asia ETH by design; separate toggle/label.
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkEth, ShowNyEthIB,    18, 0, "NY ETH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkRth, ShowNyRthIB,     9, 30, "NY RTH");
         }
@@ -1982,7 +1985,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 };
                 activeIbByType[sessionType] = range;
                 ibRanges.Add(range);
-                if (ibRanges.Count > 300)
+                if (ibRanges.Count > MaxInitialBalanceRanges)
                     ibRanges.RemoveAt(0);
             }
 
