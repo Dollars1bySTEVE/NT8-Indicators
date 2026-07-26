@@ -253,6 +253,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkFillBrush;
         private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
         private const int MaxInitialBalanceRanges = 300;
+        // Keep the latest IB visible in dashboard context for one full trading day.
         private const int IbDashboardActiveHours  = 24;
 
         #endregion
@@ -1948,12 +1949,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar > 0)
                 prevBarEt = ToEasternTime(Time[1]);
 
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.AsiaEth,   ShowAsiaEthIB,   18, 0, "Asia ETH");
+            bool bothEthAnchorsEnabled = ShowAsiaEthIB && ShowNyEthIB;
+
+            // Asia ETH and NY ETH share the same 18:00 ET Globex anchor.
+            // When both toggles are on, track one shared range to avoid duplicate overlapping lines.
+            UpdateSingleInitialBalance(
+                barEt, prevBarEt, IQCIBSessionType.AsiaEth, ShowAsiaEthIB,
+                18, 0, bothEthAnchorsEnabled ? "Asia/NY ETH" : "Asia ETH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.AsiaRth,   ShowAsiaRthIB,   19, 0, "Asia RTH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.LondonEth, ShowLondonEthIB,  2, 0, "London ETH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.LondonRth, ShowLondonRthIB,  3, 0, "London RTH");
-            // NY ETH uses the same 18:00 ET Globex anchor as Asia ETH by design; separate toggle/label.
-            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkEth, ShowNyEthIB,    18, 0, "NY ETH");
+            UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkEth, !ShowAsiaEthIB && ShowNyEthIB, 18, 0, "NY ETH");
             UpdateSingleInitialBalance(barEt, prevBarEt, IQCIBSessionType.NewYorkRth, ShowNyRthIB,     9, 30, "NY RTH");
         }
 
@@ -1969,7 +1975,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             DateTime endEt   = startEt.AddMinutes(IBDurationMinutes);
 
             InitialBalanceRange range;
-            if (!activeIbByType.TryGetValue(sessionType, out range) || range == null || range.StartEt != startEt)
+            if (!activeIbByType.TryGetValue(sessionType, out range) || range.StartEt != startEt)
             {
                 range = new InitialBalanceRange
                 {
@@ -1985,7 +1991,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 };
                 activeIbByType[sessionType] = range;
                 ibRanges.Add(range);
-                if (ibRanges.Count > MaxInitialBalanceRanges)
+                while (ibRanges.Count > MaxInitialBalanceRanges)
                     ibRanges.RemoveAt(0);
             }
 
