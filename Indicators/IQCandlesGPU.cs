@@ -65,6 +65,13 @@ public enum IQCIBSessionType
     NewYorkRth
 }
 
+/// <summary>How far Initial Balance lines should extend.</summary>
+public enum IQCIBLineExtensionMode
+{
+    ToSessionEnd,
+    ToChartEnd
+}
+
 namespace NinjaTrader.NinjaScript.Indicators
 {
     /// <summary>
@@ -143,6 +150,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime EndEt;
             public int StartBarIndex;
             public int EndBarIndex;
+            public int SessionEndBarIndex;
             public double High;
             public double Low;
             public bool IsComplete;
@@ -252,6 +260,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxIbLondonFillBrush;
         private SharpDX.Direct2D1.SolidColorBrush dxIbNewYorkFillBrush;
         private SharpDX.Direct2D1.StrokeStyle     dxIbLineStrokeStyle;
+        private TimeZoneInfo chartTimeZone;
+        private bool loggedChartTimeZoneFallback;
+        private bool attemptedGeneralOptionsPropertyLookup;
+        private System.Reflection.PropertyInfo generalOptionsProperty;
         // 300 keeps roughly several weeks of multi-session IB history while staying lightweight.
         private const int MaxInitialBalanceRanges = 300;
         // Keep the latest IB visible in dashboard context for one full trading day.
@@ -596,11 +608,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         public DashStyleHelper IBLineDash { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show IB Status on Dashboard", Order = 15, GroupName = "8. Initial Balance")]
+        [Display(Name = "IB Line Extension", Order = 15, GroupName = "8. Initial Balance")]
+        public IQCIBLineExtensionMode IBLineExtension { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show IB Status on Dashboard", Order = 16, GroupName = "8. Initial Balance")]
         public bool ShowIBStatusOnDashboard { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Asia IB Color", Order = 16, GroupName = "8. Initial Balance")]
+        [Display(Name = "Asia IB Color", Order = 17, GroupName = "8. Initial Balance")]
         [XmlIgnore]
         public System.Windows.Media.Brush AsiaIBColor { get; set; }
         [Browsable(false)]
@@ -611,7 +627,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "London IB Color", Order = 17, GroupName = "8. Initial Balance")]
+        [Display(Name = "London IB Color", Order = 18, GroupName = "8. Initial Balance")]
         [XmlIgnore]
         public System.Windows.Media.Brush LondonIBColor { get; set; }
         [Browsable(false)]
@@ -622,7 +638,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [NinjaScriptProperty]
-        [Display(Name = "NY IB Color", Order = 18, GroupName = "8. Initial Balance")]
+        [Display(Name = "NY IB Color", Order = 19, GroupName = "8. Initial Balance")]
         [XmlIgnore]
         public System.Windows.Media.Brush NewYorkIBColor { get; set; }
         [Browsable(false)]
@@ -716,6 +732,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 IBRegionOpacity       = 14;
                 IBLineWidth           = 2;
                 IBLineDash            = DashStyleHelper.Solid;
+                IBLineExtension       = IQCIBLineExtensionMode.ToSessionEnd;
                 ShowIBStatusOnDashboard = true;
                 AsiaIBColor           = Brushes.Goldenrod;
                 LondonIBColor         = Brushes.CornflowerBlue;
@@ -731,6 +748,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 liquidityZones = new List<LiquidityZone>(100);
                 ibRanges      = new List<InitialBalanceRange>(MaxInitialBalanceRanges);
                 activeIbByType = new Dictionary<IQCIBSessionType, InitialBalanceRange>(6);
+                loggedChartTimeZoneFallback = false;
+                chartTimeZone = ResolveChartTimeZone();
 
                 cumDelta      = 0;
                 sessionBuyVol = 0;
@@ -1219,11 +1238,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (anchorBar > toBar)
                     continue;
 
+                int renderEndBar = GetInitialBalanceRenderEndBar(range, toBar);
+                if (renderEndBar < fromBar)
+                    continue;
+
                 float xStart = anchorBar < fromBar ? 0f : cc.GetXByBarIndex(ChartBars, anchorBar);
                 if (float.IsNaN(xStart))
                     continue;
 
-                float xEnd = Math.Max(xStart + 1f, chartWidth);
+                float xEnd = renderEndBar >= toBar
+                    ? chartWidth
+                    : cc.GetXByBarIndex(ChartBars, renderEndBar);
+                if (float.IsNaN(xEnd))
+                    continue;
+                xEnd = Math.Max(xStart + 1f, xEnd);
                 float yHigh = cs.GetYByValue(range.High);
                 float yLow  = cs.GetYByValue(range.Low);
                 if (float.IsNaN(yHigh) || float.IsNaN(yLow))
@@ -1917,6 +1945,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 if (!IsIBSessionTypeEnabled(r.SessionType))
                     continue;
+                if (!HasInitialBalanceData(r))
+                    continue;
                 if (barEt >= r.StartEt && barEt < r.EndEt.AddHours(InitialBalanceDashboardActiveHours))
                 {
                     if (best == null || r.StartEt > best.StartEt)
@@ -1929,7 +1959,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 for (int i = ibRanges.Count - 1; i >= 0; i--)
                 {
                     InitialBalanceRange r = ibRanges[i];
-                    if (r != null && IsIBSessionTypeEnabled(r.SessionType))
+                    if (r != null && r.IsComplete && IsIBSessionTypeEnabled(r.SessionType) && HasInitialBalanceData(r))
                     {
                         best = r;
                         break;
@@ -1937,7 +1967,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            if (best == null || best.High <= double.MinValue || best.Low >= double.MaxValue)
+            if (best == null)
+            {
+                for (int i = ibRanges.Count - 1; i >= 0; i--)
+                {
+                    InitialBalanceRange r = ibRanges[i];
+                    if (r != null && IsIBSessionTypeEnabled(r.SessionType) && HasInitialBalanceData(r))
+                    {
+                        best = r;
+                        break;
+                    }
+                }
+            }
+
+            if (best == null || !HasInitialBalanceData(best))
                 return "IB: waiting…";
 
             return string.Format("IB: {0} {1}-{2} ({3})",
@@ -1980,22 +2023,30 @@ namespace NinjaTrader.NinjaScript.Indicators
             InitialBalanceRange range;
             if (!activeIbByType.TryGetValue(sessionType, out range) || range.StartEt != startEt)
             {
-                range = new InitialBalanceRange
+                FinalizePreviousInitialBalanceRange(sessionType);
+                range = FindInitialBalanceRange(sessionType, startEt);
+                if (range == null)
                 {
-                    SessionType   = sessionType,
-                    Label         = label,
-                    StartEt       = startEt,
-                    EndEt         = endEt,
-                    StartBarIndex = -1,          // set to first bar inside window, not creation bar
-                    EndBarIndex   = CurrentBar,
-                    High          = double.MinValue,
-                    Low           = double.MaxValue,
-                    IsComplete    = false
-                };
+                    range = new InitialBalanceRange
+                    {
+                        SessionType        = sessionType,
+                        Label              = label,
+                        StartEt            = startEt,
+                        EndEt              = endEt,
+                        StartBarIndex      = -1,          // set to first bar inside window, not creation bar
+                        EndBarIndex        = CurrentBar,
+                        SessionEndBarIndex = -1,
+                        High               = double.MinValue,
+                        Low                = double.MaxValue,
+                        IsComplete         = false
+                    };
+                    ibRanges.Add(range);
+                    TrimInitialBalanceHistory();
+                }
+
+                range.Label = label;
+                range.EndEt = endEt;
                 activeIbByType[sessionType] = range;
-                ibRanges.Add(range);
-                while (ibRanges.Count > MaxInitialBalanceRanges)
-                    ibRanges.RemoveAt(0);
             }
 
             // NT8 bar timestamps are bar-CLOSE times.  A 5-min bar stamped 09:35 opened at 09:30,
@@ -2017,6 +2068,64 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (!range.IsComplete && barEt > endEt)
                 range.IsComplete = true;
+        }
+
+        private int GetInitialBalanceRenderEndBar(InitialBalanceRange range, int toBar)
+        {
+            if (IBLineExtension == IQCIBLineExtensionMode.ToChartEnd)
+                return toBar;
+
+            int latestKnownBar = range.SessionEndBarIndex >= 0
+                ? range.SessionEndBarIndex
+                : Math.Max(range.EndBarIndex, Math.Min(CurrentBar, toBar));
+            return Math.Min(toBar, latestKnownBar);
+        }
+
+        private bool HasInitialBalanceData(InitialBalanceRange range)
+        {
+            return range != null &&
+                   range.High > double.MinValue &&
+                   range.Low < double.MaxValue &&
+                   range.High >= range.Low;
+        }
+
+        private InitialBalanceRange FindInitialBalanceRange(IQCIBSessionType sessionType, DateTime startEt)
+        {
+            for (int i = ibRanges.Count - 1; i >= 0; i--)
+            {
+                InitialBalanceRange existing = ibRanges[i];
+                if (existing != null && existing.SessionType == sessionType && existing.StartEt == startEt)
+                    return existing;
+            }
+
+            return null;
+        }
+
+        private void FinalizePreviousInitialBalanceRange(IQCIBSessionType sessionType)
+        {
+            InitialBalanceRange previous;
+            if (!activeIbByType.TryGetValue(sessionType, out previous) || previous == null)
+                return;
+
+            if (previous.SessionEndBarIndex < 0)
+                previous.SessionEndBarIndex = Math.Max(previous.EndBarIndex, CurrentBar - 1);
+            previous.IsComplete = previous.IsComplete || HasInitialBalanceData(previous);
+        }
+
+        private void TrimInitialBalanceHistory()
+        {
+            while (ibRanges.Count > MaxInitialBalanceRanges)
+            {
+                InitialBalanceRange removed = ibRanges[0];
+                ibRanges.RemoveAt(0);
+
+                if (removed == null)
+                    continue;
+
+                InitialBalanceRange activeRange;
+                if (activeIbByType.TryGetValue(removed.SessionType, out activeRange) && object.ReferenceEquals(activeRange, removed))
+                    activeIbByType.Remove(removed.SessionType);
+            }
         }
 
         private static DateTime GetMostRecentSessionOpenEt(DateTime barEt, int openHourEt, int openMinuteEt)
@@ -2199,11 +2308,76 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private DateTime ToEasternTime(DateTime chartBarTime)
         {
-            TimeZoneInfo chartTz = Bars != null && Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null
-                ? Bars.TradingHours.TimeZoneInfo
-                : TimeZoneInfo.Local;
+            TimeZoneInfo chartTz = chartTimeZone ?? (chartTimeZone = ResolveChartTimeZone());
             DateTime unspecified = DateTime.SpecifyKind(chartBarTime, DateTimeKind.Unspecified);
             return TimeZoneInfo.ConvertTime(unspecified, chartTz, EtZone);
+        }
+
+        private TimeZoneInfo ResolveChartTimeZone()
+        {
+            try
+            {
+                var property = GetGeneralOptionsProperty();
+                object generalOptions = property != null
+                    ? property.GetValue(null, null)
+                    : null;
+                if (generalOptions != null)
+                {
+                    var timeZoneProperty = generalOptions.GetType().GetProperty("TimeZoneInfo");
+                    TimeZoneInfo generalOptionsTimeZone = timeZoneProperty != null
+                        ? timeZoneProperty.GetValue(generalOptions, null) as TimeZoneInfo
+                        : null;
+                    if (generalOptionsTimeZone != null)
+                        return generalOptionsTimeZone;
+                }
+            }
+            catch (Exception ex) when (
+                ex is ArgumentException ||
+                ex is InvalidCastException ||
+                ex is MethodAccessException ||
+                ex is AmbiguousMatchException ||
+                ex is System.Reflection.TargetException ||
+                ex is System.Reflection.TargetInvocationException)
+            {
+                if (!loggedChartTimeZoneFallback)
+                {
+                    Print("IQCandlesGPU: unable to read GeneralOptions.TimeZoneInfo; falling back to Bars.TradingHours.TimeZoneInfo. " + ex.Message);
+                    loggedChartTimeZoneFallback = true;
+                }
+            }
+
+            if (Bars != null && Bars.TradingHours != null && Bars.TradingHours.TimeZoneInfo != null)
+                return Bars.TradingHours.TimeZoneInfo;
+
+            return TimeZoneInfo.Local;
+        }
+
+        private System.Reflection.PropertyInfo GetGeneralOptionsProperty()
+        {
+            if (attemptedGeneralOptionsPropertyLookup)
+                return generalOptionsProperty;
+
+            attemptedGeneralOptionsPropertyLookup = true;
+
+            try
+            {
+                generalOptionsProperty = typeof(NinjaTrader.Core.Globals).GetProperty(
+                    "GeneralOptions",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            }
+            catch (Exception ex) when (
+                ex is ArgumentException ||
+                ex is MethodAccessException ||
+                ex is AmbiguousMatchException)
+            {
+                if (!loggedChartTimeZoneFallback)
+                {
+                    Print("IQCandlesGPU: unable to inspect GeneralOptions property; falling back to Bars.TradingHours.TimeZoneInfo. " + ex.Message);
+                    loggedChartTimeZoneFallback = true;
+                }
+            }
+
+            return generalOptionsProperty;
         }
 
         private static string FormatDelta(double delta)
