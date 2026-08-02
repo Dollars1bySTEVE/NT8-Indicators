@@ -5,10 +5,11 @@
 //  Signals     : SignalsMA (9 SMA cross) + iTrend Pro
 //  Compliance  : Apex Futures Legacy $50k rules
 //  Author      : Built for Dollars1bySTEVE
-//  Version     : 1.0.2  (NY RTH — 2026-08-02)
+//  Version     : 1.0.3  (NY RTH — 2026-08-02)
 //  Fix v1.0.1  : Removed invalid OnSessionChange override
 //  Fix v1.0.2  : SMA/LinReg declared as ISeries<double>
-//                (they are methods in NT8, not types)
+//  Fix v1.0.3  : Store indicator values as double each bar
+//                instead of field-level series references
 // ============================================================
 
 #region Using declarations
@@ -21,6 +22,7 @@ using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
@@ -43,11 +45,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int      t1Ticks;
         private int      t2Ticks;
         private DateTime lastSessionDate  = DateTime.MinValue;
-
-        // ── Indicator references (ISeries<double> — correct NT8 field type) ──
-        private ISeries<double> signalsSMA;
-        private ISeries<double> iTrendFast;
-        private ISeries<double> iTrendSlow;
 
         protected override void OnStateChange()
         {
@@ -101,13 +98,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetProfitTarget("T1Entry", CalculationMode.Ticks, t1Ticks);
                 SetProfitTarget("T2Entry", CalculationMode.Ticks, t2Ticks);
             }
-            else if (State == State.DataLoaded)
-            {
-                // SMA() and LinReg() are factory methods — they return ISeries<double>
-                signalsSMA = SMA(Close, SignalsMAPeriod);
-                iTrendFast = LinReg(Close, 3);  // iTrend Pro approximation
-                iTrendSlow = LinReg(Close, 5);  // Replace with ninZaiTrendPro plots if licensed
-            }
         }
 
         protected override void OnBarUpdate()
@@ -144,7 +134,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     tradingAllowed = false;
                     Draw.TextFixed(this, "DailyCapHit",
-                        "✅ DAILY PROFIT CAP HIT ($" + DailyProfitLimit + ") — Done for today!",
+                        "DAILY PROFIT CAP HIT ($" + DailyProfitLimit + ") - Done for today!",
                         TextPosition.TopLeft, Brushes.Lime,
                         new Gui.Tools.SimpleFont("Arial", 14),
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -154,7 +144,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     tradingAllowed = false;
                     Draw.TextFixed(this, "DailyLossHit",
-                        "🛑 DAILY LOSS LIMIT (-$" + DailyLossLimit + ") HIT — Done for today!",
+                        "DAILY LOSS LIMIT (-$" + DailyLossLimit + ") HIT - Done for today!",
                         TextPosition.TopLeft, Brushes.Red,
                         new Gui.Tools.SimpleFont("Arial", 14),
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -165,7 +155,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     tradingAllowed = false;
                     Draw.TextFixed(this, "AccountFloorMsg",
-                        "⛔ ACCOUNT BELOW FLOOR ($" + AccountFloor + ") — Trading LOCKED!",
+                        "ACCOUNT BELOW FLOOR ($" + AccountFloor + ") - Trading LOCKED!",
                         TextPosition.TopLeft, Brushes.OrangeRed,
                         new Gui.Tools.SimpleFont("Arial", 14),
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -174,15 +164,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!tradingAllowed) return;
 
-            // ── Signal detection ─────────────────────────────────
-            // SignalsMA — 9 SMA cross & close (primary signal)
-            bool smaBullish = Close[1] < signalsSMA[1] && Close[0] > signalsSMA[0];
-            bool smaBearish = Close[1] > signalsSMA[1] && Close[0] < signalsSMA[0];
+            // ── Signal detection — inline calls, no stored series ─
+            // NT8 caches these internally so there is no performance penalty
+            double smaVal0  = SMA(Close, SignalsMAPeriod)[0];
+            double smaVal1  = SMA(Close, SignalsMAPeriod)[1];
+            double lrFast0  = LinReg(Close, 3)[0];
+            double lrSlow0  = LinReg(Close, 5)[0];
+
+            // SignalsMA — price crosses and CLOSES beyond 9 SMA
+            bool smaBullish = Close[1] < smaVal1 && Close[0] > smaVal0;
+            bool smaBearish = Close[1] > smaVal1 && Close[0] < smaVal0;
 
             // iTrend Pro direction (LinReg approximation)
             // NOTE: Replace with direct ninZaiTrendPro Plot access if licensed
-            bool iTrendBullish = iTrendFast[0] > iTrendSlow[0];
-            bool iTrendBearish = iTrendFast[0] < iTrendSlow[0];
+            bool iTrendBullish = lrFast0 > lrSlow0;
+            bool iTrendBearish = lrFast0 < lrSlow0;
 
             // ── Combined signal logic ────────────────────────────
             bool longSignal, shortSignal;
@@ -194,8 +190,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else // EitherOne
             {
-                longSignal  = smaBullish || (iTrendBullish && Close[0] > signalsSMA[0]);
-                shortSignal = smaBearish || (iTrendBearish && Close[0] < signalsSMA[0]);
+                longSignal  = smaBullish || (iTrendBullish && Close[0] > smaVal0);
+                shortSignal = smaBearish || (iTrendBearish && Close[0] < smaVal0);
             }
 
             // ── Breakeven logic — move T2 stop when T1 fills ─────
@@ -205,15 +201,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!t1Hit && Position.Quantity <= halfSize)
                 {
                     t1Hit = true;
-                    double bePrice = Position.AveragePrice;
-                    SetStopLoss("T2Entry", CalculationMode.Price, bePrice, false);
+                    SetStopLoss("T2Entry", CalculationMode.Price, Position.AveragePrice, false);
                 }
             }
 
             // ── Entry logic ──────────────────────────────────────
             if (Position.MarketPosition == MarketPosition.Flat)
             {
-                t1Hit = false; // reset for next trade
+                t1Hit = false;
 
                 if (ExecutionMode == ExecMode.FullAuto)
                 {
