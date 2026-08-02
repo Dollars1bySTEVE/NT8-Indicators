@@ -5,9 +5,10 @@
 //  Signals     : SignalsMA (9 SMA cross) + iTrend Pro
 //  Compliance  : Apex Futures Legacy $50k rules
 //  Author      : Built for Dollars1bySTEVE
-//  Version     : 1.0.1  (NY RTH — 2026-08-02)
-//  Fix         : Removed invalid OnSessionChange override;
-//                daily reset now handled via date tracking
+//  Version     : 1.0.2  (NY RTH — 2026-08-02)
+//  Fix v1.0.1  : Removed invalid OnSessionChange override
+//  Fix v1.0.2  : SMA/LinReg declared as ISeries<double>
+//                (they are methods in NT8, not types)
 // ============================================================
 
 #region Using declarations
@@ -28,8 +29,8 @@ namespace NinjaTrader.NinjaScript.Strategies
     public class ApexLegacyStrategy : Strategy
     {
         // ── Execution mode enums ─────────────────────────────
-        public enum ExecMode   { FullAuto, SemiAuto, AlertOnly }
-        public enum SignalMode { RequireBoth, EitherOne }
+        public enum ExecMode       { FullAuto, SemiAuto, AlertOnly }
+        public enum SignalMode     { RequireBoth, EitherOne }
         public enum InstrumentMode { AutoDetect, NQ, MNQ }
 
         // ── Internal state ───────────────────────────────────
@@ -43,10 +44,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int      t2Ticks;
         private DateTime lastSessionDate  = DateTime.MinValue;
 
-        // ── Indicator references ─────────────────────────────
-        private SMA      signalsSMA;
-        private LinReg   iTrendFast;
-        private LinReg   iTrendSlow;
+        // ── Indicator references (ISeries<double> — correct NT8 field type) ──
+        private ISeries<double> signalsSMA;
+        private ISeries<double> iTrendFast;
+        private ISeries<double> iTrendSlow;
 
         protected override void OnStateChange()
         {
@@ -55,39 +56,39 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Description = "Apex Legacy $50k Strategy — SignalsMA + iTrend | NY RTH";
                 Name        = "ApexLegacyStrategy";
 
-                ExecutionMode       = ExecMode.SemiAuto;
-                SignalRequirement    = SignalMode.EitherOne;
-                InstrumentSetting   = InstrumentMode.AutoDetect;
+                ExecutionMode      = ExecMode.SemiAuto;
+                SignalRequirement   = SignalMode.EitherOne;
+                InstrumentSetting  = InstrumentMode.AutoDetect;
 
-                StopTicks           = 80;    // 20 pts
-                T1Ticks             = 80;    // 20 pts
-                T2Ticks             = 160;   // 40 pts
-                MoveToBreakeven     = true;
+                StopTicks          = 80;    // 20 pts
+                T1Ticks            = 80;    // 20 pts
+                T2Ticks            = 160;   // 40 pts
+                MoveToBreakeven    = true;
 
-                SignalsMAPeriod     = 9;
+                SignalsMAPeriod    = 9;
 
-                EnableCompliance    = true;
-                DailyProfitLimit    = 800.0;
-                DailyLossLimit      = 400.0;
-                AccountFloor        = 50500.0;
+                EnableCompliance   = true;
+                DailyProfitLimit   = 800.0;
+                DailyLossLimit     = 400.0;
+                AccountFloor       = 50500.0;
 
-                SessionStartHour    = 9;
-                SessionStartMinute  = 30;
-                SessionEndHour      = 15;
-                SessionEndMinute    = 30;
+                SessionStartHour   = 9;
+                SessionStartMinute = 30;
+                SessionEndHour     = 15;
+                SessionEndMinute   = 30;
 
-                Calculate                        = Calculate.OnBarClose;
-                EntriesPerDirection              = 1;
-                EntryHandling                    = EntryHandling.AllEntries;
-                IsExitOnSessionCloseStrategy     = true;
-                ExitOnSessionCloseSeconds        = 30;
-                BarsRequiredToTrade              = 20;
+                Calculate                    = Calculate.OnBarClose;
+                EntriesPerDirection          = 1;
+                EntryHandling                = EntryHandling.AllEntries;
+                IsExitOnSessionCloseStrategy = true;
+                ExitOnSessionCloseSeconds    = 30;
+                BarsRequiredToTrade          = 20;
             }
             else if (State == State.Configure)
             {
-                string name = Instrument.MasterInstrument.Name.ToUpper();
-                bool isMNQ  = (InstrumentSetting == InstrumentMode.MNQ) ||
-                              (InstrumentSetting == InstrumentMode.AutoDetect && name.Contains("MNQ"));
+                string instName = Instrument.MasterInstrument.Name.ToUpper();
+                bool isMNQ = (InstrumentSetting == InstrumentMode.MNQ) ||
+                             (InstrumentSetting == InstrumentMode.AutoDetect && instName.Contains("MNQ"));
 
                 nqContracts = isMNQ ? 10 : 2;
                 stopTicks   = StopTicks;
@@ -95,16 +96,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 t2Ticks     = T2Ticks;
 
                 // Internal order management — strategy acts as its own ATM
-                SetStopLoss("T1Entry",    CalculationMode.Ticks, stopTicks, false);
-                SetStopLoss("T2Entry",    CalculationMode.Ticks, stopTicks, false);
+                SetStopLoss("T1Entry",     CalculationMode.Ticks, stopTicks, false);
+                SetStopLoss("T2Entry",     CalculationMode.Ticks, stopTicks, false);
                 SetProfitTarget("T1Entry", CalculationMode.Ticks, t1Ticks);
                 SetProfitTarget("T2Entry", CalculationMode.Ticks, t2Ticks);
             }
             else if (State == State.DataLoaded)
             {
-                signalsSMA  = SMA(Close, SignalsMAPeriod);
-                iTrendFast  = LinReg(Close, 3);   // iTrend Pro approximation
-                iTrendSlow  = LinReg(Close, 5);   // Replace with ninZaiTrendPro plots if licensed
+                // SMA() and LinReg() are factory methods — they return ISeries<double>
+                signalsSMA = SMA(Close, SignalsMAPeriod);
+                iTrendFast = LinReg(Close, 3);  // iTrend Pro approximation
+                iTrendSlow = LinReg(Close, 5);  // Replace with ninZaiTrendPro plots if licensed
             }
         }
 
@@ -112,7 +114,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (CurrentBar < BarsRequiredToTrade) return;
 
-            // ── Daily session reset (replaces OnSessionChange) ──
+            // ── Daily session reset ──────────────────────────────
             DateTime today = Time[0].Date;
             if (today != lastSessionDate)
             {
@@ -122,10 +124,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 t1Hit            = false;
                 sessionStartCash = Account.Get(AccountItem.CashValue, Currency.UsDollar);
 
-                // Clear previous day compliance messages
                 RemoveDrawObject("DailyCapHit");
                 RemoveDrawObject("DailyLossHit");
-                RemoveDrawObject("AccountFloor");
+                RemoveDrawObject("AccountFloorMsg");
             }
 
             // ── Session time gate ────────────────────────────────
@@ -143,7 +144,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     tradingAllowed = false;
                     Draw.TextFixed(this, "DailyCapHit",
-                        "\u2705 DAILY PROFIT CAP HIT ($" + DailyProfitLimit + ") — Done for today!",
+                        "✅ DAILY PROFIT CAP HIT ($" + DailyProfitLimit + ") — Done for today!",
                         TextPosition.TopLeft, Brushes.Lime,
                         new Gui.Tools.SimpleFont("Arial", 14),
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -153,7 +154,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     tradingAllowed = false;
                     Draw.TextFixed(this, "DailyLossHit",
-                        "\uD83D\uDED1 DAILY LOSS LIMIT (-$" + DailyLossLimit + ") HIT — Done for today!",
+                        "🛑 DAILY LOSS LIMIT (-$" + DailyLossLimit + ") HIT — Done for today!",
                         TextPosition.TopLeft, Brushes.Red,
                         new Gui.Tools.SimpleFont("Arial", 14),
                         Brushes.Transparent, Brushes.Transparent, 0);
@@ -163,8 +164,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (balance < AccountFloor)
                 {
                     tradingAllowed = false;
-                    Draw.TextFixed(this, "AccountFloor",
-                        "\u26D4 ACCOUNT BELOW FLOOR ($" + AccountFloor + ") — Trading LOCKED!",
+                    Draw.TextFixed(this, "AccountFloorMsg",
+                        "⛔ ACCOUNT BELOW FLOOR ($" + AccountFloor + ") — Trading LOCKED!",
                         TextPosition.TopLeft, Brushes.OrangeRed,
                         new Gui.Tools.SimpleFont("Arial", 14),
                         Brushes.Transparent, Brushes.Transparent, 0);
