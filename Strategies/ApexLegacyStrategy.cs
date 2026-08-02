@@ -5,11 +5,14 @@
 //  Signals     : SignalsMA (9 SMA cross) + iTrend Pro
 //  Compliance  : Apex Futures Legacy $50k rules
 //  Author      : Built for Dollars1bySTEVE
-//  Version     : 1.0.3  (NY RTH — 2026-08-02)
+//  Version     : 1.0.4  (NY RTH — 2026-08-02)
 //  Fix v1.0.1  : Removed invalid OnSessionChange override
 //  Fix v1.0.2  : SMA/LinReg declared as ISeries<double>
-//  Fix v1.0.3  : Store indicator values as double each bar
-//                instead of field-level series references
+//  Fix v1.0.3  : Inline double calls; added Indicators namespace
+//  New v1.0.4  : iTrend Source selector — ninZaPro (real) or
+//                LinRegApprox (fallback, no license needed)
+//                ninZaPro settings: Period=3, Smoothing=LinReg/5,
+//                CrossoverTolerance=1.25 (matches your chart)
 // ============================================================
 
 #region Using declarations
@@ -30,10 +33,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public class ApexLegacyStrategy : Strategy
     {
-        // ── Execution mode enums ─────────────────────────────
+        // ── Enums ────────────────────────────────────────────
         public enum ExecMode       { FullAuto, SemiAuto, AlertOnly }
         public enum SignalMode     { RequireBoth, EitherOne }
         public enum InstrumentMode { AutoDetect, NQ, MNQ }
+        public enum iTrendSource   { ninZaPro, LinRegApprox }
 
         // ── Internal state ───────────────────────────────────
         private double   dailyPnL         = 0;
@@ -53,26 +57,35 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Description = "Apex Legacy $50k Strategy — SignalsMA + iTrend | NY RTH";
                 Name        = "ApexLegacyStrategy";
 
-                ExecutionMode      = ExecMode.SemiAuto;
-                SignalRequirement   = SignalMode.EitherOne;
-                InstrumentSetting  = InstrumentMode.AutoDetect;
+                ExecutionMode       = ExecMode.SemiAuto;
+                SignalRequirement    = SignalMode.EitherOne;
+                InstrumentSetting   = InstrumentMode.AutoDetect;
 
-                StopTicks          = 80;    // 20 pts
-                T1Ticks            = 80;    // 20 pts
-                T2Ticks            = 160;   // 40 pts
-                MoveToBreakeven    = true;
+                // iTrend source — switch between real ninZa or fallback
+                iTrendMode          = iTrendSource.ninZaPro;
 
-                SignalsMAPeriod    = 9;
+                // ninZaiTrendPro settings (must match your chart)
+                iTrendPeriod        = 3;
+                iTrendSmoothing     = true;
+                iTrendSmoothPeriod  = 5;
+                iTrendTolerance     = 1.25;
 
-                EnableCompliance   = true;
-                DailyProfitLimit   = 800.0;
-                DailyLossLimit     = 400.0;
-                AccountFloor       = 50500.0;
+                StopTicks           = 80;    // 20 pts
+                T1Ticks             = 80;    // 20 pts
+                T2Ticks             = 160;   // 40 pts
+                MoveToBreakeven     = true;
 
-                SessionStartHour   = 9;
-                SessionStartMinute = 30;
-                SessionEndHour     = 15;
-                SessionEndMinute   = 30;
+                SignalsMAPeriod     = 9;
+
+                EnableCompliance    = true;
+                DailyProfitLimit    = 800.0;
+                DailyLossLimit      = 400.0;
+                AccountFloor        = 50500.0;
+
+                SessionStartHour    = 9;
+                SessionStartMinute  = 30;
+                SessionEndHour      = 15;
+                SessionEndMinute    = 30;
 
                 Calculate                    = Calculate.OnBarClose;
                 EntriesPerDirection          = 1;
@@ -92,7 +105,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 t1Ticks     = T1Ticks;
                 t2Ticks     = T2Ticks;
 
-                // Internal order management — strategy acts as its own ATM
                 SetStopLoss("T1Entry",     CalculationMode.Ticks, stopTicks, false);
                 SetStopLoss("T2Entry",     CalculationMode.Ticks, stopTicks, false);
                 SetProfitTarget("T1Entry", CalculationMode.Ticks, t1Ticks);
@@ -164,21 +176,34 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!tradingAllowed) return;
 
-            // ── Signal detection — inline calls, no stored series ─
-            // NT8 caches these internally so there is no performance penalty
-            double smaVal0  = SMA(Close, SignalsMAPeriod)[0];
-            double smaVal1  = SMA(Close, SignalsMAPeriod)[1];
-            double lrFast0  = LinReg(Close, 3)[0];
-            double lrSlow0  = LinReg(Close, 5)[0];
+            // ── SignalsMA ────────────────────────────────────────
+            double smaVal0 = SMA(Close, SignalsMAPeriod)[0];
+            double smaVal1 = SMA(Close, SignalsMAPeriod)[1];
 
-            // SignalsMA — price crosses and CLOSES beyond 9 SMA
             bool smaBullish = Close[1] < smaVal1 && Close[0] > smaVal0;
             bool smaBearish = Close[1] > smaVal1 && Close[0] < smaVal0;
 
-            // iTrend Pro direction (LinReg approximation)
-            // NOTE: Replace with direct ninZaiTrendPro Plot access if licensed
-            bool iTrendBullish = lrFast0 > lrSlow0;
-            bool iTrendBearish = lrFast0 < lrSlow0;
+            // ── iTrend direction ─────────────────────────────────
+            bool iTrendBullish, iTrendBearish;
+
+            if (iTrendMode == iTrendSource.ninZaPro)
+            {
+                // Real ninZaiTrendPro — DMI+ > DMI- = Bull, DMI+ < DMI- = Bear
+                // Settings match your chart exactly: Period=3, LinReg smoothing/5, Tolerance=1.25
+                var itp = ninZaiTrendPro(iTrendPeriod, iTrendSmoothing,
+                                         ninZa_MAType.LinReg, iTrendSmoothPeriod,
+                                         iTrendTolerance);
+                iTrendBullish = itp.DMIPlus[0]  > itp.DMIMinus[0];
+                iTrendBearish = itp.DMIPlus[0]  < itp.DMIMinus[0];
+            }
+            else
+            {
+                // LinReg approximation — no ninZa license required
+                double lrFast = LinReg(Close, 3)[0];
+                double lrSlow = LinReg(Close, 5)[0];
+                iTrendBullish = lrFast > lrSlow;
+                iTrendBearish = lrFast < lrSlow;
+            }
 
             // ── Combined signal logic ────────────────────────────
             bool longSignal, shortSignal;
@@ -194,11 +219,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 shortSignal = smaBearish || (iTrendBearish && Close[0] < smaVal0);
             }
 
-            // ── Breakeven logic — move T2 stop when T1 fills ─────
+            // ── Breakeven — move T2 stop when T1 fills ───────────
             if (MoveToBreakeven && Position.MarketPosition != MarketPosition.Flat)
             {
-                int halfSize = nqContracts / 2;
-                if (!t1Hit && Position.Quantity <= halfSize)
+                if (!t1Hit && Position.Quantity <= nqContracts / 2)
                 {
                     t1Hit = true;
                     SetStopLoss("T2Entry", CalculationMode.Price, Position.AveragePrice, false);
@@ -295,6 +319,29 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 200)]
         [Display(Name = "SignalsMA Period", GroupName = "3. Signals", Order = 1)]
         public int SignalsMAPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "iTrend Source", GroupName = "3. Signals", Order = 2)]
+        public iTrendSource iTrendMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "iTrend Period", GroupName = "3. Signals", Order = 3)]
+        public int iTrendPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "iTrend Smoothing Enabled", GroupName = "3. Signals", Order = 4)]
+        public bool iTrendSmoothing { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "iTrend Smooth Period", GroupName = "3. Signals", Order = 5)]
+        public int iTrendSmoothPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 10.0)]
+        [Display(Name = "iTrend Crossover Tolerance", GroupName = "3. Signals", Order = 6)]
+        public double iTrendTolerance { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Apex Compliance", GroupName = "4. Apex Compliance", Order = 1)]
