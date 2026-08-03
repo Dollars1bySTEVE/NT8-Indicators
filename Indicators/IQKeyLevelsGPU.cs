@@ -356,12 +356,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                // 1a. Session Windows (ET) — Asia 18:00→03:00, London 03:00→11:30, NY 08:00→16:00
+                // 1a. Session Windows (ET) — Asia 18:00→03:00, London 03:00→11:30, NY 09:30→16:00
                 AsiaStartHour   = 18; AsiaStartMin   = 0;
                 AsiaEndHour     = 3;  AsiaEndMin     = 0;
                 LondonStartHour = 3;  LondonStartMin = 0;
                 LondonEndHour   = 11; LondonEndMin   = 30;
-                NyStartHour     = 8;  NyStartMin     = 0;
+                NyStartHour     = 9;  NyStartMin     = 30;
                 NyEndHour       = 16; NyEndMin       = 0;
 
                 // 1a. Session POCs — Asia
