@@ -27,7 +27,7 @@ All three session windows are fully configurable (hour/minute, Eastern Time) and
 |---------|---------------|-------------|------|
 | Asia    | 18:00 | 03:00 (+1 day) | Cross-midnight; correctly rolls over across the Sunday 18:00 ET weekend open |
 | London  | 03:00 | 11:30 | Same calendar day |
-| New York| 08:00 | 16:00 | Same calendar day |
+| New York| 09:30 | 16:00 | Same calendar day |
 
 Each session exposes `*StartHour`, `*StartMin`, `*EndHour`, `*EndMin` properties (0–23 / 0–59, same style as `IQMainUltimate`'s custom time properties). A window is treated as cross-midnight automatically whenever End ≤ Start.
 
