@@ -8,17 +8,19 @@ using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
-// MACrossFilter - Standalone MA crossover indicator with accuracy filters
+// MA Cross Filter — standalone MA crossover indicator with accuracy filters
+// Drop into Documents\NinjaTrader 8\bin\Custom\Indicators\ and compile with F5.
+//
 // Features:
-//   1. Consecutive Closes Confirmation
-//   2. Minimum Separation Filter
-//   3. Volume Confirmation
-//   4. Trend Filter
-//   5. ATR-Based Arrow Offset
+//   1. Consecutive Closes Confirmation  (ConsecutiveBars)
+//   2. Minimum Separation Filter        (MinSepTicks)
+//   3. Volume Confirmation              (UseVolFilter / VolPeriod)
+//   4. Trend Filter                     (UseTrendFilter / TrendPeriod)
+//   5. ATR-Based Arrow Offset           (UseATROffset / ATRMult)
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    public enum MACrossFilterMAType { SMA, EMA }
+    public enum MACFMAType { SMA, EMA }
 
     [Gui.CategoryOrder("Parameters", 1)]
     [Gui.CategoryOrder("Signals",    2)]
@@ -26,8 +28,8 @@ namespace NinjaTrader.NinjaScript.Indicators
     public class MACrossFilter : Indicator
     {
         #region Members
-        private Series<bool> _longSignal;
-        private Series<bool> _shortSignal;
+        private Series<bool> _longSig;
+        private Series<bool> _shortSig;
         #endregion
 
         #region OnStateChange
@@ -35,8 +37,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description              = @"MA crossover indicator with accuracy filters: consecutive-close "
-                                         + "confirmation, minimum separation, volume gate, trend filter, ATR offset.";
+                Description              = @"MA crossover with accuracy filters: consecutive closes, "
+                                         + "min separation, volume gate, trend filter, ATR offset.";
                 Name                     = "MA Cross Filter";
                 Calculate                = Calculate.OnPriceChange;
                 IsOverlay                = true;
@@ -48,41 +50,38 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ScaleJustification       = NinjaTrader.Gui.Chart.ScaleJustification.Right;
                 IsSuspendedWhileInactive = true;
 
-                // Parameters
-                MAType                    = MACrossFilterMAType.SMA;
-                MAPeriod                  = 9;
-                ConsecutiveBars           = 1;
-                MinSepTicks               = 0;
-                UseVolFilter              = false;
-                VolPeriod                 = 20;
-                UseTrendFilter            = false;
-                TrendPeriod               = 50;
+                MAType           = MACFMAType.SMA;
+                MAPeriod         = 9;
+                ConsecutiveBars  = 1;
+                MinSepTicks      = 0;
+                UseVolFilter     = false;
+                VolPeriod        = 20;
+                UseTrendFilter   = false;
+                TrendPeriod      = 50;
 
-                // Signals
-                ArrowOffsetTicks  = 10;
-                UseATROffset      = false;
-                ATRMult           = 0.5;
-                UseColors         = true;
-                LongColor         = Brushes.LimeGreen;
-                ShortColor        = Brushes.Red;
-                DrawPrefix        = "MCF_";
+                ArrowTicks  = 10;
+                UseATROffset = false;
+                ATRMult      = 0.5;
+                UseColors    = true;
+                LongColor    = Brushes.LimeGreen;
+                ShortColor   = Brushes.Red;
+                Prefix       = "MCF_";
 
-                // Alerts
-                AlertsOn        = false;
-                AlertPath       = string.Empty;
-                LongWav         = "LongEntry.wav";
-                ShortWav        = "ShortEntry.wav";
+                AlertsOn  = false;
+                AlertPath = string.Empty;
+                LongWav   = "LongEntry.wav";
+                ShortWav  = "ShortEntry.wav";
 
-                AddPlot(Brushes.White, "MALine");
-                AddPlot(Brushes.Transparent, "CrossSignal");
+                AddPlot(Brushes.White,       "MALine");
+                AddPlot(Brushes.Transparent, "Signal");
             }
             else if (State == State.Configure)
             {
                 IsSuspendedWhileInactive = !AlertsOn;
                 if (string.IsNullOrEmpty(AlertPath))
                     AlertPath = DefaultAlertFilePath();
-                _longSignal  = new Series<bool>(this);
-                _shortSignal = new Series<bool>(this);
+                _longSig  = new Series<bool>(this);
+                _shortSig = new Series<bool>(this);
             }
         }
         #endregion
@@ -101,100 +100,98 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region OnBarUpdate
         protected override void OnBarUpdate()
         {
-            _longSignal[0]  = false;
-            _shortSignal[0] = false;
-            CrossSignal[0]  = 0;
+            _longSig[0]  = false;
+            _shortSig[0] = false;
+            Signal[0]    = 0;
 
-            int minBars = Math.Max(MAPeriod + ConsecutiveBars,
-                          Math.Max(UseVolFilter    ? VolPeriod    : 0,
-                                   UseTrendFilter  ? TrendPeriod  : 0));
-            if (CurrentBar < minBars) return;
+            int need = Math.Max(MAPeriod + ConsecutiveBars,
+                       Math.Max(UseVolFilter   ? VolPeriod   : 0,
+                                UseTrendFilter ? TrendPeriod : 0));
+            if (CurrentBar < need) return;
 
             // Main MA
-            MALine[0] = (MAType == MACrossFilterMAType.EMA)
+            MALine[0] = (MAType == MACFMAType.EMA)
                 ? EMA(Close, MAPeriod)[0]
                 : SMA(Close, MAPeriod)[0];
 
-            // 1. Consecutive closes check
-            bool allAbove = true, allBelow = true;
+            // 1. Consecutive closes
+            bool above = true, below = true;
             for (int i = 0; i < ConsecutiveBars; i++)
             {
-                double maI = (MAType == MACrossFilterMAType.EMA)
-                    ? EMA(Close, MAPeriod)[i]
-                    : SMA(Close, MAPeriod)[i];
-                if (Close[i] <= maI) allAbove = false;
-                if (Close[i] >= maI) allBelow = false;
+                double m = (MAType == MACFMAType.EMA) ? EMA(Close, MAPeriod)[i] : SMA(Close, MAPeriod)[i];
+                if (Close[i] <= m) above = false;
+                if (Close[i] >= m) below = false;
             }
-
-            double maPrev = (MAType == MACrossFilterMAType.EMA)
+            double prev = (MAType == MACFMAType.EMA)
                 ? EMA(Close, MAPeriod)[ConsecutiveBars]
                 : SMA(Close, MAPeriod)[ConsecutiveBars];
 
-            bool goLong  = allAbove && (Close[ConsecutiveBars] <= maPrev);
-            bool goShort = allBelow && (Close[ConsecutiveBars] >= maPrev);
-            if (!goLong && !goShort) { Cleanup(); return; }
+            bool gl = above && (Close[ConsecutiveBars] <= prev);
+            bool gs = below && (Close[ConsecutiveBars] >= prev);
+            if (!gl && !gs) { Clean(); return; }
 
             // 2. Min separation
             if (MinSepTicks > 0 && Math.Abs(Close[0] - MALine[0]) < MinSepTicks * TickSize)
-            { Cleanup(); return; }
+            { Clean(); return; }
 
-            // 3. Volume filter
+            // 3. Volume
             if (UseVolFilter && Volume[0] <= SMA(Volume, VolPeriod)[0])
-            { Cleanup(); return; }
+            { Clean(); return; }
 
-            // 4. Trend filter
+            // 4. Trend
             if (UseTrendFilter)
             {
-                double tma = SMA(Close, TrendPeriod)[0];
-                if (goLong  && Close[0] < tma) goLong  = false;
-                if (goShort && Close[0] > tma) goShort = false;
+                double t = SMA(Close, TrendPeriod)[0];
+                if (gl && Close[0] < t) gl = false;
+                if (gs && Close[0] > t) gs = false;
             }
-            if (!goLong && !goShort) { Cleanup(); return; }
+            if (!gl && !gs) { Clean(); return; }
 
             // 5. Offset
-            double off = UseATROffset ? ATR(14)[0] * ATRMult : ArrowOffsetTicks * TickSize;
+            double off = UseATROffset ? ATR(14)[0] * ATRMult : ArrowTicks * TickSize;
 
-            string lt = DrawPrefix + "L" + CurrentBar;
-            string st = DrawPrefix + "S" + CurrentBar;
-            var    bt = Time[0];
+            string lt = Prefix + "L" + CurrentBar;
+            string st = Prefix + "S" + CurrentBar;
 
-            if (goLong)
+            if (gl)
             {
                 RemoveDrawObject(st);
-                _longSignal[0] = true;
-                CrossSignal[0] = 1;
-                Draw.ArrowUp(this, lt, true, bt, Low[0] - off, UseColors ? LongColor : Plots[0].Brush);
+                _longSig[0] = true;
+                Signal[0]   = 1;
+                Draw.ArrowUp(this, lt, true, Time[0], Low[0] - off,
+                    UseColors ? LongColor : Plots[0].Brush);
             }
-            else if (goShort)
+            else if (gs)
             {
                 RemoveDrawObject(lt);
-                _shortSignal[0] = true;
-                CrossSignal[0]  = -1;
-                Draw.ArrowDown(this, st, true, bt, High[0] + off, UseColors ? ShortColor : Plots[0].Brush);
+                _shortSig[0] = true;
+                Signal[0]    = -1;
+                Draw.ArrowDown(this, st, true, Time[0], High[0] + off,
+                    UseColors ? ShortColor : Plots[0].Brush);
             }
             else
             {
-                Cleanup();
+                Clean();
             }
 
             // Alerts
             if (AlertsOn && State == State.Realtime && IsFirstTickOfBar)
             {
-                if (CrossSignal[1] > 0 && !string.IsNullOrWhiteSpace(LongWav))
-                    Alert("LongAlert",  Priority.High, "Long Entry",
-                        ResolveAlertFilePath(LongWav,  AlertPath), 10, Brushes.Black, LongColor);
-                if (CrossSignal[1] < 0 && !string.IsNullOrWhiteSpace(ShortWav))
-                    Alert("ShortAlert", Priority.High, "Short Entry",
+                if (Signal[1] > 0 && !string.IsNullOrWhiteSpace(LongWav))
+                    Alert("LA", Priority.High, "Long Entry",
+                        ResolveAlertFilePath(LongWav, AlertPath), 10, Brushes.Black, LongColor);
+                if (Signal[1] < 0 && !string.IsNullOrWhiteSpace(ShortWav))
+                    Alert("SA", Priority.High, "Short Entry",
                         ResolveAlertFilePath(ShortWav, AlertPath), 10, Brushes.Black, ShortColor);
             }
         }
         #endregion
 
         #region Private helpers
-        private void Cleanup()
+        private void Clean()
         {
-            RemoveDrawObject(DrawPrefix + "L" + CurrentBar);
-            RemoveDrawObject(DrawPrefix + "S" + CurrentBar);
+            RemoveDrawObject(Prefix + "L" + CurrentBar);
+            RemoveDrawObject(Prefix + "S" + CurrentBar);
         }
         #endregion
 
@@ -202,7 +199,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "MA Type", Description = "SMA or EMA.", Order = 1, GroupName = "Parameters")]
-        public MACrossFilterMAType MAType { get; set; }
+        public MACFMAType MAType { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, int.MaxValue)]
@@ -211,15 +208,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 5)]
-        [Display(Name = "Consecutive Bars Required",
-            Description = "Number of consecutive closes on the new MA side before a signal fires. 1 = standard single-bar cross.",
+        [Display(Name = "Consecutive Bars",
+            Description = "Consecutive closes on the new MA side before a signal fires. 1 = standard cross.",
             Order = 3, GroupName = "Parameters")]
         public int ConsecutiveBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, int.MaxValue)]
         [Display(Name = "Min Separation Ticks",
-            Description = "Minimum ticks between Close and MA at signal time. Filters grazing crosses. 0 = off.",
+            Description = "Min ticks between Close and MA. Filters grazing crosses. 0 = off.",
             Order = 4, GroupName = "Parameters")]
         public int MinSepTicks { get; set; }
 
@@ -242,16 +239,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, int.MaxValue)]
-        [Display(Name = "Trend Filter Period", Description = "Always SMA. Above = bullish; below = bearish.", Order = 8, GroupName = "Parameters")]
+        [Display(Name = "Trend Filter Period",
+            Description = "Always SMA. Above = bullish; below = bearish.",
+            Order = 8, GroupName = "Parameters")]
         public int TrendPeriod { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, int.MaxValue)]
-        [Display(Name = "Arrow Offset (ticks)", Description = "Fixed tick offset for arrow placement. Used when Use ATR Offset is off.", Order = 1, GroupName = "Signals")]
-        public int ArrowOffsetTicks { get; set; }
+        [Display(Name = "Arrow Offset Ticks",
+            Description = "Fixed tick offset for arrow placement. Used when ATR offset is off.",
+            Order = 1, GroupName = "Signals")]
+        public int ArrowTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use ATR Offset", Description = "Arrow offset = ATR(14) x ATR Multiplier.", Order = 2, GroupName = "Signals")]
+        [Display(Name = "Use ATR Offset",
+            Description = "Arrow offset = ATR(14) x ATR Multiplier.",
+            Order = 2, GroupName = "Signals")]
         public bool UseATROffset { get; set; }
 
         [NinjaScriptProperty]
@@ -289,9 +292,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Draw Prefix",
-            Description = "Prefix for draw objects. Change if running multiple instances on the same chart.",
+            Description = "Prefix for draw objects. Change when using multiple instances.",
             Order = 7, GroupName = "Signals")]
-        public string DrawPrefix { get; set; }
+        public string Prefix { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Alerts", Description = "Audio alerts on confirmed signals (realtime only).", Order = 1, GroupName = "Alerts")]
@@ -316,184 +319,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [Browsable(false)]
         [XmlIgnore]
-        public Series<double> CrossSignal
+        public Series<double> Signal
         { get { return Values[1]; } }
 
         [Browsable(false)]
         [XmlIgnore]
         public Series<bool> LongSignal
-        { get { return _longSignal; } }
+        { get { return _longSig; } }
 
         [Browsable(false)]
         [XmlIgnore]
         public Series<bool> ShortSignal
-        { get { return _shortSignal; } }
+        { get { return _shortSig; } }
 
         #endregion
     }
 }
-
-#region NinjaScript generated code. Neither change nor remove.
-
-namespace NinjaTrader.NinjaScript.Indicators
-{
-    public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-    {
-        private MACrossFilter[] cacheMACrossFilter;
-
-        public MACrossFilter MACrossFilter(MACrossFilterMAType mAType, int mAPeriod,
-            int consecutiveBars, int minSepTicks,
-            bool useVolFilter, int volPeriod,
-            bool useTrendFilter, int trendPeriod,
-            int arrowOffsetTicks, bool useATROffset, double aTRMult,
-            bool useColors, Brush longColor, Brush shortColor,
-            string drawPrefix, bool alertsOn, string alertPath,
-            string longWav, string shortWav)
-        {
-            return MACrossFilter(Input, mAType, mAPeriod, consecutiveBars, minSepTicks,
-                useVolFilter, volPeriod, useTrendFilter, trendPeriod,
-                arrowOffsetTicks, useATROffset, aTRMult,
-                useColors, longColor, shortColor,
-                drawPrefix, alertsOn, alertPath, longWav, shortWav);
-        }
-
-        public MACrossFilter MACrossFilter(ISeries<double> input, MACrossFilterMAType mAType, int mAPeriod,
-            int consecutiveBars, int minSepTicks,
-            bool useVolFilter, int volPeriod,
-            bool useTrendFilter, int trendPeriod,
-            int arrowOffsetTicks, bool useATROffset, double aTRMult,
-            bool useColors, Brush longColor, Brush shortColor,
-            string drawPrefix, bool alertsOn, string alertPath,
-            string longWav, string shortWav)
-        {
-            if (cacheMACrossFilter != null)
-                for (int i = 0; i < cacheMACrossFilter.Length; i++)
-                {
-                    var c = cacheMACrossFilter[i];
-                    if (c != null
-                        && c.MAType          == mAType
-                        && c.MAPeriod        == mAPeriod
-                        && c.ConsecutiveBars == consecutiveBars
-                        && c.MinSepTicks     == minSepTicks
-                        && c.UseVolFilter    == useVolFilter
-                        && c.VolPeriod       == volPeriod
-                        && c.UseTrendFilter  == useTrendFilter
-                        && c.TrendPeriod     == trendPeriod
-                        && c.ArrowOffsetTicks == arrowOffsetTicks
-                        && c.UseATROffset    == useATROffset
-                        && c.ATRMult         == aTRMult
-                        && c.UseColors       == useColors
-                        && c.LongColor       == longColor
-                        && c.ShortColor      == shortColor
-                        && c.DrawPrefix      == drawPrefix
-                        && c.AlertsOn        == alertsOn
-                        && c.AlertPath       == alertPath
-                        && c.LongWav         == longWav
-                        && c.ShortWav        == shortWav
-                        && c.EqualsInput(input))
-                        return cacheMACrossFilter[i];
-                }
-
-            return CacheIndicator<MACrossFilter>(new MACrossFilter()
-            {
-                MAType          = mAType,
-                MAPeriod        = mAPeriod,
-                ConsecutiveBars = consecutiveBars,
-                MinSepTicks     = minSepTicks,
-                UseVolFilter    = useVolFilter,
-                VolPeriod       = volPeriod,
-                UseTrendFilter  = useTrendFilter,
-                TrendPeriod     = trendPeriod,
-                ArrowOffsetTicks = arrowOffsetTicks,
-                UseATROffset    = useATROffset,
-                ATRMult         = aTRMult,
-                UseColors       = useColors,
-                LongColor       = longColor,
-                ShortColor      = shortColor,
-                DrawPrefix      = drawPrefix,
-                AlertsOn        = alertsOn,
-                AlertPath       = alertPath,
-                LongWav         = longWav,
-                ShortWav        = shortWav,
-            }, input, ref cacheMACrossFilter);
-        }
-    }
-}
-
-namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
-{
-    public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
-    {
-        public Indicators.MACrossFilter MACrossFilter(Indicators.MACrossFilterMAType mAType, int mAPeriod,
-            int consecutiveBars, int minSepTicks,
-            bool useVolFilter, int volPeriod,
-            bool useTrendFilter, int trendPeriod,
-            int arrowOffsetTicks, bool useATROffset, double aTRMult,
-            bool useColors, Brush longColor, Brush shortColor,
-            string drawPrefix, bool alertsOn, string alertPath,
-            string longWav, string shortWav)
-        {
-            return indicator.MACrossFilter(Input, mAType, mAPeriod, consecutiveBars, minSepTicks,
-                useVolFilter, volPeriod, useTrendFilter, trendPeriod,
-                arrowOffsetTicks, useATROffset, aTRMult,
-                useColors, longColor, shortColor,
-                drawPrefix, alertsOn, alertPath, longWav, shortWav);
-        }
-
-        public Indicators.MACrossFilter MACrossFilter(ISeries<double> input, Indicators.MACrossFilterMAType mAType, int mAPeriod,
-            int consecutiveBars, int minSepTicks,
-            bool useVolFilter, int volPeriod,
-            bool useTrendFilter, int trendPeriod,
-            int arrowOffsetTicks, bool useATROffset, double aTRMult,
-            bool useColors, Brush longColor, Brush shortColor,
-            string drawPrefix, bool alertsOn, string alertPath,
-            string longWav, string shortWav)
-        {
-            return indicator.MACrossFilter(input, mAType, mAPeriod, consecutiveBars, minSepTicks,
-                useVolFilter, volPeriod, useTrendFilter, trendPeriod,
-                arrowOffsetTicks, useATROffset, aTRMult,
-                useColors, longColor, shortColor,
-                drawPrefix, alertsOn, alertPath, longWav, shortWav);
-        }
-    }
-}
-
-namespace NinjaTrader.NinjaScript.Strategies
-{
-    public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
-    {
-        public Indicators.MACrossFilter MACrossFilter(Indicators.MACrossFilterMAType mAType, int mAPeriod,
-            int consecutiveBars, int minSepTicks,
-            bool useVolFilter, int volPeriod,
-            bool useTrendFilter, int trendPeriod,
-            int arrowOffsetTicks, bool useATROffset, double aTRMult,
-            bool useColors, Brush longColor, Brush shortColor,
-            string drawPrefix, bool alertsOn, string alertPath,
-            string longWav, string shortWav)
-        {
-            return indicator.MACrossFilter(Input, mAType, mAPeriod, consecutiveBars, minSepTicks,
-                useVolFilter, volPeriod, useTrendFilter, trendPeriod,
-                arrowOffsetTicks, useATROffset, aTRMult,
-                useColors, longColor, shortColor,
-                drawPrefix, alertsOn, alertPath, longWav, shortWav);
-        }
-
-        public Indicators.MACrossFilter MACrossFilter(ISeries<double> input, Indicators.MACrossFilterMAType mAType, int mAPeriod,
-            int consecutiveBars, int minSepTicks,
-            bool useVolFilter, int volPeriod,
-            bool useTrendFilter, int trendPeriod,
-            int arrowOffsetTicks, bool useATROffset, double aTRMult,
-            bool useColors, Brush longColor, Brush shortColor,
-            string drawPrefix, bool alertsOn, string alertPath,
-            string longWav, string shortWav)
-        {
-            return indicator.MACrossFilter(input, mAType, mAPeriod, consecutiveBars, minSepTicks,
-                useVolFilter, volPeriod, useTrendFilter, trendPeriod,
-                arrowOffsetTicks, useATROffset, aTRMult,
-                useColors, longColor, shortColor,
-                drawPrefix, alertsOn, alertPath, longWav, shortWav);
-        }
-    }
-}
-
-#endregion
