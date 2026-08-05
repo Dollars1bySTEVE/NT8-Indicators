@@ -19,12 +19,9 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //   4. Trend Filter                     (UseTrendFilter   — default off)
 //   5. ATR-Based Arrow Offset           (UseATROffset     — default off)
 
-namespace NinjaTrader.NinjaScript
-{
-    // NOTE: enum name MUST match the class name prefix so NT8's auto-generated
-    // cache code compiles cleanly. Do not rename this enum.
-    public enum MACrossFilterMAType { SMA, EMA }
-}
+// NOTE: enum is declared at file scope (outside any namespace) so NT8's
+// auto-generated cache code compiles cleanly. Do not rename this enum.
+public enum MACrossFilterMAType { SMA, EMA }
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
@@ -73,7 +70,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShortColor   = Brushes.Red;
                 Prefix       = "MCF_";
 
-                // Alert path is set in Configure so DefaultAlertFilePath() is available.
+                // Alert path is populated in Configure once NinjaScriptBase is live.
                 AlertsOn  = false;
                 AlertPath = string.Empty;
                 LongWav   = "LongEntry.wav";
@@ -86,7 +83,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 IsSuspendedWhileInactive = !AlertsOn;
                 // Populate default alert sound folder now that NinjaScriptBase is live.
-                if (string.IsNullOrEmpty(AlertPath))
+                if (string.IsNullOrWhiteSpace(AlertPath))
                     AlertPath = System.IO.Path.Combine(NinjaTrader.Core.Globals.InstallDir, "sounds");
                 _longSig  = new Series<bool>(this);
                 _shortSig = new Series<bool>(this);
