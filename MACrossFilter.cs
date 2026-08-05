@@ -8,19 +8,22 @@ using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
-// MA Cross Filter — standalone MA crossover indicator with accuracy filters
-// Drop into Documents\NinjaTrader 8\bin\Custom\Indicators\ and compile with F5.
+// MA Cross Filter  — standalone MA crossover indicator with accuracy filters.
+// Install: copy to  Documents\NinjaTrader 8\bin\Custom\Indicators\
+//          then     Tools > Edit NinjaScript > Indicator > F5
 //
-// Features:
-//   1. Consecutive Closes Confirmation  (ConsecutiveBars)
-//   2. Minimum Separation Filter        (MinSepTicks)
-//   3. Volume Confirmation              (UseVolFilter / VolPeriod)
-//   4. Trend Filter                     (UseTrendFilter / TrendPeriod)
-//   5. ATR-Based Arrow Offset           (UseATROffset / ATRMult)
+// Improvements over a basic MA cross:
+//   1. Consecutive Closes Confirmation  (ConsecutiveBars  — default 1 = original behavior)
+//   2. Minimum Separation Filter        (MinSepTicks      — default 0 = off)
+//   3. Volume Confirmation              (UseVolFilter     — default off)
+//   4. Trend Filter                     (UseTrendFilter   — default off)
+//   5. ATR-Based Arrow Offset           (UseATROffset     — default off)
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
-    public enum MACFMAType { SMA, EMA }
+    // NOTE: enum name MUST match the class name prefix so NT8's auto-generated
+    // cache code compiles cleanly. Do not rename this enum.
+    public enum MACrossFilterMAType { SMA, EMA }
 
     [Gui.CategoryOrder("Parameters", 1)]
     [Gui.CategoryOrder("Signals",    2)]
@@ -50,16 +53,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ScaleJustification       = NinjaTrader.Gui.Chart.ScaleJustification.Right;
                 IsSuspendedWhileInactive = true;
 
-                MAType           = MACFMAType.SMA;
-                MAPeriod         = 9;
-                ConsecutiveBars  = 1;
-                MinSepTicks      = 0;
-                UseVolFilter     = false;
-                VolPeriod        = 20;
-                UseTrendFilter   = false;
-                TrendPeriod      = 50;
+                MAType          = MACrossFilterMAType.SMA;
+                MAPeriod        = 9;
+                ConsecutiveBars = 1;
+                MinSepTicks     = 0;
+                UseVolFilter    = false;
+                VolPeriod       = 20;
+                UseTrendFilter  = false;
+                TrendPeriod     = 50;
 
-                ArrowTicks  = 10;
+                ArrowTicks   = 10;
                 UseATROffset = false;
                 ATRMult      = 0.5;
                 UseColors    = true;
@@ -67,6 +70,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShortColor   = Brushes.Red;
                 Prefix       = "MCF_";
 
+                // Alert path is set in Configure so DefaultAlertFilePath() is available.
                 AlertsOn  = false;
                 AlertPath = string.Empty;
                 LongWav   = "LongEntry.wav";
@@ -78,6 +82,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Configure)
             {
                 IsSuspendedWhileInactive = !AlertsOn;
+                // Populate default alert sound folder now that NinjaScriptBase is live.
                 if (string.IsNullOrEmpty(AlertPath))
                     AlertPath = DefaultAlertFilePath();
                 _longSig  = new Series<bool>(this);
@@ -110,7 +115,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar < need) return;
 
             // Main MA
-            MALine[0] = (MAType == MACFMAType.EMA)
+            MALine[0] = (MAType == MACrossFilterMAType.EMA)
                 ? EMA(Close, MAPeriod)[0]
                 : SMA(Close, MAPeriod)[0];
 
@@ -118,11 +123,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool above = true, below = true;
             for (int i = 0; i < ConsecutiveBars; i++)
             {
-                double m = (MAType == MACFMAType.EMA) ? EMA(Close, MAPeriod)[i] : SMA(Close, MAPeriod)[i];
+                double m = (MAType == MACrossFilterMAType.EMA)
+                    ? EMA(Close, MAPeriod)[i]
+                    : SMA(Close, MAPeriod)[i];
                 if (Close[i] <= m) above = false;
                 if (Close[i] >= m) below = false;
             }
-            double prev = (MAType == MACFMAType.EMA)
+            double prev = (MAType == MACrossFilterMAType.EMA)
                 ? EMA(Close, MAPeriod)[ConsecutiveBars]
                 : SMA(Close, MAPeriod)[ConsecutiveBars];
 
@@ -147,7 +154,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             if (!gl && !gs) { Clean(); return; }
 
-            // 5. Offset
+            // 5. Arrow offset
             double off = UseATROffset ? ATR(14)[0] * ATRMult : ArrowTicks * TickSize;
 
             string lt = Prefix + "L" + CurrentBar;
@@ -174,14 +181,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Clean();
             }
 
-            // Alerts
+            // Alerts (realtime only, fires on confirmed previous bar)
             if (AlertsOn && State == State.Realtime && IsFirstTickOfBar)
             {
                 if (Signal[1] > 0 && !string.IsNullOrWhiteSpace(LongWav))
-                    Alert("LA", Priority.High, "Long Entry",
-                        ResolveAlertFilePath(LongWav, AlertPath), 10, Brushes.Black, LongColor);
+                    Alert("MCF_Long",  Priority.High, "Long Entry",
+                        ResolveAlertFilePath(LongWav,  AlertPath), 10, Brushes.Black, LongColor);
                 if (Signal[1] < 0 && !string.IsNullOrWhiteSpace(ShortWav))
-                    Alert("SA", Priority.High, "Short Entry",
+                    Alert("MCF_Short", Priority.High, "Short Entry",
                         ResolveAlertFilePath(ShortWav, AlertPath), 10, Brushes.Black, ShortColor);
             }
         }
@@ -199,7 +206,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "MA Type", Description = "SMA or EMA.", Order = 1, GroupName = "Parameters")]
-        public MACFMAType MAType { get; set; }
+        public MACrossFilterMAType MAType { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, int.MaxValue)]
@@ -292,7 +299,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Draw Prefix",
-            Description = "Prefix for draw objects. Change when using multiple instances.",
+            Description = "Prefix for draw objects. Change when using multiple instances on the same chart.",
             Order = 7, GroupName = "Signals")]
         public string Prefix { get; set; }
 
