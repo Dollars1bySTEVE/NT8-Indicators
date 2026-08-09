@@ -159,9 +159,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private DateTime BarTimeEt()
         {
-            DateTime t = Bars.GetTime(CurrentBar);
-            DateTime tUnspec = DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
-            return TimeZoneInfo.ConvertTime(tUnspec, Bars.TradingHours.TimeZoneInfo, EtZone);
+            return Time[0];
         }
 
         #endregion
