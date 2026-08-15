@@ -67,6 +67,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly object _stateLock = new object();
 
         // Zone state
+        private MAX _swingMax;
+        private MIN _swingMin;
         private double _rangeHigh;
         private double _rangeLow;
         private double _equilibrium;
@@ -86,6 +88,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Dictionary<double, PdzBookLevel> _bidBook;
         private Dictionary<double, PdzBookLevel> _askBook;
         private readonly Queue<long> _bookSamples = new Queue<long>();
+        private double _cachedPercentile95;
+        private int _l2SamplesSinceRecalc;
         private bool _level2Available;
         private double _wallBidPrice;
         private long _wallBidSize;
@@ -183,8 +187,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _bidBook = new Dictionary<double, PdzBookLevel>();
                 _askBook = new Dictionary<double, PdzBookLevel>();
                 _bookSamples.Clear();
+                _cachedPercentile95 = 0;
+                _l2SamplesSinceRecalc = 0;
                 _sessionProfile.Clear();
                 _sessionDate = DateTime.MinValue;
+                _swingMax = MAX(High, Math.Max(10, SwingLookback));
+                _swingMin = MIN(Low, Math.Max(10, SwingLookback));
                 _dashboardFont = new NinjaTrader.Gui.Tools.SimpleFont("Segoe UI", 12);
             }
             else if (State == State.Terminated)
@@ -288,18 +296,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void UpdateZones()
         {
-            int lookback = Math.Min(Math.Max(10, SwingLookback), CurrentBar + 1);
-            double highest = High[0];
-            double lowest = Low[0];
-
-            for (int i = 1; i < lookback; i++)
-            {
-                if (High[i] > highest) highest = High[i];
-                if (Low[i] < lowest) lowest = Low[i];
-            }
-
-            _rangeHigh = highest;
-            _rangeLow = lowest;
+            _rangeHigh = _swingMax[0];
+            _rangeLow = _swingMin[0];
 
             double eq = CalculateEquilibrium();
             if (double.IsNaN(eq) || double.IsInfinity(eq) || eq <= 0)
@@ -388,6 +386,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             _bookSamples.Enqueue(size);
             while (_bookSamples.Count > Math.Max(50, L2SampleSize))
                 _bookSamples.Dequeue();
+
+            _l2SamplesSinceRecalc++;
         }
 
         private void DetectWallsLocked()
@@ -451,11 +451,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (_bookSamples.Count == 0)
                 return Math.Max(1, FixedWallSize);
 
-            var arr = _bookSamples.ToArray();
-            Array.Sort(arr);
-            int idx = (int)Math.Round((arr.Length - 1) * 0.95);
-            idx = Math.Max(0, Math.Min(arr.Length - 1, idx));
-            return Math.Max(1, arr[idx]);
+            // Recompute only every N samples to avoid a full copy + sort on each L2 update.
+            const int recalcInterval = 25;
+            if (_cachedPercentile95 <= 0 || _l2SamplesSinceRecalc >= recalcInterval)
+            {
+                var arr = _bookSamples.ToArray();
+                Array.Sort(arr);
+                int idx = (int)Math.Round((arr.Length - 1) * 0.95);
+                idx = Math.Max(0, Math.Min(arr.Length - 1, idx));
+                _cachedPercentile95 = Math.Max(1, arr[idx]);
+                _l2SamplesSinceRecalc = 0;
+            }
+
+            return _cachedPercentile95;
         }
 
         private void UpdateAlerts()

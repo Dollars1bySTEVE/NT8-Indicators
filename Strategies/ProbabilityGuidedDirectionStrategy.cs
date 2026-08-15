@@ -38,6 +38,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool pendingOutcome;
         private double entryCumProfit;
         private int lastEntryQty;
+        private int runnerQty;
         private bool breakevenMoved;
         private DirectionSignal lastSignal = DirectionSignal.NoTrade;
         private double lastSignalProbability;
@@ -192,9 +193,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             RenderStats(phaseTag, sessionTag, composite, probability, complianceOk, tradeCountOk, cooldownOk, trainPeriodAutomationOk);
             LogSignal(finalSignal, phaseTag, sessionTag, structure, momentum, volume, regime, probability, conflict, probabilityOk, rrOk, sessionOk, regimeOk, complianceOk, tradeCountOk, cooldownOk, trainPeriodAutomationOk);
 
-            if (MoveRunnerToBreakeven && Position.MarketPosition != MarketPosition.Flat && !breakevenMoved && lastEntryQty > 1)
+            if (MoveRunnerToBreakeven && Position.MarketPosition != MarketPosition.Flat && !breakevenMoved && runnerQty > 0 && lastEntryQty > runnerQty)
             {
-                if (Position.Quantity <= Math.Max(1, lastEntryQty / 2))
+                if (Position.Quantity <= runnerQty)
                 {
                     SetStopLoss("EntryB", CalculationMode.Price, runnerEntryPrice, false);
                     breakevenMoved = true;
@@ -237,6 +238,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             pendingOutcome = true;
             entryCumProfit = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
             lastEntryQty = qtyA + qtyB;
+            runnerQty = qtyB;
             breakevenMoved = false;
             runnerEntryPrice = Close[0];
             entrySignalSnapshot = finalSignal;
@@ -273,6 +275,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             pendingOutcome = false;
             lastEntryQty = 0;
+            runnerQty = 0;
             breakevenMoved = false;
             entrySignalSnapshot = DirectionSignal.NoTrade;
         }
@@ -288,6 +291,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             pendingOutcome = false;
             breakevenMoved = false;
             lastEntryQty = 0;
+            runnerQty = 0;
         }
 
         private bool IsDailyComplianceOk()
