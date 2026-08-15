@@ -45,6 +45,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double lastMomentumScore;
         private double lastVolumeScore;
         private double lastRegimeScore;
+        private DirectionSignal entrySignalSnapshot = DirectionSignal.NoTrade;
+        private double entryProbabilitySnapshot;
+        private double entryStructureSnapshot;
+        private double entryMomentumSnapshot;
+        private double entryVolumeSnapshot;
+        private double entryRegimeSnapshot;
+        private double runnerEntryPrice;
 
         protected override void OnStateChange()
         {
@@ -79,10 +86,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MomentumPeriod = 8;
                 RsiPeriod = 14;
                 VolumeLookback = 20;
+                AdxPeriod = 14;
 
                 Contracts = 2;
                 StopTicks = 80;
                 TargetTicks = 120;
+                RunnerTargetMultiplier = 2.0;
                 MoveRunnerToBreakeven = true;
                 MaxTradesPerDay = 4;
                 CooldownBars = 6;
@@ -101,10 +110,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (State == State.Configure)
             {
+                int qtyA = Math.Max(1, Contracts / 2);
+                int qtyB = Math.Max(0, Contracts - qtyA);
+
                 SetStopLoss("EntryA", CalculationMode.Ticks, StopTicks, false);
-                SetStopLoss("EntryB", CalculationMode.Ticks, StopTicks, false);
                 SetProfitTarget("EntryA", CalculationMode.Ticks, TargetTicks);
-                SetProfitTarget("EntryB", CalculationMode.Ticks, TargetTicks * 2);
+
+                if (qtyB > 0)
+                {
+                    SetStopLoss("EntryB", CalculationMode.Ticks, StopTicks, false);
+                    SetProfitTarget("EntryB", CalculationMode.Ticks, Math.Max(1, (int)Math.Round(TargetTicks * RunnerTargetMultiplier)));
+                }
             }
         }
 
@@ -180,7 +196,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (Position.Quantity <= Math.Max(1, lastEntryQty / 2))
                 {
-                    SetStopLoss("EntryB", CalculationMode.Price, Position.AveragePrice, false);
+                    SetStopLoss("EntryB", CalculationMode.Price, runnerEntryPrice, false);
                     breakevenMoved = true;
                 }
             }
@@ -222,11 +238,27 @@ namespace NinjaTrader.NinjaScript.Strategies
             entryCumProfit = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
             lastEntryQty = qtyA + qtyB;
             breakevenMoved = false;
+            runnerEntryPrice = Close[0];
+            entrySignalSnapshot = finalSignal;
+            entryProbabilitySnapshot = probability;
+            entryStructureSnapshot = structure;
+            entryMomentumSnapshot = momentum;
+            entryVolumeSnapshot = volume;
+            entryRegimeSnapshot = regime;
+        }
+
+        protected override void OnExecutionUpdate(Cbi.Execution execution, string executionId, double price, int quantity, Cbi.MarketPosition marketPosition, string orderId, DateTime time)
+        {
+            if (execution == null || execution.Order == null)
+                return;
+
+            if (execution.Order.Name == "EntryB" && execution.Order.OrderState == OrderState.Filled)
+                runnerEntryPrice = execution.Price;
         }
 
         protected override void OnPositionUpdate(Position position, double averagePrice, int quantity, MarketPosition marketPosition)
         {
-            if (!pendingOutcome || marketPosition != MarketPosition.Flat || quantity != 0)
+            if (!pendingOutcome || marketPosition != MarketPosition.Flat)
                 return;
 
             double nowCum = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
@@ -237,11 +269,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print(string.Format(
                 "PGS_OUTCOME|Time={0:yyyy-MM-dd HH:mm:ss}|Instrument={1}|Signal={2}|Prob={3:F1}|Structure={4:F2}|Momentum={5:F2}|Volume={6:F2}|Regime={7:F2}|PnL={8:F2}|Result={9}",
-                Time[0], Instrument.FullName, lastSignal, lastSignalProbability, lastStructureScore, lastMomentumScore, lastVolumeScore, lastRegimeScore, pnl, pnl >= 0 ? "WIN" : "LOSS"));
+                Time[0], Instrument.FullName, entrySignalSnapshot, entryProbabilitySnapshot, entryStructureSnapshot, entryMomentumSnapshot, entryVolumeSnapshot, entryRegimeSnapshot, pnl, pnl >= 0 ? "WIN" : "LOSS"));
 
             pendingOutcome = false;
             lastEntryQty = 0;
             breakevenMoved = false;
+            entrySignalSnapshot = DirectionSignal.NoTrade;
         }
 
         private void ResetDailyStateIfNeeded()
@@ -287,11 +320,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private double CalculateStructureScore()
         {
-            double ema = EMA(Close, StructureEmaPeriod)[0];
-            double slope = EMA(Close, StructureEmaPeriod)[0] - EMA(Close, StructureEmaPeriod)[Math.Min(5, CurrentBar)];
+            double emaNow = EMA(Close, StructureEmaPeriod)[0];
+            double emaPast = EMA(Close, StructureEmaPeriod)[5];
+            double slope = emaNow - emaPast;
             double hlBreak = Close[0] - ((MAX(High, StructureLookback)[1] + MIN(Low, StructureLookback)[1]) * 0.5);
 
-            double trendPart = Close[0] > ema ? 0.45 : -0.45;
+            double trendPart = Close[0] > emaNow ? 0.45 : -0.45;
             double slopePart = slope > 0 ? 0.30 : -0.30;
             double breakPart = hlBreak > 0 ? 0.25 : -0.25;
 
@@ -331,11 +365,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private double CalculateRegimeScore()
         {
-            double adx = ADX(14)[0];
+            double adx = ADX(AdxPeriod)[0];
             if (adx >= RegimeAdxThreshold)
                 return 0.6;
-            if (adx <= RegimeAdxThreshold * 0.7)
-                return -0.6;
             return 0.0;
         }
 
@@ -501,6 +533,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int VolumeLookback { get; set; }
 
         [NinjaScriptProperty]
+        [Range(5, 100)]
+        [Display(Name = "ADX Period", GroupName = "3. Components", Order = 6)]
+        public int AdxPeriod { get; set; }
+
+        [NinjaScriptProperty]
         [Range(1, 100)]
         [Display(Name = "Contracts", GroupName = "4. Automation", Order = 1)]
         public int Contracts { get; set; }
@@ -516,27 +553,32 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int TargetTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Move Runner To Breakeven", GroupName = "4. Automation", Order = 4)]
+        [Range(1.0, 5.0)]
+        [Display(Name = "Runner Target Multiplier", GroupName = "4. Automation", Order = 4)]
+        public double RunnerTargetMultiplier { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Move Runner To Breakeven", GroupName = "4. Automation", Order = 5)]
         public bool MoveRunnerToBreakeven { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Max Trades / Day", GroupName = "4. Automation", Order = 5)]
+        [Display(Name = "Max Trades / Day", GroupName = "4. Automation", Order = 6)]
         public int MaxTradesPerDay { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 200)]
-        [Display(Name = "Cooldown Bars", GroupName = "4. Automation", Order = 6)]
+        [Display(Name = "Cooldown Bars", GroupName = "4. Automation", Order = 7)]
         public int CooldownBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(10, 50000)]
-        [Display(Name = "Max Daily Loss ($)", GroupName = "4. Automation", Order = 7)]
+        [Display(Name = "Max Daily Loss ($)", GroupName = "4. Automation", Order = 8)]
         public double MaxDailyLoss { get; set; }
 
         [NinjaScriptProperty]
         [Range(10, 50000)]
-        [Display(Name = "Max Daily Profit ($)", GroupName = "4. Automation", Order = 8)]
+        [Display(Name = "Max Daily Profit ($)", GroupName = "4. Automation", Order = 9)]
         public double MaxDailyProfit { get; set; }
 
         [NinjaScriptProperty]

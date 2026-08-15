@@ -27,6 +27,7 @@ NinjaTrader 8 strategy that outputs only **BUY**, **SELL**, or **NO TRADE** from
 - max trades per day
 - cooldown bars between entries
 - optional runner breakeven move
+- configurable runner target multiplier
 
 ## Walk-forward validation support
 
@@ -42,4 +43,3 @@ NinjaTrader 8 strategy that outputs only **BUY**, **SELL**, or **NO TRADE** from
 3. Validate on TEST period without changing calibrated parameters.
 4. Review by instrument and session (`RTH`/`OFF`) using log fields.
 5. Promote to **Automation** only after stable out-of-sample behavior.
-
