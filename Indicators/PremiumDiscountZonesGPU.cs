@@ -86,8 +86,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Dictionary<double, PdzBookLevel> _bidBook;
         private Dictionary<double, PdzBookLevel> _askBook;
         private readonly Queue<long> _bookSamples = new Queue<long>();
-        private long _bidBookSum;
-        private long _askBookSum;
         private bool _level2Available;
         private double _wallBidPrice;
         private long _wallBidSize;
@@ -110,6 +108,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush _dxEquilibriumLabelBrush;
         private SharpDX.Direct2D1.SolidColorBrush _dxWallBidBrush;
         private SharpDX.Direct2D1.SolidColorBrush _dxWallAskBrush;
+        private string _dxResourceKey = string.Empty;
+        private NinjaTrader.Gui.Tools.SimpleFont _dashboardFont;
 
         #endregion
 
@@ -185,6 +185,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _bookSamples.Clear();
                 _sessionProfile.Clear();
                 _sessionDate = DateTime.MinValue;
+                _dashboardFont = new NinjaTrader.Gui.Tools.SimpleFont("Segoe UI", 12);
             }
             else if (State == State.Terminated)
             {
@@ -225,11 +226,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _level2Available = true;
 
                 Dictionary<double, PdzBookLevel> book = isBid ? _bidBook : _askBook;
-                long oldSize = 0;
                 PdzBookLevel existing;
                 book.TryGetValue(e.Price, out existing);
-                if (existing != null)
-                    oldSize = existing.Size;
 
                 switch (e.Operation)
                 {
@@ -241,8 +239,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                             book[e.Price] = existing;
                         }
                         existing.Size = e.Volume;
-                        if (isBid) _bidBookSum += e.Volume - oldSize;
-                        else _askBookSum += e.Volume - oldSize;
                         AddL2Sample(e.Volume);
                         break;
 
@@ -250,8 +246,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (existing != null)
                         {
                             book.Remove(e.Price);
-                            if (isBid) _bidBookSum -= oldSize;
-                            else _askBookSum -= oldSize;
                         }
                         break;
                 }
@@ -263,7 +257,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void UpdateSessionAccumulators()
         {
             DateTime barDate = Time[0].Date;
-            if (_sessionDate != barDate || IsFirstTickOfBar && Time[0].Date != Time[1].Date)
+            if (_sessionDate != barDate)
             {
                 _sessionDate = barDate;
                 _sessionCumPV = 0;
@@ -272,12 +266,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _lastBarCumVolume = 0;
             }
 
-            if (IsFirstTickOfBar)
-                _lastBarCumVolume = 0;
-
             double cumulativeVol = Math.Max(0, Volume[0]);
             double deltaVol = cumulativeVol - _lastBarCumVolume;
-            if (deltaVol < 0)
+            if (IsFirstTickOfBar || deltaVol < 0)
                 deltaVol = cumulativeVol;
             _lastBarCumVolume = cumulativeVol;
 
@@ -288,7 +279,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             _sessionCumPV += typicalPrice * deltaVol;
             _sessionCumVol += deltaVol;
 
-            double bin = Math.Max(TickSize, TickSize * Math.Max(1, ProfileBinTicks));
+            double bin = TickSize * Math.Max(1, ProfileBinTicks);
             double key = Math.Round(typicalPrice / bin) * bin;
             double existing;
             _sessionProfile.TryGetValue(key, out existing);
@@ -401,11 +392,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void DetectWallsLocked()
         {
-            DetectWallForBook(_bidBook, true, _bidBookSum);
-            DetectWallForBook(_askBook, false, _askBookSum);
+            DetectWallForBook(_bidBook, true);
+            DetectWallForBook(_askBook, false);
         }
 
-        private void DetectWallForBook(Dictionary<double, PdzBookLevel> book, bool isBid, long sizeSum)
+        private void DetectWallForBook(Dictionary<double, PdzBookLevel> book, bool isBid)
         {
             if (book == null || book.Count == 0)
             {
@@ -421,7 +412,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     threshold = Math.Max(1, FixedWallSize);
                     break;
                 case PDZL2WallMode.Adaptive:
-                    threshold = (book.Count > 0 ? (double)sizeSum / book.Count : 0) * Math.Max(1.0, AdaptiveWallMultiplier);
+                    long recalculatedSizeSum = 0;
+                    foreach (var kv in book)
+                        recalculatedSizeSum += kv.Value.Size;
+                    threshold = Math.Max(1.0,
+                        (book.Count > 0 ? (double)recalculatedSizeSum / book.Count : 0) * Math.Max(1.0, AdaptiveWallMultiplier));
                     break;
                 default:
                     threshold = ComputePercentile95();
@@ -546,7 +541,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sb.ToString(),
                 ToTextPosition(DashboardPosition),
                 Brushes.White,
-                new NinjaTrader.Gui.Tools.SimpleFont("Segoe UI", 12),
+                _dashboardFont ?? (_dashboardFont = new NinjaTrader.Gui.Tools.SimpleFont("Segoe UI", 12)),
                 Brushes.Transparent,
                 Brushes.Transparent,
                 0);
@@ -569,8 +564,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         public override void OnRenderTargetChanged()
         {
-            DisposeDxResources();
+            base.OnRenderTargetChanged();
             _dxReady = false;
+            DisposeDxResources();
         }
 
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
@@ -580,7 +576,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (Bars == null || ChartBars == null || RenderTarget == null)
                 return;
 
-            if (!_dxReady)
+            string key = BuildDxResourceKey();
+            if (!_dxReady || !string.Equals(_dxResourceKey, key, StringComparison.Ordinal))
                 CreateDxResources();
 
             if (!_dxReady)
@@ -604,7 +601,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void DrawZoneFill(ChartScale cs, double topPrice, double bottomPrice, SharpDX.Direct2D1.SolidColorBrush brush)
         {
-            if (brush == null || topPrice <= 0 || bottomPrice <= 0)
+            if (brush == null
+                || double.IsNaN(topPrice) || double.IsInfinity(topPrice)
+                || double.IsNaN(bottomPrice) || double.IsInfinity(bottomPrice))
                 return;
 
             float y1 = cs.GetYByValue(topPrice);
@@ -728,14 +727,26 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _dxWallBidBrush = MakeBrush(RenderTarget, BidWallColor, WallLineOpacity / 100f);
                 _dxWallAskBrush = MakeBrush(RenderTarget, AskWallColor, WallLineOpacity / 100f);
 
+                _dxResourceKey = BuildDxResourceKey();
                 _dxReady = true;
             }
             catch (Exception ex)
             {
                 Print("PremiumDiscountZonesGPU CreateDxResources error: " + ex.Message);
                 _dxReady = false;
+                _dxResourceKey = string.Empty;
                 DisposeDxResources();
             }
+        }
+
+        private string BuildDxResourceKey()
+        {
+            return string.Concat(
+                Serialize.BrushToString(PremiumColor), "|", PremiumOpacity, "|",
+                Serialize.BrushToString(DiscountColor), "|", DiscountOpacity, "|",
+                Serialize.BrushToString(EquilibriumColor), "|", EquilibriumOpacity, "|",
+                Serialize.BrushToString(BidWallColor), "|", Serialize.BrushToString(AskWallColor), "|",
+                WallLineOpacity, "|", LabelFontSize);
         }
 
         private static SharpDX.Direct2D1.SolidColorBrush MakeBrush(SharpDX.Direct2D1.RenderTarget rt, Brush brush, float opacity)
