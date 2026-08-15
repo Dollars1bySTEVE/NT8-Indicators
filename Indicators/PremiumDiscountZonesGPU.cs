@@ -10,7 +10,9 @@ using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 // NT8 compatibility: custom enums should be declared outside namespace.
