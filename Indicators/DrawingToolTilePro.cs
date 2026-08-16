@@ -3,10 +3,11 @@
 // Based on NinjaTrader's Drawing Tool Tile
 // Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan
 //
-// v2 - baseline (v1) + trashcan button ONLY.
-// v1: original working tile + 6px click/drag threshold fix (verified good).
-// v2 change: trashcan button at bottom of tile that removes all user-drawn,
-//            unlocked drawing objects on every panel of this chart.
+// v2.1 - trashcan now sweeps BOTH ChartControl.ChartObjects and every panel's
+//        ChartObjects, so all user-drawn tool types are removed (v2 only
+//        caught Text because most tools live in the chart-level collection).
+// v2   - baseline + trashcan button.
+// v1   - original working tile + 6px click/drag threshold fix (verified good).
 //
 #region Using declarations
 using System;
@@ -284,7 +285,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				column++;
 			}
 
-			// ---- v2: Trashcan button (only addition to verified v1 baseline) ----
+			// ---- v2.1: Trashcan button - sweeps chart-level AND panel-level collections ----
 			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
 			Button trashBtn = new()
 			{
@@ -308,24 +309,25 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				ChartControl.Dispatcher.InvokeAsync(() =>
 				{
-					// Remove all user-drawn, unlocked drawing tools on this chart (all panels)
-					foreach (ChartPanel panel in ChartControl.ChartPanels)
-					{
-						List<DrawingTools.DrawingTool> toRemove = new();
-						foreach (object obj in panel.ChartObjects)
-						{
-							DrawingTools.DrawingTool dtObj = obj as DrawingTools.DrawingTool;
-							if (dtObj == null || dtObj.IsLocked)
-								continue;
-							if (dtObj.IsUserDrawn)
-								toRemove.Add(dtObj);
-						}
+					// Collect user-drawn, unlocked drawing tools from BOTH the
+					// chart-level collection and every panel's collection.
+					List<DrawingTools.DrawingTool> toRemove = new();
 
-						foreach (DrawingTools.DrawingTool dtObj in toRemove)
-						{
-							panel.ChartObjects.Remove(dtObj);
-							dtObj.Dispose();
-						}
+					foreach (object obj in ChartControl.ChartObjects)
+						if (obj is DrawingTools.DrawingTool { IsUserDrawn: true, IsLocked: false } d1)
+							toRemove.Add(d1);
+
+					foreach (ChartPanel panel in ChartControl.ChartPanels)
+						foreach (object obj in panel.ChartObjects)
+							if (obj is DrawingTools.DrawingTool { IsUserDrawn: true, IsLocked: false } d2 && !toRemove.Contains(d2))
+								toRemove.Add(d2);
+
+					foreach (DrawingTools.DrawingTool d in toRemove)
+					{
+						ChartControl.ChartObjects.Remove(d);
+						foreach (ChartPanel panel in ChartControl.ChartPanels)
+							panel.ChartObjects.Remove(d);
+						d.Dispose();
 					}
 
 					ChartControl.InvalidateVisual();
@@ -333,7 +335,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			};
 
 			contentGrid.Children.Add(trashBtn);
-			// ---- end v2 addition ----
+			// ---- end v2.1 ----
 
 			tileHolder = new()
 			{
