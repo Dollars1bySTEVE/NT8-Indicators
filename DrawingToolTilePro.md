@@ -20,7 +20,7 @@ A floating, dockable drawing-tool palette for **NinjaTrader 8** — based on Nin
 
 ### Option A — Drop the file in (easiest)
 
-1. Download [`Indicators/DrawingToolTilePro.cs`](Indicators/DrawingToolTilePro.cs) (open it, click **Raw**, then right-click → Save As `DrawingToolTilePro.cs`)
+1. Download [`Indicators/DrawingToolTilePro.cs`](Indicators/DrawingToolTilePro.cs) (open it, click ** the down arrow to download Raw**, then right-click → Save As `DrawingToolTilePro.cs`)
 2. Place the file in your NinjaTrader custom indicators folder:
    ```
    Documents\NinjaTrader 8\bin\Custom\Indicators\
