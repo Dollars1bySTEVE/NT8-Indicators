@@ -1,20 +1,19 @@
 // 
 // DrawingToolTilePro.cs
 // Based on NinjaTrader's Drawing Tool Tile
-// Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan + Pen (WIP)
+// Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan + Pen
 //
-// v3a.1 - compile fixes only: fully qualified SharpDX types (no blanket
-//         SharpDX usings) and added System.Xml.Serialization for [XmlIgnore].
-//         No behavior change from v3a.
-// v3a   - pen rendering pipeline ONLY (no mouse input yet):
-//         * Pen button on tile (toggles armed state visually - highlights)
-//         * Pen Color / Pen Size / Pen Opacity properties (grease-marker defaults)
-//         * OnRender draws strokes with round caps/joins via SharpDX
-//         * One hardcoded test squiggle so the marker look can be verified
-//         * Trashcan also clears pen strokes; tooltip updated
-//         * Full cleanup in State.Terminated (no haunted charts)
-// v2.1  - trashcan sweeps chart + panel collections (net effect: clears Text)
-// v1    - original working tile + 6px click/drag threshold fix (verified good)
+// v3b   - FINAL: real mouse drawing for the pen.
+//         * Armed pen captures mouse on the chart panel: press-drag draws,
+//           release ends the stroke. Chart panning suppressed only while armed.
+//         * Disarm -> chart behaves 100% normally.
+//         * Test squiggle removed.
+//         * Cleanup: capture released on disarm/mouse-up; handlers detached and
+//           everything torn down in State.Terminated.
+// v3a.1 - compile fixes (fully qualified SharpDX types, XmlIgnore using).
+// v3a   - pen rendering pipeline (button, props, SharpDX marker rendering).
+// v2.1  - trashcan (clears text notes; now also pen strokes).
+// v1    - original working tile + 6px click/drag threshold fix (verified good).
 //
 #region Using declarations
 using System;
@@ -51,13 +50,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private		System.Windows.Point	startPoint;
 		private		bool		isDragging;
 
-		// ---- v3a pen state ----
+		// ---- pen state ----
 		private		Button		penBtn;
 		private		bool		penArmed;
+		private		bool		penStroking;
 		// Each stroke is a list of pixel points (relative to the chart panel).
 		private		readonly List<List<System.Windows.Point>>	penStrokes = new();
+		private		List<System.Windows.Point>	currentStroke;
 		private		SharpDX.Direct2D1.Brush			penDxBrush;
 		private		SharpDX.Direct2D1.StrokeStyle	penStrokeStyle;
+		private		bool		penHandlersAttached;
 
 		protected override void OnBarUpdate()
 		{
@@ -86,7 +88,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (State == State.SetDefaults)
 			{
 				Name							= "Drawing Tool Tile Pro";
-				Description						= "Custom Drawing Tool Tile with opacity, expand/collapse toggle, trashcan, and pen.";
+				Description						= "Custom Drawing Tool Tile with opacity, expand/collapse toggle, trashcan, and freehand pen.";
 				IsOverlay						= true;
 				IsChartOnly						= true;
 				DisplayInDataBox				= false;
@@ -126,24 +128,104 @@ namespace NinjaTrader.NinjaScript.Indicators
 					if (Top < 0)
 						Top = 25;
 
-					ChartControl.Dispatcher.InvokeAsync(() => { if (State < State.Terminated) UserControlCollection.Add(CreateControl()); });
-
-					// v3a: hardcoded test squiggle so the marker look can be verified.
-					// Removed in v3b when real mouse drawing arrives.
-					List<System.Windows.Point> test = new();
-					for (int i = 0; i <= 60; i++)
-						test.Add(new System.Windows.Point(150 + i * 4, 150 + Math.Sin(i * 0.3) * 30));
-					penStrokes.Add(test);
+					ChartControl.Dispatcher.InvokeAsync(() =>
+					{
+						if (State < State.Terminated)
+						{
+							UserControlCollection.Add(CreateControl());
+							AttachPenHandlers();
+						}
+					});
 				}
 			}
 			else if (State == State.Terminated)
 			{
 				// Cleanup: never leave anything behind in the chart window.
-				penArmed = false;
+				DisarmPen();
+				if (ChartPanel != null && penHandlersAttached)
+				{
+					ChartControl?.Dispatcher.InvokeAsync(() =>
+					{
+						try
+						{
+							ChartPanel.PreviewMouseLeftButtonDown	-= OnPenMouseDown;
+							ChartPanel.PreviewMouseMove				-= OnPenMouseMove;
+							ChartPanel.PreviewMouseLeftButtonUp		-= OnPenMouseUp;
+						}
+						catch { }
+					});
+					penHandlersAttached = false;
+				}
 				penStrokes.Clear();
+				currentStroke = null;
 				penDxBrush?.Dispose();		penDxBrush = null;
 				penStrokeStyle?.Dispose();	penStrokeStyle = null;
 			}
+		}
+
+		// ---- v3b: pen mouse input (Preview handlers so we can intercept before the chart pans) ----
+
+		private void AttachPenHandlers()
+		{
+			if (penHandlersAttached || ChartPanel == null)
+				return;
+
+			ChartPanel.PreviewMouseLeftButtonDown	+= OnPenMouseDown;
+			ChartPanel.PreviewMouseMove				+= OnPenMouseMove;
+			ChartPanel.PreviewMouseLeftButtonUp		+= OnPenMouseUp;
+			penHandlersAttached = true;
+		}
+
+		private void OnPenMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+		{
+			if (!penArmed || ChartPanel == null)
+				return;
+
+			penStroking   = true;
+			currentStroke = new List<System.Windows.Point> { e.GetPosition(ChartPanel) };
+			penStrokes.Add(currentStroke);
+			ChartPanel.CaptureMouse();
+			e.Handled = true; // suppress chart panning while armed
+		}
+
+		private void OnPenMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+		{
+			if (!penArmed || !penStroking || currentStroke == null || ChartPanel == null)
+				return;
+
+			System.Windows.Point p = e.GetPosition(ChartPanel);
+
+			// Skip sub-pixel jitter; keeps strokes smooth and point counts sane.
+			System.Windows.Point last = currentStroke[currentStroke.Count - 1];
+			if (Math.Abs(p.X - last.X) >= 2 || Math.Abs(p.Y - last.Y) >= 2)
+			{
+				currentStroke.Add(p);
+				ForceRefresh();
+			}
+
+			e.Handled = true;
+		}
+
+		private void OnPenMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+		{
+			if (!penArmed || ChartPanel == null)
+				return;
+
+			penStroking   = false;
+			currentStroke = null;
+			ChartPanel.ReleaseMouseCapture();
+			ForceRefresh();
+			e.Handled = true;
+		}
+
+		private void DisarmPen()
+		{
+			penArmed    = false;
+			penStroking = false;
+			currentStroke = null;
+			if (penBtn != null)
+				penBtn.Background = null;
+			try { ChartPanel?.ReleaseMouseCapture(); } catch { }
 		}
 
 		private FrameworkElement CreateControl()
@@ -299,7 +381,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 							Grid.SetRow(bb, j);
 							Grid.SetColumn(bb, column);
 
-							bb.Click += (_, _) => ChartControl?.TryStartDrawing(dt.GetType().FullName);
+							bb.Click += (_, _) =>
+							{
+								DisarmPen(); // starting a regular tool always disarms the pen
+								ChartControl?.TryStartDrawing(dt.GetType().FullName);
+							};
 
 							contentGrid.Children.Add(bb);
 							count++;
@@ -320,7 +406,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				column++;
 			}
 
-			// ---- v3a: Pen button (visual toggle only; no mouse input yet) ----
+			// ---- Pen button ----
 			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
 			penBtn = new Button
 			{
@@ -340,9 +426,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			penBtn.Click += (_, _) =>
 			{
-				penArmed = !penArmed;
-				// Visual feedback only in v3a. Mouse drawing arrives in v3b.
-				penBtn.Background = penArmed ? new System.Windows.Media.SolidColorBrush(Colors.DarkOrange) { Opacity = 0.5 } : null;
+				if (penArmed)
+					DisarmPen();
+				else
+				{
+					penArmed = true;
+					penBtn.Background = new System.Windows.Media.SolidColorBrush(Colors.DarkOrange) { Opacity = 0.5 };
+				}
 			};
 
 			contentGrid.Children.Add(penBtn);
@@ -372,6 +462,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				ChartControl.Dispatcher.InvokeAsync(() =>
 				{
 					// Pen strokes are ours - clear directly.
+					penStroking   = false;
+					currentStroke = null;
 					penStrokes.Clear();
 
 					// Text notes: remove user-drawn, unlocked Text objects.
