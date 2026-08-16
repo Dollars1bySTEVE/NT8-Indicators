@@ -3,14 +3,12 @@
 // Based on NinjaTrader's Drawing Tool Tile
 // Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan + Pen
 //
-// v3b.2 - accuracy fix: mouse points are now converted from WPF units to
-//         device pixels via ChartingExtensions.ConvertToHorizontalPixels /
-//         ConvertToVerticalPixels (the same conversion NT8 uses for its own
-//         rendering), so strokes land exactly under the cursor at any
-//         Windows display scaling. The v3b.1 ChartPanel.X/Y translation is
-//         removed (it mixed coordinate systems).
-// v3b.1 - lockdown fix (tile stays clickable while armed; right-click
-//         disarms) + first offset attempt.
+// v3c   - lag fix: render refreshes while drawing are throttled to ~30ms
+//         (~33fps). Every mouse point is still recorded (no accuracy loss);
+//         only how often we ask NT8 to repaint changed. Mouse-up always does
+//         a final refresh so the stroke never ends missing its tail.
+// v3b.2 - DPI accuracy fix via ChartingExtensions pixel conversion.
+// v3b.1 - lockdown fix (tile stays clickable while armed; right-click disarms).
 // v3b   - pen mouse input; panning suppressed only while armed.
 // v3a/.1- pen rendering pipeline + compile fixes.
 // v2.1  - trashcan (clears text notes + pen strokes).
@@ -61,6 +59,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private		SharpDX.Direct2D1.Brush			penDxBrush;
 		private		SharpDX.Direct2D1.StrokeStyle	penStrokeStyle;
 		private		bool		penHandlersAttached;
+		// v3c: refresh throttle - repaint at most every ~30ms while drawing.
+		private		DateTime	lastPenRefresh = DateTime.MinValue;
+		private		const int	PenRefreshMs   = 30;
 
 		protected override void OnBarUpdate()
 		{
@@ -185,7 +186,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			return grid != null && grid.IsMouseOver;
 		}
 
-		// v3b.2: convert WPF units -> device pixels the same way NT8 renders,
+		// Convert WPF units -> device pixels the same way NT8 renders,
 		// so strokes land exactly under the cursor at any Windows DPI scaling.
 		private System.Windows.Point ToRenderSpace(System.Windows.Point wpfPoint)
 		{
@@ -217,8 +218,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 			System.Windows.Point last = currentStroke[currentStroke.Count - 1];
 			if (Math.Abs(p.X - last.X) >= 2 || Math.Abs(p.Y - last.Y) >= 2)
 			{
+				// Every point is always recorded (no accuracy loss)...
 				currentStroke.Add(p);
-				ForceRefresh();
+
+				// ...but repaints are throttled to ~33fps to keep the chart responsive.
+				DateTime now = DateTime.UtcNow;
+				if ((now - lastPenRefresh).TotalMilliseconds >= PenRefreshMs)
+				{
+					lastPenRefresh = now;
+					ForceRefresh();
+				}
 			}
 
 			e.Handled = true;
@@ -233,7 +242,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			penStroking   = false;
 			currentStroke = null;
 			ChartPanel.ReleaseMouseCapture();
-			ForceRefresh();
+			ForceRefresh(); // final refresh so the stroke never ends missing its tail
 
 			if (wasStroking)
 				e.Handled = true; // only swallow the click that ended a stroke
