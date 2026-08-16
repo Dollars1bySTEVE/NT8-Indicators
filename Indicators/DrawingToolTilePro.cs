@@ -1,13 +1,17 @@
 // 
 // DrawingToolTilePro.cs
 // Based on NinjaTrader's Drawing Tool Tile
-// Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan
+// Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan + Pen (WIP)
 //
-// v2.1 - trashcan now sweeps BOTH ChartControl.ChartObjects and every panel's
-//        ChartObjects, so all user-drawn tool types are removed (v2 only
-//        caught Text because most tools live in the chart-level collection).
-// v2   - baseline + trashcan button.
-// v1   - original working tile + 6px click/drag threshold fix (verified good).
+// v3a  - pen rendering pipeline ONLY (no mouse input yet):
+//        * Pen button on tile (toggles armed state visually - highlights)
+//        * Pen Color / Pen Size / Pen Opacity properties (grease-marker defaults)
+//        * OnRender draws strokes with round caps/joins via SharpDX
+//        * One hardcoded test squiggle so the marker look can be verified
+//        * Trashcan also clears pen strokes; tooltip updated
+//        * Full cleanup in State.Terminated (no haunted charts)
+// v2.1 - trashcan sweeps chart + panel collections (net effect: clears Text)
+// v1   - original working tile + 6px click/drag threshold fix (verified good)
 //
 #region Using declarations
 using System;
@@ -22,6 +26,8 @@ using System.Xml.Linq;
 using System.Windows.Data;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui.Chart;
+using SharpDX;
+using SharpDX.Direct2D1;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -40,8 +46,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private		Border		tileHolder;
 		private		Thickness	margin;
 		private		bool		subscribedToSize;
-		private		Point		startPoint;
+		private		System.Windows.Point	startPoint;
 		private		bool		isDragging;
+
+		// ---- v3a pen state ----
+		private		Button		penBtn;
+		private		bool		penArmed;
+		// Each stroke is a list of pixel points (relative to the chart panel).
+		private		readonly List<List<System.Windows.Point>>	penStrokes = new();
+		private		SharpDX.Direct2D1.Brush		penDxBrush;
+		private		StrokeStyle					penStrokeStyle;
 
 		protected override void OnBarUpdate()
 		{
@@ -70,7 +84,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (State == State.SetDefaults)
 			{
 				Name							= "Drawing Tool Tile Pro";
-				Description						= "Custom Drawing Tool Tile with adjustable opacity, expand/collapse toggle, and trashcan.";
+				Description						= "Custom Drawing Tool Tile with opacity, expand/collapse toggle, trashcan, and pen.";
 				IsOverlay						= true;
 				IsChartOnly						= true;
 				DisplayInDataBox				= false;
@@ -96,6 +110,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 				
 				BackgroundOpacity = 80;
 				IsExpanded        = true;
+
+				PenColor   = Brushes.Yellow;
+				PenSize    = 5;
+				PenOpacity = 80;
 			}
 			else if (State == State.Historical)
 			{
@@ -107,7 +125,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 						Top = 25;
 
 					ChartControl.Dispatcher.InvokeAsync(() => { if (State < State.Terminated) UserControlCollection.Add(CreateControl()); });
+
+					// v3a: hardcoded test squiggle so the marker look can be verified.
+					// Removed in v3b when real mouse drawing arrives.
+					List<System.Windows.Point> test = new();
+					for (int i = 0; i <= 60; i++)
+						test.Add(new System.Windows.Point(150 + i * 4, 150 + Math.Sin(i * 0.3) * 30));
+					penStrokes.Add(test);
 				}
+			}
+			else if (State == State.Terminated)
+			{
+				// Cleanup: never leave anything behind in the chart window.
+				penArmed = false;
+				penStrokes.Clear();
+				penDxBrush?.Dispose();		penDxBrush = null;
+				penStrokeStyle?.Dispose();	penStrokeStyle = null;
 			}
 		}
 
@@ -122,13 +155,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 			grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength() });
 			grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength() });
 
-			Brush baseBrush = Application.Current.FindResource("BackgroundMainWindow") as Brush ?? Brushes.White;
+			System.Windows.Media.Brush baseBrush = Application.Current.FindResource("BackgroundMainWindow") as System.Windows.Media.Brush ?? Brushes.White;
 			SolidColorBrush background = new SolidColorBrush(baseBrush is SolidColorBrush scb ? scb.Color : Colors.Black)
 			{
 				Opacity = Math.Max(0.0, Math.Min(1.0, BackgroundOpacity / 100.0))
 			};
 
-			Brush borderBrush = Application.Current.FindResource("BorderThinBrush") as Brush ?? Brushes.Black;
+			System.Windows.Media.Brush borderBrush = Application.Current.FindResource("BorderThinBrush") as System.Windows.Media.Brush ?? Brushes.Black;
 
 			Grid g = new();
 			g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
@@ -191,7 +224,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				if (!b.IsMouseCaptured || grid == null || ChartPanel == null)
 					return;
 
-				Point newPoint = e.GetPosition(ChartPanel);
+				System.Windows.Point newPoint = e.GetPosition(ChartPanel);
 				
 				// 6px threshold so a normal click (with slight mouse drift) still
 				// registers as click-to-hide instead of a drag.
@@ -285,12 +318,39 @@ namespace NinjaTrader.NinjaScript.Indicators
 				column++;
 			}
 
-			// ---- v2.1: Trashcan button - sweeps chart-level AND panel-level collections ----
+			// ---- v3a: Pen button (visual toggle only; no mouse input yet) ----
+			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
+			penBtn = new Button
+			{
+				Content    = Gui.Tools.Icons.DrawPencil,
+				ToolTip    = "Pen: freehand marker (toggle draw mode)",
+				Style      = style,
+				FontFamily = fontFamily,
+				FontSize   = 16,
+				FontStyle  = FontStyles.Normal,
+				Margin     = new Thickness(3),
+				Padding    = new Thickness(3)
+			};
+			Grid.SetRow(penBtn, contentGrid.RowDefinitions.Count - 1);
+			Grid.SetColumn(penBtn, 0);
+			if (contentGrid.ColumnDefinitions.Count > 1)
+				Grid.SetColumnSpan(penBtn, contentGrid.ColumnDefinitions.Count);
+
+			penBtn.Click += (_, _) =>
+			{
+				penArmed = !penArmed;
+				// Visual feedback only in v3a. Mouse drawing arrives in v3b.
+				penBtn.Background = penArmed ? new SolidColorBrush(Colors.DarkOrange) { Opacity = 0.5 } : null;
+			};
+
+			contentGrid.Children.Add(penBtn);
+
+			// ---- Trashcan: clears text notes + pen strokes ----
 			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
 			Button trashBtn = new()
 			{
 				Content    = "\uD83D\uDDD1", // trashcan glyph (U+1F5D1)
-				ToolTip    = "Remove ALL drawings from this chart",
+				ToolTip    = "Remove all text notes and pen strokes",
 				Style      = style,
 				FontSize   = 16,
 				FontStyle  = FontStyles.Normal,
@@ -309,18 +369,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				ChartControl.Dispatcher.InvokeAsync(() =>
 				{
-					// Collect user-drawn, unlocked drawing tools from BOTH the
-					// chart-level collection and every panel's collection.
+					// Pen strokes are ours - clear directly.
+					penStrokes.Clear();
+
+					// Text notes: remove user-drawn, unlocked Text objects.
 					List<DrawingTools.DrawingTool> toRemove = new();
 
 					foreach (object obj in ChartControl.ChartObjects)
-						if (obj is DrawingTools.DrawingTool { IsUserDrawn: true, IsLocked: false } d1)
-							toRemove.Add(d1);
+						if (obj is DrawingTools.Text { IsUserDrawn: true, IsLocked: false } t1)
+							toRemove.Add(t1);
 
 					foreach (ChartPanel panel in ChartControl.ChartPanels)
 						foreach (object obj in panel.ChartObjects)
-							if (obj is DrawingTools.DrawingTool { IsUserDrawn: true, IsLocked: false } d2 && !toRemove.Contains(d2))
-								toRemove.Add(d2);
+							if (obj is DrawingTools.Text { IsUserDrawn: true, IsLocked: false } t2 && !toRemove.Contains(t2))
+								toRemove.Add(t2);
 
 					foreach (DrawingTools.DrawingTool d in toRemove)
 					{
@@ -331,18 +393,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 					}
 
 					ChartControl.InvalidateVisual();
+					ForceRefresh();
 				});
 			};
 
 			contentGrid.Children.Add(trashBtn);
-			// ---- end v2.1 ----
 
 			tileHolder = new()
 			{
 				Cursor				= System.Windows.Input.Cursors.Arrow,
 				Background			= background,
 				BorderThickness		= new Thickness ((double)(Application.Current.FindResource("BorderThinThickness") ?? 1)),
-				BorderBrush			= Application.Current.FindResource("BorderThinBrush")as Brush,
+				BorderBrush			= Application.Current.FindResource("BorderThinBrush") as System.Windows.Media.Brush,
 				Child				= contentGrid,
 				Visibility          = IsExpanded ? Visibility.Visible : Visibility.Collapsed
 			};
@@ -368,7 +430,49 @@ namespace NinjaTrader.NinjaScript.Indicators
 			base.CopyTo(ninjaScript);
 		}
 
-		protected override void OnRender(ChartControl chartControl, ChartScale chartScale) { }
+		public override void OnRenderTargetChanged()
+		{
+			// Recreate device-dependent resources when the render target changes.
+			penDxBrush?.Dispose();		penDxBrush = null;
+			penStrokeStyle?.Dispose();	penStrokeStyle = null;
+
+			if (RenderTarget == null)
+				return;
+
+			Color mediaColor = PenColor is SolidColorBrush pscb ? pscb.Color : Colors.Yellow;
+			float alpha      = (float)Math.Max(0.0, Math.Min(1.0, PenOpacity / 100.0));
+			penDxBrush       = new SolidColorBrush(RenderTarget, new Color4(mediaColor.R / 255f, mediaColor.G / 255f, mediaColor.B / 255f, alpha));
+
+			penStrokeStyle = new StrokeStyle(Core.Globals.D2DFactory, new StrokeStyleProperties
+			{
+				StartCap = CapStyle.Round,
+				EndCap   = CapStyle.Round,
+				DashCap  = CapStyle.Round,
+				LineJoin = LineJoin.Round
+			});
+		}
+
+		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+		{
+			if (penStrokes.Count == 0 || RenderTarget == null || penDxBrush == null)
+				return;
+
+			float width = (float)Math.Max(1, PenSize);
+
+			foreach (List<System.Windows.Point> stroke in penStrokes)
+			{
+				if (stroke.Count < 2)
+					continue;
+
+				for (int i = 1; i < stroke.Count; i++)
+				{
+					RenderTarget.DrawLine(
+						new Vector2((float)stroke[i - 1].X, (float)stroke[i - 1].Y),
+						new Vector2((float)stroke[i].X,     (float)stroke[i].Y),
+						penDxBrush, width, penStrokeStyle);
+				}
+			}
+		}
 
 		private List<XElement> SortElements(XElement elements)
 		{
@@ -447,6 +551,25 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		[Display(Name = "Start Expanded", GroupName = "NinjaScriptParameters", Order = 2)]
 		public bool IsExpanded { get; set; }
+
+		[XmlIgnore]
+		[Display(Name = "Pen Color", GroupName = "NinjaScriptParameters", Order = 3)]
+		public System.Windows.Media.Brush PenColor { get; set; }
+
+		[Browsable(false)]
+		public string PenColorSerializable
+		{
+			get { return Serialize.BrushToString(PenColor); }
+			set { PenColor = Serialize.StringToBrush(value); }
+		}
+
+		[Range(1, 20)]
+		[Display(Name = "Pen Size (px)", GroupName = "NinjaScriptParameters", Order = 4)]
+		public int PenSize { get; set; }
+
+		[Range(1, 100)]
+		[Display(Name = "Pen Opacity (%)", GroupName = "NinjaScriptParameters", Order = 5)]
+		public double PenOpacity { get; set; }
 
 		#endregion
 	}
