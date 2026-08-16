@@ -311,11 +311,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				ChartControl.Dispatcher.InvokeAsync(() =>
 				{
-					// Collect all user-drawn drawing tools on this chart (all panels).
+					// Remove all user-drawn drawing tools on this chart (all panels).
 					// Custom tools (like Pen) can't set the read-only IsUserDrawn flag
 					// on themselves, so include them explicitly by type name.
-					List<DrawingTools.DrawingTool> toRemove = new();
 					foreach (ChartPanel panel in ChartControl.ChartPanels)
+					{
+						List<DrawingTools.DrawingTool> toRemove = new();
 						foreach (object obj in panel.ChartObjects)
 						{
 							DrawingTools.DrawingTool dtObj = obj as DrawingTools.DrawingTool;
@@ -325,8 +326,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 								toRemove.Add(dtObj);
 						}
 
-					foreach (DrawingTools.DrawingTool dtObj in toRemove)
-						ChartControl.RemoveDrawingTool(dtObj.Tag);
+						foreach (DrawingTools.DrawingTool dtObj in toRemove)
+						{
+							panel.ChartObjects.Remove(dtObj);
+							dtObj.Dispose();
+						}
+					}
 
 					ChartControl.InvalidateVisual();
 				});
