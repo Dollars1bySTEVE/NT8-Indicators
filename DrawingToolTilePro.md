@@ -18,6 +18,18 @@ A floating, dockable drawing-tool palette for **NinjaTrader 8** — based on Nin
 
 ## Installation
 
+### Option A — Drop the file in (easiest)
+
+1. Download [`Indicators/DrawingToolTilePro.cs`](Indicators/DrawingToolTilePro.cs) (open it, click **Raw**, then right-click → Save As `DrawingToolTilePro.cs`)
+2. Place the file in your NinjaTrader custom indicators folder:
+   ```
+   Documents\NinjaTrader 8\bin\Custom\Indicators\
+   ```
+3. In NinjaTrader 8: **New → NinjaScript Editor**, then press **F5** to compile ("Compiled successfully")
+4. Add the **"Drawing Tool Tile Pro"** indicator to any chart
+
+### Option B — Copy & paste
+
 1. In NinjaTrader 8: **Tools → Edit NinjaScript → Indicator → New**
 2. Name it `DrawingToolTilePro`
 3. Select all (Ctrl+A), delete, and paste the entire contents of [`Indicators/DrawingToolTilePro.cs`](Indicators/DrawingToolTilePro.cs)
