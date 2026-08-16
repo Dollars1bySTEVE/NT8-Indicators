@@ -392,9 +392,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 				column++;
 			}
 
-			// -- Pen + Trashcan button row --
-			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
-			int toolRow = contentGrid.RowDefinitions.Count - 1;
+			// -- Pen + Trashcan buttons: placed inline, continuing the tool flow --
+			Action<Button> placeInline = btn =>
+			{
+				int col = count / NumberOfRows;
+				int row = count % NumberOfRows;
+				while (contentGrid.ColumnDefinitions.Count <= col)
+					contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+				while (contentGrid.RowDefinitions.Count <= row)
+					contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
+				Grid.SetRow(btn, row);
+				Grid.SetColumn(btn, col);
+				contentGrid.Children.Add(btn);
+				count++;
+			};
 
 			// Pen toggle button
 			penBtn = new Button
@@ -407,10 +418,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				Margin     = new Thickness(3),
 				Padding    = new Thickness(3)
 			};
-			Grid.SetRow(penBtn, toolRow);
-			Grid.SetColumn(penBtn, 0);
 			penBtn.Click += (_, _) => SetPenMode(!penMode);
-			contentGrid.Children.Add(penBtn);
 
 			// Trashcan button
 			Button trashBtn = new()
@@ -423,14 +431,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 				Margin     = new Thickness(3),
 				Padding    = new Thickness(3)
 			};
-			Grid.SetRow(trashBtn, toolRow);
-			if (contentGrid.ColumnDefinitions.Count > 1)
-				Grid.SetColumn(trashBtn, 1);
-			else
-			{
-				contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-				Grid.SetColumn(trashBtn, 1);
-			}
 
 			trashBtn.Click += (_, _) =>
 			{
@@ -468,7 +468,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				});
 			};
 
-			contentGrid.Children.Add(trashBtn);
+			placeInline(penBtn);
+			placeInline(trashBtn);
 
 			// Attach chart-panel mouse handlers for the pen
 			AttachPenHandlers();
