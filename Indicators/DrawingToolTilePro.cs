@@ -1,8 +1,9 @@
 // 
 // DrawingToolTilePro.cs
 // Based on NinjaTrader's Drawing Tool Tile
-// Custom Mod: Opacity, Expand/Collapse Toggle, Trashcan (remove all drawings),
-//             and geometry-icon rendering fix for custom drawing tools.
+// Custom Mod: Opacity, Expand/Collapse Toggle, Built-in Freehand Pen (with
+//             color/width/style settings), Trashcan (remove all drawings +
+//             pen strokes), and geometry-icon rendering fix for custom tools.
 //
 #region Using declarations
 using System;
@@ -38,6 +39,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private		Point		startPoint;
 		private		bool		isDragging;
 
+		// -- Built-in pen state --
+		private		bool									penMode;
+		private		Button									penBtn;
+		private		List<List<Tuple<DateTime, double>>>		strokes			= new List<List<Tuple<DateTime, double>>>();
+		private		List<Tuple<DateTime, double>>			currentStroke;
+		private		bool									penHandlersAttached;
+		private		Brush									penBtnDefaultBg;
+
 		protected override void OnBarUpdate()
 		{
 			if (!subscribedToSize && ChartPanel != null)
@@ -65,7 +74,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (State == State.SetDefaults)
 			{
 				Name							= "Drawing Tool Tile Pro";
-				Description						= "Drawing tool tile with adjustable opacity, expand/collapse toggle, and trashcan button.";
+				Description						= "Drawing tool tile with adjustable opacity, expand/collapse toggle, built-in freehand pen, and trashcan button.";
 				IsOverlay						= true;
 				IsChartOnly						= true;
 				DisplayInDataBox				= false;
@@ -91,6 +100,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				
 				BackgroundOpacity = 80;
 				IsExpanded        = true;
+				PenStroke         = new Gui.Stroke(Brushes.DodgerBlue, DashStyleHelper.Solid, 2f);
 			}
 			else if (State == State.Historical)
 			{
@@ -105,6 +115,97 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 			}
 		}
+
+		// -- Pen helpers ------------------------------------------------------
+
+		private ChartScale GetPenScale()
+		{
+			foreach (ChartScale s in ChartPanel.Scales)
+				if (s.ScaleJustification == ScaleJustification.Right)
+					return s;
+			foreach (ChartScale s in ChartPanel.Scales)
+				return s;
+			return null;
+		}
+
+		private void AddPenPoint(Point wpfPoint)
+		{
+			if (currentStroke == null || ChartControl == null || ChartPanel == null)
+				return;
+
+			ChartScale scale = GetPenScale();
+			if (scale == null)
+				return;
+
+			int px = ChartingExtensions.ConvertToHorizontalPixels(wpfPoint.X, ChartControl.PresentationSource);
+			int py = ChartingExtensions.ConvertToVerticalPixels(wpfPoint.Y, ChartControl.PresentationSource);
+
+			DateTime	time	= ChartControl.GetTimeByX(px);
+			double		price	= scale.GetValueByY(py);
+
+			currentStroke.Add(new Tuple<DateTime, double>(time, price));
+		}
+
+		private void AttachPenHandlers()
+		{
+			if (penHandlersAttached || ChartPanel == null)
+				return;
+			penHandlersAttached = true;
+
+			ChartPanel.PreviewMouseLeftButtonDown += (s, e) =>
+			{
+				if (!penMode)
+					return;
+				// Ignore clicks on the tile itself
+				if (grid != null && grid.IsMouseOver)
+					return;
+
+				e.Handled		= true;
+				currentStroke	= new List<Tuple<DateTime, double>>();
+				AddPenPoint(e.GetPosition(ChartPanel));
+				ChartPanel.CaptureMouse();
+			};
+
+			ChartPanel.PreviewMouseMove += (s, e) =>
+			{
+				if (!penMode || currentStroke == null)
+					return;
+
+				e.Handled = true;
+				AddPenPoint(e.GetPosition(ChartPanel));
+				ForceRefresh();
+			};
+
+			ChartPanel.PreviewMouseLeftButtonUp += (s, e) =>
+			{
+				if (!penMode || currentStroke == null)
+					return;
+
+				e.Handled = true;
+				if (currentStroke.Count > 1)
+					strokes.Add(currentStroke);
+				currentStroke = null;
+				ChartPanel.ReleaseMouseCapture();
+				ForceRefresh();
+			};
+		}
+
+		private void SetPenMode(bool on)
+		{
+			penMode = on;
+
+			if (penBtn != null)
+			{
+				if (penBtnDefaultBg == null)
+					penBtnDefaultBg = penBtn.Background;
+				penBtn.Background = on ? new SolidColorBrush(Color.FromArgb(120, 30, 144, 255)) : penBtnDefaultBg;
+			}
+
+			if (ChartPanel != null)
+				ChartPanel.Cursor = on ? System.Windows.Input.Cursors.Pen : null;
+		}
+
+		// ----------------------------------------------------------------------
 
 		private FrameworkElement CreateControl()
 		{
@@ -266,7 +367,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 							Grid.SetRow(bb, j);
 							Grid.SetColumn(bb, column);
 
-							bb.Click += (_, _) => ChartControl?.TryStartDrawing(dt.GetType().FullName);
+							bb.Click += (_, _) =>
+							{
+								SetPenMode(false);
+								ChartControl?.TryStartDrawing(dt.GetType().FullName);
+							};
 
 							contentGrid.Children.Add(bb);
 							count++;
@@ -287,22 +392,45 @@ namespace NinjaTrader.NinjaScript.Indicators
 				column++;
 			}
 
-			// -- Trashcan button: remove all user drawings --
+			// -- Pen + Trashcan button row --
 			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
-			Button trashBtn = new()
+			int toolRow = contentGrid.RowDefinitions.Count - 1;
+
+			// Pen toggle button
+			penBtn = new Button
 			{
-				Content    = "\uD83D\uDDD1", // trashcan glyph (U+1F5D1)
-				ToolTip    = "Remove ALL drawings from this chart",
+				Content    = "\u270F",   // pencil glyph (U+270F)
+				ToolTip    = "Freehand pen - click to toggle draw mode (set color/width/style in indicator properties)",
 				Style      = style,
 				FontSize   = 16,
 				FontStyle  = FontStyles.Normal,
 				Margin     = new Thickness(3),
 				Padding    = new Thickness(3)
 			};
-			Grid.SetRow(trashBtn, contentGrid.RowDefinitions.Count - 1);
-			Grid.SetColumn(trashBtn, 0);
+			Grid.SetRow(penBtn, toolRow);
+			Grid.SetColumn(penBtn, 0);
+			penBtn.Click += (_, _) => SetPenMode(!penMode);
+			contentGrid.Children.Add(penBtn);
+
+			// Trashcan button
+			Button trashBtn = new()
+			{
+				Content    = "\uD83D\uDDD1", // trashcan glyph (U+1F5D1)
+				ToolTip    = "Remove ALL drawings and pen strokes from this chart",
+				Style      = style,
+				FontSize   = 16,
+				FontStyle  = FontStyles.Normal,
+				Margin     = new Thickness(3),
+				Padding    = new Thickness(3)
+			};
+			Grid.SetRow(trashBtn, toolRow);
 			if (contentGrid.ColumnDefinitions.Count > 1)
-				Grid.SetColumnSpan(trashBtn, contentGrid.ColumnDefinitions.Count);
+				Grid.SetColumn(trashBtn, 1);
+			else
+			{
+				contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+				Grid.SetColumn(trashBtn, 1);
+			}
 
 			trashBtn.Click += (_, _) =>
 			{
@@ -311,9 +439,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				ChartControl.Dispatcher.InvokeAsync(() =>
 				{
-					// Remove all user-drawn drawing tools on this chart (all panels).
-					// Custom tools (like Pen) can't set the read-only IsUserDrawn flag
-					// on themselves, so include them explicitly by type name.
+					// 1) Clear all built-in pen strokes (guaranteed - we own these)
+					strokes.Clear();
+					currentStroke = null;
+
+					// 2) Remove all user-drawn drawing tools on this chart (all panels)
 					foreach (ChartPanel panel in ChartControl.ChartPanels)
 					{
 						List<DrawingTools.DrawingTool> toRemove = new();
@@ -322,7 +452,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 							DrawingTools.DrawingTool dtObj = obj as DrawingTools.DrawingTool;
 							if (dtObj == null || dtObj.IsLocked)
 								continue;
-							if (dtObj.IsUserDrawn || dtObj.GetType().FullName == "NinjaTrader.NinjaScript.DrawingTools.Pen")
+							if (dtObj.IsUserDrawn)
 								toRemove.Add(dtObj);
 						}
 
@@ -333,11 +463,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 						}
 					}
 
+					ForceRefresh();
 					ChartControl.InvalidateVisual();
 				});
 			};
 
 			contentGrid.Children.Add(trashBtn);
+
+			// Attach chart-panel mouse handlers for the pen
+			AttachPenHandlers();
 
 			tileHolder = new()
 			{
@@ -370,7 +504,42 @@ namespace NinjaTrader.NinjaScript.Indicators
 			base.CopyTo(ninjaScript);
 		}
 
-		protected override void OnRender(ChartControl chartControl, ChartScale chartScale) { }
+		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+		{
+			// Render all pen strokes (and the in-progress stroke)
+			if (strokes.Count == 0 && currentStroke == null)
+				return;
+			if (PenStroke == null)
+				return;
+
+			PenStroke.RenderTarget		= RenderTarget;
+			RenderTarget.AntialiasMode	= SharpDX.Direct2D1.AntialiasMode.PerPrimitive;
+
+			RenderStroke(chartControl, chartScale, currentStroke);
+			foreach (List<Tuple<DateTime, double>> stroke in strokes)
+				RenderStroke(chartControl, chartScale, stroke);
+		}
+
+		private void RenderStroke(ChartControl chartControl, ChartScale chartScale, List<Tuple<DateTime, double>> stroke)
+		{
+			if (stroke == null || stroke.Count < 2)
+				return;
+
+			for (int i = 0; i < stroke.Count - 1; i++)
+			{
+				float x1 = chartControl.GetXByTime(stroke[i].Item1);
+				float y1 = chartScale.GetYByValue(stroke[i].Item2);
+				float x2 = chartControl.GetXByTime(stroke[i + 1].Item1);
+				float y2 = chartScale.GetYByValue(stroke[i + 1].Item2);
+
+				RenderTarget.DrawLine(
+					new SharpDX.Vector2(x1, y1),
+					new SharpDX.Vector2(x2, y2),
+					PenStroke.BrushDX,
+					PenStroke.Width,
+					PenStroke.StrokeStyle);
+			}
+		}
 
 		private List<XElement> SortElements(XElement elements)
 		{
@@ -449,6 +618,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		[Display(Name = "Start Expanded", GroupName = "NinjaScriptParameters", Order = 2)]
 		public bool IsExpanded { get; set; }
+
+		[Display(Name = "Pen Stroke", Description = "Color, width, and dash style of the freehand pen", GroupName = "NinjaScriptParameters", Order = 3)]
+		public Gui.Stroke PenStroke { get; set; }
 
 		#endregion
 	}
