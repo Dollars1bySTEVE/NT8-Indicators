@@ -1,12 +1,12 @@
 // 
 // DrawingToolTilePro.cs
 // Based on NinjaTrader's Drawing Tool Tile
-// Custom Mod: Opacity & Expand/Collapse Toggle
+// Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan
 //
-// v1 BASELINE - verified working. Only change from DrawingToolTileCustom:
-// click/drag threshold raised from 2px to 6px so a normal click (with slight
-// mouse drift) reliably triggers the hide/show toggle, and the tile only
-// moves once a real drag has started.
+// v2 - baseline (v1) + trashcan button ONLY.
+// v1: original working tile + 6px click/drag threshold fix (verified good).
+// v2 change: trashcan button at bottom of tile that removes all user-drawn,
+//            unlocked drawing objects on every panel of this chart.
 //
 #region Using declarations
 using System;
@@ -69,7 +69,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (State == State.SetDefaults)
 			{
 				Name							= "Drawing Tool Tile Pro";
-				Description						= "Custom Drawing Tool Tile with adjustable opacity and expand/collapse toggle.";
+				Description						= "Custom Drawing Tool Tile with adjustable opacity, expand/collapse toggle, and trashcan.";
 				IsOverlay						= true;
 				IsChartOnly						= true;
 				DisplayInDataBox				= false;
@@ -283,6 +283,57 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 				column++;
 			}
+
+			// ---- v2: Trashcan button (only addition to verified v1 baseline) ----
+			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
+			Button trashBtn = new()
+			{
+				Content    = "\uD83D\uDDD1", // trashcan glyph (U+1F5D1)
+				ToolTip    = "Remove ALL drawings from this chart",
+				Style      = style,
+				FontSize   = 16,
+				FontStyle  = FontStyles.Normal,
+				Margin     = new Thickness(3),
+				Padding    = new Thickness(3)
+			};
+			Grid.SetRow(trashBtn, contentGrid.RowDefinitions.Count - 1);
+			Grid.SetColumn(trashBtn, 0);
+			if (contentGrid.ColumnDefinitions.Count > 1)
+				Grid.SetColumnSpan(trashBtn, contentGrid.ColumnDefinitions.Count);
+
+			trashBtn.Click += (_, _) =>
+			{
+				if (ChartControl == null)
+					return;
+
+				ChartControl.Dispatcher.InvokeAsync(() =>
+				{
+					// Remove all user-drawn, unlocked drawing tools on this chart (all panels)
+					foreach (ChartPanel panel in ChartControl.ChartPanels)
+					{
+						List<DrawingTools.DrawingTool> toRemove = new();
+						foreach (object obj in panel.ChartObjects)
+						{
+							DrawingTools.DrawingTool dtObj = obj as DrawingTools.DrawingTool;
+							if (dtObj == null || dtObj.IsLocked)
+								continue;
+							if (dtObj.IsUserDrawn)
+								toRemove.Add(dtObj);
+						}
+
+						foreach (DrawingTools.DrawingTool dtObj in toRemove)
+						{
+							panel.ChartObjects.Remove(dtObj);
+							dtObj.Dispose();
+						}
+					}
+
+					ChartControl.InvalidateVisual();
+				});
+			};
+
+			contentGrid.Children.Add(trashBtn);
+			// ---- end v2 addition ----
 
 			tileHolder = new()
 			{
