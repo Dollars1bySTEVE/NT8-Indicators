@@ -287,11 +287,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 				column++;
 			}
 
-			// ── Trashcan button: remove all user drawings ──
+			// -- Trashcan button: remove all user drawings --
 			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
 			Button trashBtn = new()
 			{
-				Content    = "🗑",
+				Content    = "\uD83D\uDDD1", // trashcan glyph (U+1F5D1)
 				ToolTip    = "Remove ALL drawings from this chart",
 				Style      = style,
 				FontSize   = 16,
