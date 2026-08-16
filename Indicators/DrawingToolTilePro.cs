@@ -3,15 +3,18 @@
 // Based on NinjaTrader's Drawing Tool Tile
 // Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan + Pen (WIP)
 //
-// v3a  - pen rendering pipeline ONLY (no mouse input yet):
-//        * Pen button on tile (toggles armed state visually - highlights)
-//        * Pen Color / Pen Size / Pen Opacity properties (grease-marker defaults)
-//        * OnRender draws strokes with round caps/joins via SharpDX
-//        * One hardcoded test squiggle so the marker look can be verified
-//        * Trashcan also clears pen strokes; tooltip updated
-//        * Full cleanup in State.Terminated (no haunted charts)
-// v2.1 - trashcan sweeps chart + panel collections (net effect: clears Text)
-// v1   - original working tile + 6px click/drag threshold fix (verified good)
+// v3a.1 - compile fixes only: fully qualified SharpDX types (no blanket
+//         SharpDX usings) and added System.Xml.Serialization for [XmlIgnore].
+//         No behavior change from v3a.
+// v3a   - pen rendering pipeline ONLY (no mouse input yet):
+//         * Pen button on tile (toggles armed state visually - highlights)
+//         * Pen Color / Pen Size / Pen Opacity properties (grease-marker defaults)
+//         * OnRender draws strokes with round caps/joins via SharpDX
+//         * One hardcoded test squiggle so the marker look can be verified
+//         * Trashcan also clears pen strokes; tooltip updated
+//         * Full cleanup in State.Terminated (no haunted charts)
+// v2.1  - trashcan sweeps chart + panel collections (net effect: clears Text)
+// v1    - original working tile + 6px click/drag threshold fix (verified good)
 //
 #region Using declarations
 using System;
@@ -19,6 +22,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows.Media;
+using System.Xml.Serialization;
 using NinjaTrader.Gui;
 using System.Windows;
 using System.Windows.Controls;
@@ -26,8 +30,6 @@ using System.Xml.Linq;
 using System.Windows.Data;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui.Chart;
-using SharpDX;
-using SharpDX.Direct2D1;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -54,8 +56,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private		bool		penArmed;
 		// Each stroke is a list of pixel points (relative to the chart panel).
 		private		readonly List<List<System.Windows.Point>>	penStrokes = new();
-		private		SharpDX.Direct2D1.Brush		penDxBrush;
-		private		StrokeStyle					penStrokeStyle;
+		private		SharpDX.Direct2D1.Brush			penDxBrush;
+		private		SharpDX.Direct2D1.StrokeStyle	penStrokeStyle;
 
 		protected override void OnBarUpdate()
 		{
@@ -156,7 +158,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength() });
 
 			System.Windows.Media.Brush baseBrush = Application.Current.FindResource("BackgroundMainWindow") as System.Windows.Media.Brush ?? Brushes.White;
-			SolidColorBrush background = new SolidColorBrush(baseBrush is SolidColorBrush scb ? scb.Color : Colors.Black)
+			System.Windows.Media.SolidColorBrush background = new System.Windows.Media.SolidColorBrush(baseBrush is System.Windows.Media.SolidColorBrush scb ? scb.Color : Colors.Black)
 			{
 				Opacity = Math.Max(0.0, Math.Min(1.0, BackgroundOpacity / 100.0))
 			};
@@ -340,7 +342,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			{
 				penArmed = !penArmed;
 				// Visual feedback only in v3a. Mouse drawing arrives in v3b.
-				penBtn.Background = penArmed ? new SolidColorBrush(Colors.DarkOrange) { Opacity = 0.5 } : null;
+				penBtn.Background = penArmed ? new System.Windows.Media.SolidColorBrush(Colors.DarkOrange) { Opacity = 0.5 } : null;
 			};
 
 			contentGrid.Children.Add(penBtn);
@@ -439,16 +441,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (RenderTarget == null)
 				return;
 
-			Color mediaColor = PenColor is SolidColorBrush pscb ? pscb.Color : Colors.Yellow;
-			float alpha      = (float)Math.Max(0.0, Math.Min(1.0, PenOpacity / 100.0));
-			penDxBrush       = new SolidColorBrush(RenderTarget, new Color4(mediaColor.R / 255f, mediaColor.G / 255f, mediaColor.B / 255f, alpha));
+			System.Windows.Media.Color mediaColor = PenColor is System.Windows.Media.SolidColorBrush pscb ? pscb.Color : Colors.Yellow;
+			float alpha = (float)Math.Max(0.0, Math.Min(1.0, PenOpacity / 100.0));
+			penDxBrush  = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(mediaColor.R / 255f, mediaColor.G / 255f, mediaColor.B / 255f, alpha));
 
-			penStrokeStyle = new StrokeStyle(Core.Globals.D2DFactory, new StrokeStyleProperties
+			penStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(Core.Globals.D2DFactory, new SharpDX.Direct2D1.StrokeStyleProperties
 			{
-				StartCap = CapStyle.Round,
-				EndCap   = CapStyle.Round,
-				DashCap  = CapStyle.Round,
-				LineJoin = LineJoin.Round
+				StartCap = SharpDX.Direct2D1.CapStyle.Round,
+				EndCap   = SharpDX.Direct2D1.CapStyle.Round,
+				DashCap  = SharpDX.Direct2D1.CapStyle.Round,
+				LineJoin = SharpDX.Direct2D1.LineJoin.Round
 			});
 		}
 
@@ -467,8 +469,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 				for (int i = 1; i < stroke.Count; i++)
 				{
 					RenderTarget.DrawLine(
-						new Vector2((float)stroke[i - 1].X, (float)stroke[i - 1].Y),
-						new Vector2((float)stroke[i].X,     (float)stroke[i].Y),
+						new SharpDX.Vector2((float)stroke[i - 1].X, (float)stroke[i - 1].Y),
+						new SharpDX.Vector2((float)stroke[i].X,     (float)stroke[i].Y),
 						penDxBrush, width, penStrokeStyle);
 				}
 			}
