@@ -2,8 +2,9 @@
 // DrawingToolTilePro.cs
 // Based on NinjaTrader's Drawing Tool Tile
 // Custom Mod: Opacity, Expand/Collapse Toggle, Built-in Freehand Pen (with
-//             color/width/style settings), Trashcan (remove all drawings +
-//             pen strokes), and geometry-icon rendering fix for custom tools.
+//             color/width/style settings) using a transparent overlay canvas,
+//             Trashcan (remove all drawings + pen strokes), and geometry-icon
+//             rendering fix for custom drawing tools.
 //
 #region Using declarations
 using System;
@@ -42,9 +43,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 		// -- Built-in pen state --
 		private		bool									penMode;
 		private		Button									penBtn;
+		private		Canvas									penOverlay;
 		private		List<List<Tuple<DateTime, double>>>		strokes			= new List<List<Tuple<DateTime, double>>>();
 		private		List<Tuple<DateTime, double>>			currentStroke;
-		private		bool									penHandlersAttached;
 		private		Brush									penBtnDefaultBg;
 
 		protected override void OnBarUpdate()
@@ -114,6 +115,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 					ChartControl.Dispatcher.InvokeAsync(() => { if (State < State.Terminated) UserControlCollection.Add(CreateControl()); });
 				}
 			}
+			else if (State == State.Terminated)
+			{
+				// Make sure the overlay never outlives the indicator
+				if (ChartControl != null && penOverlay != null)
+					ChartControl.Dispatcher.InvokeAsync(() =>
+					{
+						if (penOverlay != null)
+						{
+							UserControlCollection.Remove(penOverlay);
+							penOverlay = null;
+						}
+					});
+			}
 		}
 
 		// -- Pen helpers ------------------------------------------------------
@@ -146,47 +160,75 @@ namespace NinjaTrader.NinjaScript.Indicators
 			currentStroke.Add(new Tuple<DateTime, double>(time, price));
 		}
 
-		private void AttachPenHandlers()
+		private void CreatePenOverlay()
 		{
-			if (penHandlersAttached || ChartPanel == null)
+			if (penOverlay != null)
 				return;
-			penHandlersAttached = true;
 
-			ChartPanel.PreviewMouseLeftButtonDown += (s, e) =>
+			// Transparent canvas that catches drawing input ONLY while pen mode is on.
+			// It is removed from the tree entirely when pen mode is off, so it can
+			// never interfere with the chart, the tile, or NT's own input handling.
+			penOverlay = new Canvas
 			{
-				// Never interfere with the tile (handle, buttons, collapse toggle)
-				if (!penMode || (grid != null && grid.IsMouseOver))
-					return;
-
-				e.Handled		= true;
-				currentStroke	= new List<Tuple<DateTime, double>>();
-				AddPenPoint(e.GetPosition(ChartPanel));
-				ChartPanel.CaptureMouse();
+				Background	= Brushes.Transparent,	// transparent but hit-testable
+				Cursor		= System.Windows.Input.Cursors.Pen,
+				IsHitTestVisible = true
 			};
 
-			ChartPanel.PreviewMouseMove += (s, e) =>
+			penOverlay.MouseLeftButtonDown += (s, e) =>
 			{
-				if (!penMode || currentStroke == null || (grid != null && grid.IsMouseOver))
-					return;
-
+				currentStroke = new List<Tuple<DateTime, double>>();
+				AddPenPoint(e.GetPosition(ChartPanel));
+				penOverlay.CaptureMouse();
 				e.Handled = true;
+			};
+
+			penOverlay.MouseMove += (s, e) =>
+			{
+				if (currentStroke == null)
+					return;
 				AddPenPoint(e.GetPosition(ChartPanel));
 				ForceRefresh();
+				e.Handled = true;
 			};
 
-			ChartPanel.PreviewMouseLeftButtonUp += (s, e) =>
+			penOverlay.MouseLeftButtonUp += (s, e) =>
 			{
-				if (!penMode || currentStroke == null)
-					return;
-
-				if (currentStroke.Count > 1)
-					strokes.Add(currentStroke);
-				currentStroke = null;
-				if (ChartPanel.IsMouseCaptured)
-					ChartPanel.ReleaseMouseCapture();
-				ForceRefresh();
-				// note: no e.Handled here - let the click complete normally
+				FinishStroke();
+				if (penOverlay != null && penOverlay.IsMouseCaptured)
+					penOverlay.ReleaseMouseCapture();
+				e.Handled = true;
 			};
+
+			// Safety net: if capture is lost for ANY reason, finish the stroke cleanly.
+			penOverlay.LostMouseCapture += (s, e) => FinishStroke();
+
+			UserControlCollection.Add(penOverlay);
+
+			// Keep the tile above the overlay so it stays clickable in pen mode
+			System.Windows.Controls.Panel.SetZIndex(penOverlay, 0);
+			if (grid != null)
+				System.Windows.Controls.Panel.SetZIndex(grid, 1);
+		}
+
+		private void RemovePenOverlay()
+		{
+			if (penOverlay == null)
+				return;
+
+			FinishStroke();
+			if (penOverlay.IsMouseCaptured)
+				penOverlay.ReleaseMouseCapture();
+			UserControlCollection.Remove(penOverlay);
+			penOverlay = null;
+		}
+
+		private void FinishStroke()
+		{
+			if (currentStroke != null && currentStroke.Count > 1)
+				strokes.Add(currentStroke);
+			currentStroke = null;
+			ForceRefresh();
 		}
 
 		private void SetPenMode(bool on)
@@ -200,8 +242,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 				penBtn.Background = on ? new SolidColorBrush(Color.FromArgb(120, 30, 144, 255)) : penBtnDefaultBg;
 			}
 
-			if (ChartPanel != null)
-				ChartPanel.Cursor = on ? System.Windows.Input.Cursors.Pen : null;
+			if (on)
+				CreatePenOverlay();
+			else
+				RemovePenOverlay();
 		}
 
 		// ----------------------------------------------------------------------
@@ -469,9 +513,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			placeInline(penBtn);
 			placeInline(trashBtn);
-
-			// Attach chart-panel mouse handlers for the pen
-			AttachPenHandlers();
 
 			tileHolder = new()
 			{
