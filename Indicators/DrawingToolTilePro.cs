@@ -246,7 +246,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 								{
 									Data    = geo,
 									Fill    = Application.Current.FindResource("FontControlBrush") as Brush ?? Brushes.LightGray,
-									Stretch = Stretch.Uniform,
+									Stretch = System.Windows.Media.Stretch.Uniform,
 									Width   = 16,
 									Height  = 16
 								};
