@@ -154,10 +154,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			ChartPanel.PreviewMouseLeftButtonDown += (s, e) =>
 			{
-				if (!penMode)
-					return;
-				// Ignore clicks on the tile itself
-				if (grid != null && grid.IsMouseOver)
+				// Never interfere with the tile (handle, buttons, collapse toggle)
+				if (!penMode || (grid != null && grid.IsMouseOver))
 					return;
 
 				e.Handled		= true;
@@ -168,7 +166,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			ChartPanel.PreviewMouseMove += (s, e) =>
 			{
-				if (!penMode || currentStroke == null)
+				if (!penMode || currentStroke == null || (grid != null && grid.IsMouseOver))
 					return;
 
 				e.Handled = true;
@@ -181,12 +179,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 				if (!penMode || currentStroke == null)
 					return;
 
-				e.Handled = true;
 				if (currentStroke.Count > 1)
 					strokes.Add(currentStroke);
 				currentStroke = null;
-				ChartPanel.ReleaseMouseCapture();
+				if (ChartPanel.IsMouseCaptured)
+					ChartPanel.ReleaseMouseCapture();
 				ForceRefresh();
+				// note: no e.Handled here - let the click complete normally
 			};
 		}
 
