@@ -3,15 +3,15 @@
 // Based on NinjaTrader's Drawing Tool Tile
 // Custom Mod: Opacity & Expand/Collapse Toggle + Trashcan + Pen
 //
-// v3b.1 - two bug fixes to v3b:
-//         1) Lockdown fix: pen ignores mouse events over the tile, so the pen
-//            button (and all other tile buttons) stay clickable while armed.
-//            Right-click also disarms the pen as an escape hatch.
-//         2) Offset fix: stroke points are captured in render-target space
-//            (translated by ChartPanel.X/Y) so strokes land exactly under
-//            the cursor.
-// v3b   - pen mouse input: armed pen draws freehand strokes, panning
-//         suppressed only while armed, test squiggle removed.
+// v3b.2 - accuracy fix: mouse points are now converted from WPF units to
+//         device pixels via ChartingExtensions.ConvertToHorizontalPixels /
+//         ConvertToVerticalPixels (the same conversion NT8 uses for its own
+//         rendering), so strokes land exactly under the cursor at any
+//         Windows display scaling. The v3b.1 ChartPanel.X/Y translation is
+//         removed (it mixed coordinate systems).
+// v3b.1 - lockdown fix (tile stays clickable while armed; right-click
+//         disarms) + first offset attempt.
+// v3b   - pen mouse input; panning suppressed only while armed.
 // v3a/.1- pen rendering pipeline + compile fixes.
 // v2.1  - trashcan (clears text notes + pen strokes).
 // v1    - original working tile + 6px click/drag threshold fix (verified good).
@@ -55,7 +55,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private		Button		penBtn;
 		private		bool		penArmed;
 		private		bool		penStroking;
-		// Each stroke is a list of points in render-target space.
+		// Each stroke is a list of points in device-pixel (render-target) space.
 		private		readonly List<List<System.Windows.Point>>	penStrokes = new();
 		private		List<System.Windows.Point>	currentStroke;
 		private		SharpDX.Direct2D1.Brush			penDxBrush;
@@ -179,16 +179,19 @@ namespace NinjaTrader.NinjaScript.Indicators
 			penHandlersAttached = true;
 		}
 
-		// v3b.1: the tile must always stay clickable, even while the pen is armed.
+		// The tile must always stay clickable, even while the pen is armed.
 		private bool IsOverTile()
 		{
 			return grid != null && grid.IsMouseOver;
 		}
 
-		// v3b.1: capture points in render-target space so strokes land under the cursor.
-		private System.Windows.Point ToRenderSpace(System.Windows.Point panelPoint)
+		// v3b.2: convert WPF units -> device pixels the same way NT8 renders,
+		// so strokes land exactly under the cursor at any Windows DPI scaling.
+		private System.Windows.Point ToRenderSpace(System.Windows.Point wpfPoint)
 		{
-			return new System.Windows.Point(panelPoint.X + ChartPanel.X, panelPoint.Y + ChartPanel.Y);
+			return new System.Windows.Point(
+				ChartingExtensions.ConvertToHorizontalPixels(wpfPoint.X, ChartControl.PresentationSource),
+				ChartingExtensions.ConvertToVerticalPixels(wpfPoint.Y, ChartControl.PresentationSource));
 		}
 
 		private void OnPenMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -236,7 +239,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				e.Handled = true; // only swallow the click that ended a stroke
 		}
 
-		// v3b.1: escape hatch - right-click disarms the pen.
+		// Escape hatch - right-click disarms the pen.
 		private void OnPenRightClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
 		{
 			if (!penArmed)
