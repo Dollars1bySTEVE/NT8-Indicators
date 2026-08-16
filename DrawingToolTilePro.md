@@ -2,7 +2,8 @@
 
 A floating, dockable drawing-tool palette for **NinjaTrader 8** — based on NinjaTrader's stock Drawing Tool Tile, with quality-of-life upgrades for fast freehand/markup workflows.
 
-![Drawing Tool Tile Pro on a NQ 5-minute chart](docs/images/DrawingToolTilePro.png)
+![Drawing Tool Tile Pro on a NQ 5-minute chart]<img width="636" height="600" alt="image" src="https://github.com/user-attachments/assets/044be6f8-ffd1-4b92-9c7a-f6b608f19b46" />
+
 
 ## Features
 
