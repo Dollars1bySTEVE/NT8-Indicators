@@ -1,8 +1,12 @@
 // 
 // DrawingToolTilePro.cs
 // Based on NinjaTrader's Drawing Tool Tile
-// Custom Mod: Opacity, Expand/Collapse Toggle, Trashcan (remove all drawings),
-//             and geometry-icon rendering fix for custom drawing tools.
+// Custom Mod: Opacity & Expand/Collapse Toggle
+//
+// v1 BASELINE - verified working. Only change from DrawingToolTileCustom:
+// click/drag threshold raised from 2px to 6px so a normal click (with slight
+// mouse drift) reliably triggers the hide/show toggle, and the tile only
+// moves once a real drag has started.
 //
 #region Using declarations
 using System;
@@ -65,7 +69,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (State == State.SetDefaults)
 			{
 				Name							= "Drawing Tool Tile Pro";
-				Description						= "Drawing tool tile with adjustable opacity, expand/collapse toggle, and trashcan button.";
+				Description						= "Custom Drawing Tool Tile with adjustable opacity and expand/collapse toggle.";
 				IsOverlay						= true;
 				IsChartOnly						= true;
 				DisplayInDataBox				= false;
@@ -188,8 +192,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				Point newPoint = e.GetPosition(ChartPanel);
 				
-				if (Math.Abs(newPoint.X - startPoint.X) > 2 || Math.Abs(newPoint.Y - startPoint.Y) > 2)
+				// 6px threshold so a normal click (with slight mouse drift) still
+				// registers as click-to-hide instead of a drag.
+				if (Math.Abs(newPoint.X - startPoint.X) > 6 || Math.Abs(newPoint.Y - startPoint.Y) > 6)
 					isDragging = true;
+
+				// Only move the tile once a real drag is in progress
+				if (!isDragging)
+					return;
 
 				if (margin.Left + (newPoint.X - startPoint.X) < 0 || margin.Left + (newPoint.X - startPoint.X) > ChartPanel.ActualWidth - grid.ActualWidth 
 					|| margin.Top + (newPoint.Y - startPoint.Y) < 0 || margin.Top + (newPoint.Y - startPoint.Y) > ChartPanel.ActualHeight - grid.ActualHeight)
@@ -238,22 +248,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 					{
 						if (Core.Globals.AssemblyRegistry[element.Attribute("Assembly").Value].CreateInstance(element.Name.ToString()) is DrawingTools.DrawingTool { DisplayOnChartsMenus: true } dt)
 						{
-							// Custom tools may return a Geometry as their Icon; wrap it in a Path
-							// so WPF renders the shape instead of calling ToString() on it.
-							object iconContent = dt.Icon ?? Gui.Tools.Icons.DrawPencil;
-							if (iconContent is Geometry geo)
-								iconContent = new System.Windows.Shapes.Path
-								{
-									Data    = geo,
-									Fill    = Application.Current.FindResource("FontControlBrush") as Brush ?? Brushes.LightGray,
-									Stretch = System.Windows.Media.Stretch.Uniform,
-									Width   = 16,
-									Height  = 16
-								};
-
 							Button bb = new()
 							{
-								Content		= iconContent,
+								Content		= dt.Icon ?? Gui.Tools.Icons.DrawPencil,
 								ToolTip		= dt.DisplayName,
 								Style		= style,
 								FontFamily	= fontFamily,
@@ -286,56 +283,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 				column++;
 			}
-
-			// -- Trashcan button: remove all user drawings --
-			contentGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Auto) });
-			Button trashBtn = new()
-			{
-				Content    = "\uD83D\uDDD1", // trashcan glyph (U+1F5D1)
-				ToolTip    = "Remove ALL drawings from this chart",
-				Style      = style,
-				FontSize   = 16,
-				FontStyle  = FontStyles.Normal,
-				Margin     = new Thickness(3),
-				Padding    = new Thickness(3)
-			};
-			Grid.SetRow(trashBtn, contentGrid.RowDefinitions.Count - 1);
-			Grid.SetColumn(trashBtn, 0);
-			if (contentGrid.ColumnDefinitions.Count > 1)
-				Grid.SetColumnSpan(trashBtn, contentGrid.ColumnDefinitions.Count);
-
-			trashBtn.Click += (_, _) =>
-			{
-				if (ChartControl == null)
-					return;
-
-				ChartControl.Dispatcher.InvokeAsync(() =>
-				{
-					// Remove all user-drawn drawing tools on this chart (all panels).
-					foreach (ChartPanel panel in ChartControl.ChartPanels)
-					{
-						List<DrawingTools.DrawingTool> toRemove = new();
-						foreach (object obj in panel.ChartObjects)
-						{
-							DrawingTools.DrawingTool dtObj = obj as DrawingTools.DrawingTool;
-							if (dtObj == null || dtObj.IsLocked)
-								continue;
-							if (dtObj.IsUserDrawn)
-								toRemove.Add(dtObj);
-						}
-
-						foreach (DrawingTools.DrawingTool dtObj in toRemove)
-						{
-							panel.ChartObjects.Remove(dtObj);
-							dtObj.Dispose();
-						}
-					}
-
-					ChartControl.InvalidateVisual();
-				});
-			};
-
-			contentGrid.Children.Add(trashBtn);
 
 			tileHolder = new()
 			{
