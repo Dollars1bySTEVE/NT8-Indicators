@@ -306,15 +306,30 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			trashBtn.Click += (_, _) =>
 			{
-				TriggerCustomEvent(o =>
+				if (ChartControl == null)
+					return;
+
+				ChartControl.Dispatcher.InvokeAsync(() =>
 				{
-					foreach (var draw in System.Linq.Enumerable.ToList(DrawObjects))
-					{
-						if (draw.IsUserDrawn)
-							RemoveDrawObject(draw.Tag);
-					}
-				}, null);
-				ChartControl?.InvalidateVisual();
+					// Collect all user-drawn drawing tools on this chart (all panels).
+					// Custom tools (like Pen) can't set the read-only IsUserDrawn flag
+					// on themselves, so include them explicitly by type name.
+					List<DrawingTools.DrawingTool> toRemove = new();
+					foreach (ChartPanel panel in ChartControl.ChartPanels)
+						foreach (object obj in panel.ChartObjects)
+						{
+							DrawingTools.DrawingTool dtObj = obj as DrawingTools.DrawingTool;
+							if (dtObj == null || dtObj.IsLocked)
+								continue;
+							if (dtObj.IsUserDrawn || dtObj.GetType().FullName == "NinjaTrader.NinjaScript.DrawingTools.Pen")
+								toRemove.Add(dtObj);
+						}
+
+					foreach (DrawingTools.DrawingTool dtObj in toRemove)
+						ChartControl.RemoveDrawingTool(dtObj.Tag);
+
+					ChartControl.InvalidateVisual();
+				});
 			};
 
 			contentGrid.Children.Add(trashBtn);
