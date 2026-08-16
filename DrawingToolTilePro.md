@@ -2,7 +2,9 @@
 
 A floating, dockable drawing-tool palette for **NinjaTrader 8** — based on NinjaTrader's stock Drawing Tool Tile, upgraded with a background-opacity control, expand/collapse toggle, one-click trashcan, and a built-in **freehand grease-pencil pen**.
 
-![Drawing Tool Tile Pro on a NQ 5-minute chart]<img width="636" height="600" alt="image" src="https://github.com/user-attachments/assets/044be6f8-ffd1-4b92-9c7a-f6b608f19b46" />
+![Drawing Tool Tile Pro on a NQ 5-minute chart]<img width="1813" height="1227" alt="image" src="https://github.com/user-attachments/assets/f1a58705-4637-40fc-b6af-66d0010900f6" />
+<img width="1813" height="1227" alt="image" src="https://github.com/user-attachments/assets/87ced3c2-a021-4f9b-ba4e-1c295d08bc5f" />
+
 
 ## Features
 
