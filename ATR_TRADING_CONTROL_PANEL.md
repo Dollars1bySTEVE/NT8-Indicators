@@ -24,6 +24,27 @@ ATR TRADING CONTROL PANEL is intended to automate the calculations behind that w
 
 ---
 
+## Project Scope
+
+This project is a **NinjaTrader 8 trade execution/control panel**.
+
+It is intended to be:
+
+- a chart-based execution tool
+- a commission-aware risk calculator
+- an ATR-based trade planner
+- a market and pending order control panel
+
+It is **not** intended to be:
+
+- a signal generator
+- a strategy-only automation system
+- a backtesting framework
+- a portfolio-level risk manager
+- a general-purpose indicator unrelated to trade execution
+
+---
+
 ## Core Inputs
 
 The tool is centered around three primary settings:
@@ -109,6 +130,7 @@ The tool should account for:
 - platform or routing costs, if applicable
 - account tier differences
 - round-turn or per-side handling
+- optional slippage buffer, if enabled
 
 This allows the tool to calculate **true risk** and **true reward:risk**, rather than stop-only approximations.
 
@@ -136,6 +158,23 @@ Recommended default:
 - Market orders: use ATR at click time
 - Pending orders: recalculate ATR at fill time unless the user locks it on submit
 
+### Entry Source
+The tool should support at least one clear chart-based entry source, with future room for others:
+
+- chart click
+- draggable entry line
+- manual order panel input
+- Chart Trader integration
+
+### Supported Order Types
+The initial build should clearly define whether it supports:
+
+- market entries
+- limit entries
+- stop-market entries
+- stop-limit entries
+- bracket / OCO attachment after fill
+
 ### Instrument Math
 The tool must account for instrument-specific contract math such as:
 
@@ -160,6 +199,7 @@ The tool should warn when:
 - ATR is too wide for the chosen risk budget
 - quantity rounds down to zero
 - the pending order fills far from the original setup assumptions
+- slippage would move realized loss outside the intended limit
 
 ### Pending Order Edge Cases
 The tool should define behavior for:
@@ -168,6 +208,33 @@ The tool should define behavior for:
 - cancellation before fill
 - ATR changing significantly before fill
 - market moving sharply before the bracket is attached
+
+### Slippage Handling
+The tool should define whether slippage is:
+
+- ignored
+- estimated with a buffer
+- included as a configurable input
+
+Recommended default:
+
+- include a configurable slippage buffer, disabled unless the user turns it on
+
+---
+
+## Defaults
+
+A planning document is more useful when the starting assumptions are clear.
+
+Suggested defaults:
+
+- ATR Period: `14`
+- ATR Multiplier: `1.5`
+- Reward:Risk: `1:2`
+- Max Loss per Trade: user-defined
+- Commission handling: enabled
+- Slippage buffer: optional / off by default
+- Pending order behavior: recalculate on fill unless locked
 
 ---
 
@@ -191,6 +258,30 @@ The trader should not have to repeatedly recalculate:
 
 ---
 
+## After Entry
+
+The tool should standardize **entry risk**, not dictate every part of trade management.
+
+It should handle:
+
+- entry
+- stop
+- target
+- size
+- true risk calculations
+
+After entry, the trader should still be free to manage the trade their own way.
+
+Future support may include:
+
+- scale-outs
+- trailing stops
+- breakeven moves
+- runners
+- multiple targets
+
+---
+
 ## What this is not
 
 This is not intended to be just:
@@ -199,6 +290,8 @@ This is not intended to be just:
 - a chart ruler
 - a target projection line tool
 - a sizing helper only
+- a full portfolio manager
+- a signal generator
 
 It is intended to become a **risk-aware execution layer** for NinjaTrader 8.
 
