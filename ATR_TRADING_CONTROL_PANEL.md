@@ -121,6 +121,56 @@ This allows the tool to calculate **true risk** and **true reward:risk**, rather
 
 ---
 
+## Execution Rules and Assumptions
+
+This project should explicitly define a few execution rules so behavior stays consistent:
+
+### ATR Lock Behavior
+The tool should support a choice between:
+
+- **Lock ATR at order creation**
+- **Recalculate ATR on fill**
+
+Recommended default:
+
+- Market orders: use ATR at click time
+- Pending orders: recalculate ATR at fill time unless the user locks it on submit
+
+### Instrument Math
+The tool must account for instrument-specific contract math such as:
+
+- tick size
+- tick value
+- point value
+- micros vs minis
+- futures contract differences
+
+### Rounding Rules
+The tool should handle rounding and validation consistently:
+
+- round quantity down
+- reject zero-size trades
+- enforce valid tick increments for stop/target prices
+- warn if the calculated size is below minimum tradable quantity
+
+### Risk Warnings
+The tool should warn when:
+
+- commissions push the trade beyond the max loss limit
+- ATR is too wide for the chosen risk budget
+- quantity rounds down to zero
+- the pending order fills far from the original setup assumptions
+
+### Pending Order Edge Cases
+The tool should define behavior for:
+
+- partial fills
+- cancellation before fill
+- ATR changing significantly before fill
+- market moving sharply before the bracket is attached
+
+---
+
 ## Intended User Experience
 
 The goal is to make execution feel like a single action:
@@ -212,4 +262,3 @@ Planned / not yet implemented.
 ## Working Title
 
 **ATR TRADING CONTROL PANEL**
-
