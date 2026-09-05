@@ -102,6 +102,22 @@ For traders who want to plan ahead or step away from the screen.
 
 ---
 
+## Typical Trade Workflow
+
+A typical trade flow should look like this:
+
+1. Trader selects the instrument and direction.
+2. Trader sets ATR Multiplier, Reward:Risk, and Max Loss per Trade.
+3. Tool reads ATR and calculates stop distance.
+4. Tool converts stop distance into true per-contract risk including commissions and fees.
+5. Tool calculates the maximum quantity allowed by the risk budget.
+6. Tool calculates the target from the selected Reward:Risk.
+7. Trader clicks once to submit the trade, or leaves a pending order in place.
+8. If a pending order fills, the tool completes the stop/target bracket automatically.
+9. Trader may later manage the position with scale-outs, trailing stops, breakeven moves, or manual exits.
+
+---
+
 ## Risk Logic
 
 The tool is designed around the idea that:
