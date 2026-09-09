@@ -1843,6 +1843,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (panelGrid == null || panelHostChartControl == null)
                 return;
 
+            DependencyObject source = e.OriginalSource as DependencyObject;
+            while (source != null)
+            {
+                if (ReferenceEquals(source, panelCollapseToggleButton))
+                    return;
+                source = source is Visual ? VisualTreeHelper.GetParent(source) : null;
+            }
+
             isDraggingPanel = true;
             dragStartPoint = e.GetPosition(panelHostChartControl);
             panelGrid.CaptureMouse();
@@ -1852,6 +1860,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (!isDraggingPanel || panelGrid == null || panelHostChartControl == null || panelTransform == null)
                 return;
+
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                isDraggingPanel = false;
+                panelGrid.ReleaseMouseCapture();
+                return;
+            }
 
             Point currentPoint = e.GetPosition(panelHostChartControl);
             Vector delta = currentPoint - dragStartPoint;
