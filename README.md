@@ -1,3 +1,15 @@
+# ATRTradingControlPanel
+
+**ATR-based NinjaTrader 8 strategy with an on-chart WPF execution panel**
+
+ATRTradingControlPanel is a discretionary execution strategy that sizes contracts from ATR volatility, max-loss budget, commissions, and fees, then submits unmanaged market or pending entries with automatic OCO stop/target brackets.
+
+📖 **[Full documentation → Strategies/ATRTradingControlPanel.md](Strategies/ATRTradingControlPanel.md)**
+
+**Quick install:** copy `Strategies/ATRTradingControlPanel.cs` to `Documents\NinjaTrader 8\bin\Custom\Strategies\`, open NinjaScript Editor, right-click **Strategies** → *Compile*, then add **ATRTradingControlPanel** to a chart. Test in **Sim** first.
+
+---
+
 # IQMainGPU — Traders Reality inspired Main Indicator
 
 **The Ultimate All-in-One NinjaTrader 8 Indicator**
@@ -367,4 +379,3 @@ IQKeyLevelsGPU plots confluent price levels from multiple analysis layers on a s
 **Quick install:** copy `Indicators/IQKeyLevelsGPU.cs` to `Documents\NinjaTrader 8\bin\Custom\Indicators\`, right-click the `Indicators` folder in NT8 Editor → *Compile*, then add to any chart.
 
 ---
-

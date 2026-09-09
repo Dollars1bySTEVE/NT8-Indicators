@@ -205,11 +205,18 @@ Suggested implementation phases:
 
 ## Status
 
-Planned / not yet implemented.
+Implemented in `Strategies/ATRTradingControlPanel.cs`.
+
+- ✅ Phase 1 — Trade calculation engine
+- ✅ Phase 2 — Visual trade control panel
+- ✅ Phase 3 — Market order execution
+- ✅ Phase 4 — Pending order execution
+- ✅ Phase 5 — Commission and fee presets
+- ✅ Phase 6 — Bracket / OCO order automation
+- 🔜 Phase 7 — Trade management enhancements (future work)
 
 ---
 
 ## Working Title
 
 **ATR TRADING CONTROL PANEL**
-
