@@ -3,10 +3,16 @@
 //  NinjaTrader 8 — ATR Trading Control Panel
 //  Purpose     : On-chart ATR-based risk sizing and execution
 //  Author      : Built for Dollars1bySTEVE
-//  Version     : 1.0.0  (2026-09-09)
+//  Version     : 1.1.0  (2026-09-09)
 //  Notes       : Unmanaged-order strategy with WPF chart panel,
 //                commission-aware risk sizing, market/pending
 //                entries, and automatic OCO brackets.
+//  Changelog   : 1) Added undersized-risk modes (Block/ShrinkStopToFit/TradeMinQtyAnyway)
+//                2) Added explicit block-state guidance banner and disabled button tooltips
+//                3) Compact panel layout + settings expander + panel corner + drag/collapse
+//                4) Removed duplicate Draw.TextFixed status overlay
+//                5) Removed redundant Manual fee preset
+//                6) Updated button styling to Chart-Trader-like colors
 // ============================================================
 
 #region Using declarations
@@ -36,8 +42,7 @@ public enum AtrFeePreset
     Custom,
     NinjaTraderLifetime,
     NinjaTraderFree,
-    TradovateFree,
-    Manual
+    TradovateFree
 }
 
 public enum AtrInstrumentFeePreset
@@ -55,6 +60,21 @@ public enum AtrInstrumentFeePreset
     MCL,
     GC,
     MGC
+}
+
+public enum AtrUndersizedRiskMode
+{
+    Block,
+    ShrinkStopToFit,
+    TradeMinQtyAnyway
+}
+
+public enum AtrPanelCorner
+{
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight
 }
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -76,6 +96,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private sealed class CalculationResult
         {
             public double AtrValue;
+            public double AtrStopDistancePoints;
             public double StopDistancePoints;
             public double StopTicks;
             public double TargetDistancePoints;
@@ -91,6 +112,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             public double TotalReward;
             public bool HasEnoughBars;
             public bool IsRiskTooSmall;
+            public bool StopCappedByRisk;
+            public bool IsRiskOvershoot;
+            public double CappedStopTicks;
+            public double SuggestedMaxAtrMultiplier;
+            public double RequiredMaxLossForOneContract;
+            public int EffectiveMinQuantity;
+            public string SuggestedMicroSymbol;
         }
 
         private sealed class PendingBracket
@@ -139,6 +167,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TextBox atrMultiplierTextBox;
         private TextBox rewardRiskTextBox;
         private TextBox maxLossTextBox;
+        private TextBox atrMultiplierQuickTextBox;
+        private TextBox rewardRiskQuickTextBox;
+        private TextBox maxLossQuickTextBox;
         private TextBox commissionTextBox;
         private TextBox feesTextBox;
         private TextBox minQtyTextBox;
@@ -146,12 +177,28 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TextBox pendingPriceTextBox;
         private ComboBox feePresetComboBox;
         private ComboBox instrumentFeePresetComboBox;
+        private ComboBox undersizedRiskModeComboBox;
         private CheckBox showPlanLinesCheckBox;
         private CheckBox useAtrAtFillCheckBox;
         private CheckBox allowMultipleEntriesCheckBox;
         private TextBlock connectionStatusTextBlock;
         private TextBlock liveValuesTextBlock;
+        private TextBlock riskBannerTextBlock;
         private TextBlock panelStatusTextBlock;
+        private Button panelCollapseToggleButton;
+        private Grid panelBodyGrid;
+        private Grid panelHeaderGrid;
+        private Expander settingsExpander;
+        private Border panelBorder;
+        private TranslateTransform panelTransform;
+
+        private readonly List<Button> orderButtons = new List<Button>();
+        private bool panelCollapsed;
+        private bool settingsExpandedState;
+        private Point dragStartPoint;
+        private bool isDraggingPanel;
+        private double panelDragX;
+        private double panelDragY;
 
         private bool isPanelUpdating;
         private bool hasInitializedPendingPrice;
@@ -200,9 +247,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 InstrumentFeePreset = AtrInstrumentFeePreset.Custom;
                 MinQuantity = 1;
                 MaxQuantity = 10;
+                UndersizedRiskMode = AtrUndersizedRiskMode.ShrinkStopToFit;
                 ShowPlanLines = true;
                 UseAtrAtFillForPendingOrders = true;
                 AllowMultipleEntries = false;
+                SettingsExpandedByDefault = false;
+                settingsExpandedState = false;
+                PanelPosition = AtrPanelCorner.TopRight;
                 ExitOnSessionClose = false;
             }
             else if (State == State.Configure)
@@ -221,6 +272,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 RemoveControlPanel();
                 RemoveAllPlanDrawings();
+                RemoveDrawObject("ATRCP_STATUS");
             }
         }
 
@@ -398,11 +450,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return result;
 
             double atrValue = ATR(Math.Max(1, atrPeriod))[0];
-            return BuildCalculationForAtrValue(atrValue, atrPeriod, atrMultiplier, rewardRisk, maxLoss, commissionPerSide, feesPerSide, minQty, maxQty);
+            return BuildCalculationForAtrValue(atrValue, atrPeriod, atrMultiplier, rewardRisk, maxLoss, commissionPerSide, feesPerSide, minQty, maxQty, UndersizedRiskMode);
         }
 
         private CalculationResult BuildCalculationForAtrValue(double atrValue, int atrPeriod, double atrMultiplier, double rewardRisk,
-            double maxLoss, double commissionPerSide, double feesPerSide, int minQty, int maxQty)
+            double maxLoss, double commissionPerSide, double feesPerSide, int minQty, int maxQty, AtrUndersizedRiskMode undersizedRiskMode)
         {
             CalculationResult result = new CalculationResult();
             result.HasEnoughBars = CurrentBar >= Math.Max(atrPeriod, 1);
@@ -413,32 +465,37 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (double.IsNaN(atrValue) || double.IsInfinity(atrValue) || atrValue <= 0)
                 return result;
 
-            double roundedStopPoints = RoundToTickSizeSafe(atrValue * atrMultiplier);
-            if (roundedStopPoints < TickSize)
-                roundedStopPoints = TickSize;
+            int effectiveMinQty = Math.Max(1, minQty);
+            int effectiveMaxQty = Math.Max(effectiveMinQty, maxQty);
 
-            double stopTicks = roundedStopPoints / TickSize;
+            double atrStopPoints = RoundToTickSizeSafe(atrValue * atrMultiplier);
+            if (atrStopPoints < TickSize)
+                atrStopPoints = TickSize;
 
-            double roundedTargetPoints = RoundToTickSizeSafe(roundedStopPoints * rewardRisk);
-            if (roundedTargetPoints < TickSize)
-                roundedTargetPoints = TickSize;
-
-            double targetTicks = roundedTargetPoints / TickSize;
+            double stopDistancePoints = atrStopPoints;
+            double stopTicks = stopDistancePoints / TickSize;
+            double targetDistancePoints = RoundToTickSizeSafe(stopDistancePoints * rewardRisk);
+            if (targetDistancePoints < TickSize)
+                targetDistancePoints = TickSize;
+            double targetTicks = targetDistancePoints / TickSize;
             double tickValue = Instrument.MasterInstrument.PointValue * TickSize;
-            double grossRiskPerContract = stopTicks * tickValue;
             double frictionPerContract = 2.0 * (commissionPerSide + feesPerSide);
+            double grossRiskPerContract = stopTicks * tickValue;
             double trueRiskPerContract = grossRiskPerContract + frictionPerContract;
-            int rawQuantity = 0;
+            double trueRewardPerContract = (targetTicks * tickValue) - frictionPerContract;
+            double trueRiskReward = trueRiskPerContract > 0 ? (trueRewardPerContract / trueRiskPerContract) : 0.0;
+
+            int rawQuantity = trueRiskPerContract > 0 && maxLoss > 0 ? (int)Math.Floor(maxLoss / trueRiskPerContract) : 0;
             int quantity = 0;
+            bool undersized = trueRiskPerContract > maxLoss && trueRiskPerContract > 0 && maxLoss > 0;
+            bool stopCappedByRisk = false;
+            bool riskOvershoot = false;
+            string microSuggestion = TryGetMicroSuggestionSymbol();
 
-            if (trueRiskPerContract > 0 && maxLoss > 0)
+            if (!undersized)
             {
-                rawQuantity = (int)Math.Floor(maxLoss / trueRiskPerContract);
-                if (trueRiskPerContract <= maxLoss && rawQuantity >= 1)
+                if (trueRiskPerContract > 0 && maxLoss > 0 && rawQuantity >= 1)
                 {
-                    int effectiveMinQty = Math.Max(1, minQty);
-                    int effectiveMaxQty = Math.Max(effectiveMinQty, maxQty);
-
                     if (rawQuantity < effectiveMinQty)
                     {
                         if ((effectiveMinQty * trueRiskPerContract) <= maxLoss)
@@ -450,14 +507,71 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
             }
+            else
+            {
+                if (undersizedRiskMode == AtrUndersizedRiskMode.ShrinkStopToFit && tickValue > 0)
+                {
+                    double maxStopTickBudget = (maxLoss - frictionPerContract) / tickValue;
+                    int maxStopTicks = (int)Math.Floor(maxStopTickBudget);
+                    if (maxStopTicks >= 1)
+                    {
+                        double cappedStopDistancePoints = maxStopTicks * TickSize;
+                        double cappedStopTicks = maxStopTicks;
+                        double cappedTargetDistancePoints = RoundToTickSizeSafe(cappedStopDistancePoints * rewardRisk);
+                        if (cappedTargetDistancePoints < TickSize)
+                            cappedTargetDistancePoints = TickSize;
 
-            double trueRewardPerContract = (targetTicks * tickValue) - frictionPerContract;
-            double trueRiskReward = trueRiskPerContract > 0 ? (trueRewardPerContract / trueRiskPerContract) : 0.0;
+                        double cappedTargetTicks = cappedTargetDistancePoints / TickSize;
+                        double cappedGrossRiskPerContract = cappedStopTicks * tickValue;
+                        double cappedTrueRiskPerContract = cappedGrossRiskPerContract + frictionPerContract;
+                        double cappedTrueRewardPerContract = (cappedTargetTicks * tickValue) - frictionPerContract;
+                        double cappedTrueRiskReward = cappedTrueRiskPerContract > 0 ? (cappedTrueRewardPerContract / cappedTrueRiskPerContract) : 0.0;
+
+                        int shrinkQty = 1;
+                        if (effectiveMinQty > 1)
+                        {
+                            shrinkQty = effectiveMinQty;
+                            if ((shrinkQty * cappedTrueRiskPerContract) > maxLoss)
+                                shrinkQty = 0;
+                        }
+
+                        if (shrinkQty > 0)
+                        {
+                            quantity = Math.Min(shrinkQty, effectiveMaxQty);
+                            stopDistancePoints = cappedStopDistancePoints;
+                            stopTicks = cappedStopTicks;
+                            targetDistancePoints = cappedTargetDistancePoints;
+                            targetTicks = cappedTargetTicks;
+                            grossRiskPerContract = cappedGrossRiskPerContract;
+                            trueRiskPerContract = cappedTrueRiskPerContract;
+                            trueRewardPerContract = cappedTrueRewardPerContract;
+                            trueRiskReward = cappedTrueRiskReward;
+                            stopCappedByRisk = true;
+                        }
+                    }
+                }
+                else if (undersizedRiskMode == AtrUndersizedRiskMode.TradeMinQtyAnyway)
+                {
+                    quantity = Math.Min(Math.Max(1, effectiveMinQty), effectiveMaxQty);
+                    riskOvershoot = quantity > 0;
+                }
+            }
+
+            double largestStopTicksForOneContract = tickValue > 0 ? Math.Floor((maxLoss - frictionPerContract) / tickValue) : 0.0;
+            double suggestedMultiplier = 0.0;
+            if (largestStopTicksForOneContract > 0 && atrValue > 0)
+            {
+                suggestedMultiplier = (largestStopTicksForOneContract * TickSize) / atrValue;
+                suggestedMultiplier = Math.Floor(suggestedMultiplier * 100.0) / 100.0;
+                if (suggestedMultiplier < 0)
+                    suggestedMultiplier = 0;
+            }
 
             result.AtrValue = atrValue;
-            result.StopDistancePoints = roundedStopPoints;
+            result.AtrStopDistancePoints = atrStopPoints;
+            result.StopDistancePoints = stopDistancePoints;
             result.StopTicks = stopTicks;
-            result.TargetDistancePoints = roundedTargetPoints;
+            result.TargetDistancePoints = targetDistancePoints;
             result.TargetTicks = targetTicks;
             result.GrossRiskPerContract = grossRiskPerContract;
             result.FrictionPerContract = frictionPerContract;
@@ -468,7 +582,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             result.TrueRiskReward = trueRiskReward;
             result.TotalRisk = quantity * trueRiskPerContract;
             result.TotalReward = quantity * trueRewardPerContract;
-            result.IsRiskTooSmall = quantity < 1 && trueRiskPerContract > 0;
+            result.IsRiskTooSmall = quantity < 1 && undersized;
+            result.StopCappedByRisk = stopCappedByRisk;
+            result.IsRiskOvershoot = riskOvershoot;
+            result.CappedStopTicks = stopTicks;
+            result.SuggestedMaxAtrMultiplier = suggestedMultiplier;
+            result.RequiredMaxLossForOneContract = Math.Ceiling(Math.Max(0, result.AtrStopDistancePoints / TickSize * tickValue + frictionPerContract));
+            result.EffectiveMinQuantity = effectiveMinQty;
+            result.SuggestedMicroSymbol = microSuggestion;
 
             return result;
         }
@@ -491,7 +612,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     CommissionPerSidePerContract,
                     ExchangeFeesPerSidePerContract,
                     MinQuantity,
-                    MaxQuantity);
+                    MaxQuantity,
+                    UndersizedRiskMode);
             }
             else
             {
@@ -639,11 +761,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             CalculationResult calculation = BuildCalculation(AtrPeriod, AtrMultiplier, RewardRisk, MaxLossPerTrade, CommissionPerSidePerContract, ExchangeFeesPerSidePerContract, MinQuantity, MaxQuantity);
             if (calculation.Quantity < 1)
             {
-                SetStatus(
-                    string.Format(
-                        "Risk too small for 1 contract: true risk/contract = ${0:F2}",
-                        calculation.TrueRiskPerContract),
-                    Brushes.Red);
+                SetStatus(BuildNoSizeMessage(calculation), Brushes.Red);
                 return;
             }
 
@@ -1000,34 +1118,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RemoveActiveOrderLineDrawings();
         }
 
-        private void RenderStatusText()
-        {
-            string phase = State == State.Realtime ? "REALTIME" : State.ToString().ToUpperInvariant();
-            string status = string.Format(
-                "ATRCP | {0}\nATR: {1:F2} | Stop: {2:F2} pts ({3:F0} ticks) | Target: {4:F2} pts ({5:F0} ticks)\nQty: {6} | Risk/Ct: ${7:F2} | Reward/Ct: ${8:F2} | True RR: {9:F2}\nTotal Risk: ${10:F2} | Total Reward: ${11:F2}\n{12}",
-                phase,
-                lastCalculation.AtrValue,
-                lastCalculation.StopDistancePoints,
-                lastCalculation.StopTicks,
-                lastCalculation.TargetDistancePoints,
-                lastCalculation.TargetTicks,
-                lastCalculation.Quantity,
-                lastCalculation.TrueRiskPerContract,
-                lastCalculation.TrueRewardPerContract,
-                lastCalculation.TrueRiskReward,
-                lastCalculation.TotalRisk,
-                lastCalculation.TotalReward,
-                statusMessage);
-
-            Draw.TextFixed(this, "ATRCP_STATUS", status, TextPosition.TopRight, statusBrush, new SimpleFont("Arial", 12), Brushes.Transparent, Brushes.Transparent, 0);
-        }
-
         private void SetStatus(string message, Brush brush)
         {
             statusMessage = message;
             statusBrush = brush ?? Brushes.DimGray;
             UpdateControlPanelAsync();
-            RenderStatusText();
         }
 
         private void RefreshVisualsIfDue()
@@ -1037,7 +1132,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             lastVisualRefreshUtc = nowUtc;
-            RenderStatusText();
             UpdatePlanDrawings();
             UpdateControlPanelAsync();
         }
@@ -1150,6 +1244,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (panelGrid != null)
                     return;
 
+                settingsExpandedState = SettingsExpandedByDefault;
                 panelGrid = BuildPanelGrid();
                 UserControlCollection.Add(panelGrid);
                 RefreshPanelUi();
@@ -1160,30 +1255,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             Grid grid = new Grid();
             grid.Name = "ATRCP_PANEL";
-            grid.HorizontalAlignment = HorizontalAlignment.Right;
-            grid.VerticalAlignment = VerticalAlignment.Top;
+            ApplyPanelCornerAlignment(grid);
             grid.Margin = new Thickness(8);
-            grid.Width = 350;
+            grid.Width = 236;
             grid.Background = new SolidColorBrush(Color.FromArgb(225, 22, 22, 26));
+            grid.RenderTransform = panelTransform = new TranslateTransform();
 
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            Border border = new Border();
-            border.BorderBrush = Brushes.DimGray;
-            border.BorderThickness = new Thickness(1);
-            border.Padding = new Thickness(8);
-            border.Child = CreatePanelContent();
+            panelBorder = new Border();
+            panelBorder.BorderBrush = Brushes.DimGray;
+            panelBorder.BorderThickness = new Thickness(1);
+            panelBorder.Padding = new Thickness(5);
+            panelBorder.Child = CreatePanelContent();
 
-            Grid.SetRow(border, 0);
-            Grid.SetRowSpan(border, 8);
-            grid.Children.Add(border);
+            Grid.SetRow(panelBorder, 0);
+            grid.Children.Add(panelBorder);
 
             return grid;
         }
@@ -1191,37 +1278,102 @@ namespace NinjaTrader.NinjaScript.Strategies
         private Grid CreatePanelContent()
         {
             Grid content = new Grid();
+            content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            panelHeaderGrid = new Grid();
+            panelHeaderGrid.Margin = new Thickness(0, 0, 0, 2);
+            panelHeaderGrid.Cursor = Cursors.SizeAll;
+            panelHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            panelHeaderGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            TextBlock header = CreateTextBlock("ATR CONTROL PANEL v1.1.0", Brushes.White, FontWeights.Bold, 11);
+            header.Cursor = Cursors.SizeAll;
+            AddControl(panelHeaderGrid, header, 0, 0, 1);
+
+            panelCollapseToggleButton = new Button();
+            panelCollapseToggleButton.Content = "▼";
+            panelCollapseToggleButton.Width = 22;
+            panelCollapseToggleButton.Height = 20;
+            panelCollapseToggleButton.Margin = new Thickness(2, 0, 0, 0);
+            panelCollapseToggleButton.Padding = new Thickness(0);
+            panelCollapseToggleButton.FontWeight = FontWeights.Bold;
+            panelCollapseToggleButton.Background = Brushes.DimGray;
+            panelCollapseToggleButton.Foreground = Brushes.White;
+            panelCollapseToggleButton.Click += PanelCollapseToggleButton_Click;
+            AddControl(panelHeaderGrid, panelCollapseToggleButton, 0, 1, 1);
+
+            panelHeaderGrid.MouseLeftButtonDown += PanelHeader_MouseLeftButtonDown;
+            panelHeaderGrid.MouseLeftButtonUp += PanelHeader_MouseLeftButtonUp;
+            panelHeaderGrid.MouseMove += PanelHeader_MouseMove;
+            AddControl(content, panelHeaderGrid, 0, 0, 1);
+
+            riskBannerTextBlock = CreateTextBlock(string.Empty, Brushes.White, FontWeights.Bold, 11);
+            riskBannerTextBlock.TextWrapping = TextWrapping.Wrap;
+            riskBannerTextBlock.Margin = new Thickness(0, 1, 0, 3);
+            riskBannerTextBlock.Visibility = Visibility.Collapsed;
+            AddControl(content, riskBannerTextBlock, 1, 0, 1);
+
+            panelBodyGrid = new Grid();
+            for (int row = 0; row < 6; row++)
+                panelBodyGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            Grid quickInputsGrid = new Grid();
+            quickInputsGrid.Margin = new Thickness(0, 1, 0, 2);
+            quickInputsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            quickInputsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            quickInputsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            AddQuickEditor(quickInputsGrid, 0, "Mult", out atrMultiplierQuickTextBox, AtrMultiplierTextBox_TextChanged);
+            AddQuickEditor(quickInputsGrid, 1, "R:R", out rewardRiskQuickTextBox, RewardRiskTextBox_TextChanged);
+            AddQuickEditor(quickInputsGrid, 2, "Loss $", out maxLossQuickTextBox, MaxLossTextBox_TextChanged);
+            AddControl(panelBodyGrid, quickInputsGrid, 0, 0, 1);
+
+            connectionStatusTextBlock = CreateTextBlock(string.Empty, Brushes.DarkOrange, FontWeights.SemiBold, 10);
+            AddControl(panelBodyGrid, connectionStatusTextBlock, 1, 0, 1);
+
+            liveValuesTextBlock = CreateTextBlock(string.Empty, Brushes.Gainsboro, FontWeights.Normal, 10);
+            liveValuesTextBlock.TextWrapping = TextWrapping.Wrap;
+            AddControl(panelBodyGrid, liveValuesTextBlock, 2, 0, 1);
+
+            settingsExpander = new Expander();
+            settingsExpander.Header = "Settings";
+            settingsExpander.Foreground = Brushes.Gainsboro;
+            settingsExpander.IsExpanded = settingsExpandedState || SettingsExpandedByDefault;
+            settingsExpander.Margin = new Thickness(0, 2, 0, 2);
+            settingsExpander.Expanded += SettingsExpander_Expanded;
+            settingsExpander.Collapsed += SettingsExpander_Collapsed;
+
+            Grid settingsGrid = new Grid();
             for (int i = 0; i < 2; i++)
-                content.ColumnDefinitions.Add(new ColumnDefinition { Width = i == 0 ? GridLength.Auto : new GridLength(1, GridUnitType.Star) });
+                settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = i == 0 ? GridLength.Auto : new GridLength(1, GridUnitType.Star) });
+            for (int row = 0; row < 12; row++)
+                settingsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            for (int row = 0; row < 15; row++)
-                content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-            TextBlock header = CreateTextBlock("ATR CONTROL PANEL", Brushes.White, FontWeights.Bold);
-            header.FontSize = 14;
-            AddControl(content, header, 0, 0, 2);
-
-            connectionStatusTextBlock = CreateTextBlock(string.Empty, Brushes.DarkOrange, FontWeights.SemiBold);
-            AddControl(content, connectionStatusTextBlock, 1, 0, 2);
-
-            AddLabeledEditor(content, 2, "ATR Period", out atrPeriodTextBox);
-            AddLabeledEditor(content, 3, "ATR Mult", out atrMultiplierTextBox);
-            AddLabeledEditor(content, 4, "Reward:Risk", out rewardRiskTextBox);
-            AddLabeledEditor(content, 5, "Max Loss $", out maxLossTextBox);
-            AddLabeledEditor(content, 6, "Commission/Side", out commissionTextBox);
-            AddLabeledEditor(content, 7, "Fees/Side", out feesTextBox);
-            AddLabeledEditor(content, 8, "Min Qty", out minQtyTextBox);
-            AddLabeledEditor(content, 9, "Max Qty", out maxQtyTextBox);
+            AddLabeledEditor(settingsGrid, 0, "ATR Period", out atrPeriodTextBox);
+            AddLabeledEditor(settingsGrid, 1, "ATR Mult", out atrMultiplierTextBox);
+            AddLabeledEditor(settingsGrid, 2, "Reward:Risk", out rewardRiskTextBox);
+            AddLabeledEditor(settingsGrid, 3, "Max Loss $", out maxLossTextBox);
+            AddLabeledEditor(settingsGrid, 4, "Commission/Side", out commissionTextBox);
+            AddLabeledEditor(settingsGrid, 5, "Fees/Side", out feesTextBox);
+            AddLabeledEditor(settingsGrid, 6, "Min Qty", out minQtyTextBox);
+            AddLabeledEditor(settingsGrid, 7, "Max Qty", out maxQtyTextBox);
 
             feePresetComboBox = CreateComboBox();
             feePresetComboBox.ItemsSource = Enum.GetValues(typeof(AtrFeePreset));
             feePresetComboBox.SelectionChanged += FeePresetComboBox_SelectionChanged;
-            AddLabeledControl(content, 10, "Fee Preset", feePresetComboBox);
+            AddLabeledControl(settingsGrid, 8, "Fee Preset", feePresetComboBox);
 
             instrumentFeePresetComboBox = CreateComboBox();
             instrumentFeePresetComboBox.ItemsSource = Enum.GetValues(typeof(AtrInstrumentFeePreset));
             instrumentFeePresetComboBox.SelectionChanged += InstrumentFeePresetComboBox_SelectionChanged;
-            AddLabeledControl(content, 11, "Instr. Fee Preset", instrumentFeePresetComboBox);
+            AddLabeledControl(settingsGrid, 9, "Instr. Fee Preset", instrumentFeePresetComboBox);
+
+            undersizedRiskModeComboBox = CreateComboBox();
+            undersizedRiskModeComboBox.ItemsSource = Enum.GetValues(typeof(AtrUndersizedRiskMode));
+            undersizedRiskModeComboBox.SelectionChanged += UndersizedRiskModeComboBox_SelectionChanged;
+            AddLabeledControl(settingsGrid, 10, "Undersized Risk Mode", undersizedRiskModeComboBox);
 
             StackPanel flagsPanel = new StackPanel();
             flagsPanel.Orientation = Orientation.Vertical;
@@ -1234,14 +1386,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             flagsPanel.Children.Add(useAtrAtFillCheckBox);
             flagsPanel.Children.Add(allowMultipleEntriesCheckBox);
 
-            AddLabeledControl(content, 12, "Options", flagsPanel);
+            AddLabeledControl(settingsGrid, 11, "Options", flagsPanel);
 
-            liveValuesTextBlock = CreateTextBlock(string.Empty, Brushes.Gainsboro, FontWeights.Normal);
-            liveValuesTextBlock.TextWrapping = TextWrapping.Wrap;
-            AddControl(content, liveValuesTextBlock, 13, 0, 2);
+            settingsExpander.Content = settingsGrid;
+            AddControl(panelBodyGrid, settingsExpander, 3, 0, 1);
+
+            pendingPriceTextBox = CreateTextBox();
+            pendingPriceTextBox.Margin = new Thickness(0, 1, 0, 2);
+            pendingPriceTextBox.TextChanged += PendingPriceTextBox_TextChanged;
+            AddControl(panelBodyGrid, pendingPriceTextBox, 4, 0, 1);
 
             Grid buttonsGrid = CreateButtonsGrid();
-            AddControl(content, buttonsGrid, 14, 0, 2);
+            AddControl(panelBodyGrid, buttonsGrid, 5, 0, 1);
+
+            AddControl(content, panelBodyGrid, 2, 0, 1);
+
+            panelStatusTextBlock = CreateTextBlock(string.Empty, Brushes.Gainsboro, FontWeights.Normal, 11);
+            panelStatusTextBlock.TextWrapping = TextWrapping.Wrap;
+            panelStatusTextBlock.Margin = new Thickness(0, 3, 0, 0);
+            AddControl(content, panelStatusTextBlock, 3, 0, 1);
 
             HookTextBox(atrPeriodTextBox, AtrPeriodTextBox_TextChanged);
             HookTextBox(atrMultiplierTextBox, AtrMultiplierTextBox_TextChanged);
@@ -1258,23 +1421,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         private Grid CreateButtonsGrid()
         {
             Grid buttonsGrid = new Grid();
-            buttonsGrid.Margin = new Thickness(0, 8, 0, 0);
+            buttonsGrid.Margin = new Thickness(0, 2, 0, 0);
 
             for (int i = 0; i < 2; i++)
                 buttonsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-            for (int i = 0; i < 6; i++)
+            for (int i = 0; i < 5; i++)
                 buttonsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             Button buyMarketButton = CreateButton("BUY MKT", PanelAction.BuyMarket);
             Button sellMarketButton = CreateButton("SELL MKT", PanelAction.SellMarket);
             AddButton(buttonsGrid, buyMarketButton, 0, 0);
             AddButton(buttonsGrid, sellMarketButton, 0, 1);
-
-            pendingPriceTextBox = CreateTextBox();
-            pendingPriceTextBox.Margin = new Thickness(0, 0, 0, 4);
-            pendingPriceTextBox.TextChanged += PendingPriceTextBox_TextChanged;
-            AddControl(buttonsGrid, pendingPriceTextBox, 1, 0, 2);
 
             Button buyLimitButton = CreateButton("BUY LIMIT @", PanelAction.BuyLimit);
             Button sellLimitButton = CreateButton("SELL LIMIT @", PanelAction.SellLimit);
@@ -1283,17 +1441,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             Button flattenButton = CreateButton("FLATTEN", PanelAction.Flatten);
             Button cancelPendingButton = CreateButton("CANCEL PENDING", PanelAction.CancelPending);
 
-            AddButton(buttonsGrid, buyLimitButton, 2, 0);
-            AddButton(buttonsGrid, sellLimitButton, 2, 1);
-            AddButton(buttonsGrid, buyStopButton, 3, 0);
-            AddButton(buttonsGrid, sellStopButton, 3, 1);
-            AddButton(buttonsGrid, flattenButton, 4, 0);
-            AddButton(buttonsGrid, cancelPendingButton, 4, 1);
-
-            panelStatusTextBlock = CreateTextBlock(string.Empty, Brushes.Gainsboro, FontWeights.Normal);
-            panelStatusTextBlock.TextWrapping = TextWrapping.Wrap;
-            panelStatusTextBlock.Margin = new Thickness(0, 8, 0, 0);
-            AddControl(buttonsGrid, panelStatusTextBlock, 5, 0, 2);
+            AddButton(buttonsGrid, buyLimitButton, 1, 0);
+            AddButton(buttonsGrid, sellLimitButton, 1, 1);
+            AddButton(buttonsGrid, buyStopButton, 2, 0);
+            AddButton(buttonsGrid, sellStopButton, 2, 1);
+            AddButton(buttonsGrid, flattenButton, 3, 0);
+            AddButton(buttonsGrid, cancelPendingButton, 3, 1);
 
             return buttonsGrid;
         }
@@ -1306,36 +1459,39 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void AddLabeledControl(Grid grid, int row, string label, UIElement element)
         {
-            TextBlock labelBlock = CreateTextBlock(label, Brushes.Gainsboro, FontWeights.Normal);
-            labelBlock.Margin = new Thickness(0, 2, 8, 2);
+            TextBlock labelBlock = CreateTextBlock(label, Brushes.Gainsboro, FontWeights.Normal, 11);
+            labelBlock.Margin = new Thickness(0, 1, 6, 1);
             AddControl(grid, labelBlock, row, 0, 1);
 
             AddControl(grid, element, row, 1, 1);
         }
 
-        private TextBlock CreateTextBlock(string text, Brush brush, FontWeight weight)
+        private TextBlock CreateTextBlock(string text, Brush brush, FontWeight weight, double fontSize)
         {
             TextBlock block = new TextBlock();
             block.Text = text;
             block.Foreground = brush;
             block.FontWeight = weight;
-            block.Margin = new Thickness(0, 2, 0, 2);
+            block.FontSize = fontSize;
+            block.Margin = new Thickness(0, 1, 0, 1);
             return block;
         }
 
         private TextBox CreateTextBox()
         {
             TextBox box = new TextBox();
-            box.Margin = new Thickness(0, 2, 0, 2);
-            box.Padding = new Thickness(4, 2, 4, 2);
+            box.FontSize = 11;
+            box.Margin = new Thickness(0, 1, 0, 1);
+            box.Padding = new Thickness(2, 0, 2, 0);
             return box;
         }
 
         private ComboBox CreateComboBox()
         {
             ComboBox comboBox = new ComboBox();
-            comboBox.Margin = new Thickness(0, 2, 0, 2);
-            comboBox.Padding = new Thickness(4, 2, 4, 2);
+            comboBox.FontSize = 11;
+            comboBox.Margin = new Thickness(0, 1, 0, 1);
+            comboBox.Padding = new Thickness(2, 0, 2, 0);
             return comboBox;
         }
 
@@ -1344,7 +1500,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             CheckBox checkBox = new CheckBox();
             checkBox.Content = label;
             checkBox.IsChecked = isChecked;
-            checkBox.Margin = new Thickness(0, 2, 0, 2);
+            checkBox.FontSize = 11;
+            checkBox.Margin = new Thickness(0, 1, 0, 1);
             checkBox.Foreground = Brushes.Gainsboro;
             checkBox.Checked += handler;
             checkBox.Unchecked += handler;
@@ -1356,9 +1513,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             Button button = new Button();
             button.Content = label;
             button.Tag = action;
-            button.Margin = new Thickness(0, 2, 4, 2);
-            button.Padding = new Thickness(4, 2, 4, 2);
+            button.Margin = new Thickness(0, 1, 3, 1);
+            button.Padding = new Thickness(3, 1, 3, 1);
+            button.Height = 24;
+            button.FontWeight = FontWeights.Bold;
+            button.Foreground = Brushes.White;
+            if (action == PanelAction.BuyMarket || action == PanelAction.BuyLimit || action == PanelAction.BuyStop)
+                button.Background = new SolidColorBrush(Color.FromArgb(255, 30, 107, 46));
+            else if (action == PanelAction.SellMarket || action == PanelAction.SellLimit || action == PanelAction.SellStop)
+                button.Background = new SolidColorBrush(Color.FromArgb(255, 139, 30, 30));
+            else if (action == PanelAction.Flatten)
+                button.Background = new SolidColorBrush(Color.FromArgb(255, 179, 106, 0));
+            else
+                button.Background = Brushes.DimGray;
+
+            ToolTipService.SetShowOnDisabled(button, true);
             button.Click += OrderButton_Click;
+            orderButtons.Add(button);
             return button;
         }
 
@@ -1379,6 +1550,50 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (textBox != null)
                 textBox.TextChanged += handler;
+        }
+
+        private void AddQuickEditor(Grid grid, int column, string label, out TextBox textBox, TextChangedEventHandler handler)
+        {
+            StackPanel panel = new StackPanel();
+            panel.Margin = new Thickness(column > 0 ? 2 : 0, 0, column < 2 ? 2 : 0, 0);
+
+            TextBlock labelBlock = CreateTextBlock(label, Brushes.Gainsboro, FontWeights.Normal, 11);
+            labelBlock.Margin = new Thickness(0, 0, 0, 0);
+            panel.Children.Add(labelBlock);
+
+            textBox = CreateTextBox();
+            textBox.Width = 66;
+            panel.Children.Add(textBox);
+            HookTextBox(textBox, handler);
+
+            Grid.SetColumn(panel, column);
+            grid.Children.Add(panel);
+        }
+
+        private void ApplyPanelCornerAlignment(Grid grid)
+        {
+            if (grid == null)
+                return;
+
+            switch (PanelPosition)
+            {
+                case AtrPanelCorner.TopLeft:
+                    grid.HorizontalAlignment = HorizontalAlignment.Left;
+                    grid.VerticalAlignment = VerticalAlignment.Top;
+                    break;
+                case AtrPanelCorner.BottomLeft:
+                    grid.HorizontalAlignment = HorizontalAlignment.Left;
+                    grid.VerticalAlignment = VerticalAlignment.Bottom;
+                    break;
+                case AtrPanelCorner.BottomRight:
+                    grid.HorizontalAlignment = HorizontalAlignment.Right;
+                    grid.VerticalAlignment = VerticalAlignment.Bottom;
+                    break;
+                default:
+                    grid.HorizontalAlignment = HorizontalAlignment.Right;
+                    grid.VerticalAlignment = VerticalAlignment.Top;
+                    break;
+            }
         }
 
         private void UpdateControlPanelAsync()
@@ -1404,6 +1619,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetTextIfIdle(atrMultiplierTextBox, AtrMultiplier.ToString("0.00", CultureInfo.InvariantCulture));
                 SetTextIfIdle(rewardRiskTextBox, RewardRisk.ToString("0.00", CultureInfo.InvariantCulture));
                 SetTextIfIdle(maxLossTextBox, MaxLossPerTrade.ToString("0.00", CultureInfo.InvariantCulture));
+                SetTextIfIdle(atrMultiplierQuickTextBox, AtrMultiplier.ToString("0.00", CultureInfo.InvariantCulture));
+                SetTextIfIdle(rewardRiskQuickTextBox, RewardRisk.ToString("0.00", CultureInfo.InvariantCulture));
+                SetTextIfIdle(maxLossQuickTextBox, MaxLossPerTrade.ToString("0.00", CultureInfo.InvariantCulture));
                 SetTextIfIdle(commissionTextBox, CommissionPerSidePerContract.ToString("0.00", CultureInfo.InvariantCulture));
                 SetTextIfIdle(feesTextBox, ExchangeFeesPerSidePerContract.ToString("0.00", CultureInfo.InvariantCulture));
                 SetTextIfIdle(minQtyTextBox, MinQuantity.ToString(CultureInfo.InvariantCulture));
@@ -1421,12 +1639,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                     feePresetComboBox.SelectedItem = FeePreset;
                 if (instrumentFeePresetComboBox != null)
                     instrumentFeePresetComboBox.SelectedItem = InstrumentFeePreset;
+                if (undersizedRiskModeComboBox != null)
+                    undersizedRiskModeComboBox.SelectedItem = UndersizedRiskMode;
                 if (showPlanLinesCheckBox != null)
                     showPlanLinesCheckBox.IsChecked = ShowPlanLines;
                 if (useAtrAtFillCheckBox != null)
                     useAtrAtFillCheckBox.IsChecked = UseAtrAtFillForPendingOrders;
                 if (allowMultipleEntriesCheckBox != null)
                     allowMultipleEntriesCheckBox.IsChecked = AllowMultipleEntries;
+                if (settingsExpander != null)
+                    settingsExpander.IsExpanded = settingsExpandedState;
+
+                ApplyPanelCornerAlignment(panelGrid);
+                if (panelTransform != null)
+                {
+                    panelTransform.X = panelDragX;
+                    panelTransform.Y = panelDragY;
+                }
 
                 if (connectionStatusTextBlock != null)
                 {
@@ -1437,22 +1666,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (liveValuesTextBlock != null)
                 {
                     liveValuesTextBlock.Text = string.Format(
-                        "ATR {0:F2}\nStop {1:F2} pts / {2:F0} ticks\nTarget {3:F2} pts / {4:F0} ticks\nQty {5} (raw {6})\nGross risk ${7:F2}\nFriction ${8:F2}\nTrue risk ${9:F2}\nTrue reward ${10:F2}\nTrue RR {11:F2}\nTotal risk ${12:F2}\nTotal reward ${13:F2}",
+                        "ATR {0:F2} | Stop {1:F2}p/{2:F0}t | Tgt {3:F2}p/{4:F0}t\nQty {5} | Risk/ct ${6:F2} | Rwd/ct ${7:F2} | RR {8:F2}\nTotal risk ${9:F2} | Total reward ${10:F2}",
                         lastCalculation.AtrValue,
                         lastCalculation.StopDistancePoints,
                         lastCalculation.StopTicks,
                         lastCalculation.TargetDistancePoints,
                         lastCalculation.TargetTicks,
                         lastCalculation.Quantity,
-                        lastCalculation.RawQuantity,
-                        lastCalculation.GrossRiskPerContract,
-                        lastCalculation.FrictionPerContract,
                         lastCalculation.TrueRiskPerContract,
                         lastCalculation.TrueRewardPerContract,
                         lastCalculation.TrueRiskReward,
                         lastCalculation.TotalRisk,
                         lastCalculation.TotalReward);
                 }
+
+                UpdateRiskBanner();
+                UpdatePanelCollapseVisualState();
 
                 if (panelStatusTextBlock != null)
                 {
@@ -1470,46 +1699,191 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void UpdateButtonStates()
         {
-            if (panelGrid == null)
+            if (orderButtons == null || orderButtons.Count == 0)
                 return;
 
             bool canTrade = State == State.Realtime && lastCalculation.Quantity > 0;
-
-            for (int i = 0; i < panelGrid.Children.Count; i++)
+            string disabledReason = GetEntryDisabledReason();
+            for (int i = 0; i < orderButtons.Count; i++)
             {
-                Border border = panelGrid.Children[i] as Border;
-                if (border == null)
+                Button button = orderButtons[i];
+                if (button == null)
                     continue;
 
-                Grid content = border.Child as Grid;
-                if (content == null)
-                    continue;
+                PanelAction action = (PanelAction)button.Tag;
+                bool enabled;
+                if (action == PanelAction.Flatten || action == PanelAction.CancelPending)
+                {
+                    enabled = State == State.Realtime;
+                    button.ToolTip = State == State.Realtime ? null : "Waiting for realtime — buttons enable when the strategy is live.";
+                }
+                else
+                {
+                    enabled = canTrade;
+                    button.ToolTip = enabled ? null : disabledReason;
+                }
 
-                SetButtonsEnabledRecursive(content, canTrade);
+                button.IsEnabled = enabled;
+                button.Opacity = enabled ? 1.0 : 0.45;
             }
         }
 
-        private void SetButtonsEnabledRecursive(DependencyObject parent, bool canTrade)
+        private string GetEntryDisabledReason()
         {
-            if (parent == null)
+            if (State != State.Realtime)
+                return "Waiting for realtime — buttons enable when the strategy is live.";
+
+            if (lastCalculation.Quantity < 1 && lastCalculation.IsRiskTooSmall)
+                return BuildNoSizeMessage(lastCalculation);
+
+            return "Entry unavailable with current settings.";
+        }
+
+        private void UpdateRiskBanner()
+        {
+            if (riskBannerTextBlock == null)
                 return;
 
-            int count = VisualTreeHelper.GetChildrenCount(parent);
-            for (int i = 0; i < count; i++)
+            if (State != State.Realtime)
             {
-                DependencyObject child = VisualTreeHelper.GetChild(parent, i);
-                Button button = child as Button;
-                if (button != null)
-                {
-                    PanelAction action = (PanelAction)button.Tag;
-                    if (action == PanelAction.Flatten || action == PanelAction.CancelPending)
-                        button.IsEnabled = State == State.Realtime;
-                    else
-                        button.IsEnabled = canTrade;
-                }
-
-                SetButtonsEnabledRecursive(child, canTrade);
+                riskBannerTextBlock.Visibility = Visibility.Visible;
+                riskBannerTextBlock.Background = new SolidColorBrush(Color.FromArgb(230, 88, 63, 12));
+                riskBannerTextBlock.Foreground = Brushes.White;
+                riskBannerTextBlock.Text = "Waiting for realtime — buttons enable when the strategy is live.";
+                return;
             }
+
+            if (lastCalculation.StopCappedByRisk)
+            {
+                riskBannerTextBlock.Visibility = Visibility.Visible;
+                riskBannerTextBlock.Background = new SolidColorBrush(Color.FromArgb(220, 138, 103, 0));
+                riskBannerTextBlock.Foreground = Brushes.White;
+                riskBannerTextBlock.Text = string.Format(
+                    "STOP CAPPED BY RISK: ATR stop {0:F2} pts \u2192 {1:F2} pts ({2:F0}t) to fit 1 ct in ${3:F2}.",
+                    lastCalculation.AtrStopDistancePoints,
+                    lastCalculation.StopDistancePoints,
+                    lastCalculation.StopTicks,
+                    MaxLossPerTrade);
+                return;
+            }
+
+            if (lastCalculation.IsRiskOvershoot)
+            {
+                riskBannerTextBlock.Visibility = Visibility.Visible;
+                riskBannerTextBlock.Background = new SolidColorBrush(Color.FromArgb(230, 96, 24, 24));
+                riskBannerTextBlock.Foreground = Brushes.White;
+                if (lastCalculation.Quantity <= 1)
+                {
+                    riskBannerTextBlock.Text = string.Format(
+                        "RISK OVERSHOOT: 1 ct risks ${0:F2} vs Max Loss ${1:F2}.",
+                        lastCalculation.TrueRiskPerContract,
+                        MaxLossPerTrade);
+                }
+                else
+                {
+                    riskBannerTextBlock.Text = string.Format(
+                        "RISK OVERSHOOT: {0} ct risk total ${1:F2} vs Max Loss ${2:F2}.",
+                        lastCalculation.Quantity,
+                        lastCalculation.TotalRisk,
+                        MaxLossPerTrade);
+                }
+                return;
+            }
+
+            if (lastCalculation.Quantity < 1 && lastCalculation.IsRiskTooSmall && lastCalculation.HasEnoughBars)
+            {
+                riskBannerTextBlock.Visibility = Visibility.Visible;
+                riskBannerTextBlock.Background = new SolidColorBrush(Color.FromArgb(230, 96, 24, 24));
+                riskBannerTextBlock.Foreground = Brushes.White;
+                riskBannerTextBlock.Text = BuildNoSizeMessage(lastCalculation);
+                return;
+            }
+
+            riskBannerTextBlock.Visibility = Visibility.Collapsed;
+            riskBannerTextBlock.Text = string.Empty;
+        }
+
+        private string BuildNoSizeMessage(CalculationResult calc)
+        {
+            string maxLossText = string.Format("${0:F0}", calc.RequiredMaxLossForOneContract);
+            string multiplierText = calc.SuggestedMaxAtrMultiplier > 0
+                ? calc.SuggestedMaxAtrMultiplier.ToString("0.00", CultureInfo.InvariantCulture)
+                : "0.00";
+
+            string microText = string.Empty;
+            if (!string.IsNullOrEmpty(calc.SuggestedMicroSymbol))
+                microText = "trade " + calc.SuggestedMicroSymbol + ", ";
+
+            return string.Format(
+                "NO SIZE: 1 contract risks ${0:F2} > Max Loss ${1:F2}. Options: {2}raise Max Loss to ≥ {3}, lower ATR Mult to ≤ {4}, or set Undersized Risk Mode = ShrinkStopToFit.",
+                calc.TrueRiskPerContract,
+                MaxLossPerTrade,
+                microText,
+                maxLossText,
+                multiplierText);
+        }
+
+        private void UpdatePanelCollapseVisualState()
+        {
+            if (panelBodyGrid != null)
+                panelBodyGrid.Visibility = panelCollapsed ? Visibility.Collapsed : Visibility.Visible;
+
+            if (panelCollapseToggleButton != null)
+                panelCollapseToggleButton.Content = panelCollapsed ? "▲" : "▼";
+        }
+
+        private void PanelCollapseToggleButton_Click(object sender, RoutedEventArgs e)
+        {
+            panelCollapsed = !panelCollapsed;
+            UpdatePanelCollapseVisualState();
+        }
+
+        private void PanelHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (panelGrid == null || panelHostChartControl == null)
+                return;
+
+            DependencyObject source = e.OriginalSource as DependencyObject;
+            while (source != null)
+            {
+                if (ReferenceEquals(source, panelCollapseToggleButton))
+                    return;
+                source = source is Visual ? VisualTreeHelper.GetParent(source) : null;
+            }
+
+            isDraggingPanel = true;
+            dragStartPoint = e.GetPosition(panelHostChartControl);
+            panelGrid.CaptureMouse();
+        }
+
+        private void PanelHeader_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!isDraggingPanel || panelGrid == null || panelHostChartControl == null || panelTransform == null)
+                return;
+
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                isDraggingPanel = false;
+                panelGrid.ReleaseMouseCapture();
+                return;
+            }
+
+            Point currentPoint = e.GetPosition(panelHostChartControl);
+            Vector delta = currentPoint - dragStartPoint;
+            panelDragX += delta.X;
+            panelDragY += delta.Y;
+            panelTransform.X = panelDragX;
+            panelTransform.Y = panelDragY;
+            dragStartPoint = currentPoint;
+        }
+
+        private void PanelHeader_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!isDraggingPanel || panelGrid == null)
+                return;
+
+            isDraggingPanel = false;
+            panelGrid.ReleaseMouseCapture();
         }
 
         private void RemoveControlPanel()
@@ -1528,6 +1902,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     rewardRiskTextBox.TextChanged -= RewardRiskTextBox_TextChanged;
                 if (maxLossTextBox != null)
                     maxLossTextBox.TextChanged -= MaxLossTextBox_TextChanged;
+                if (atrMultiplierQuickTextBox != null)
+                    atrMultiplierQuickTextBox.TextChanged -= AtrMultiplierTextBox_TextChanged;
+                if (rewardRiskQuickTextBox != null)
+                    rewardRiskQuickTextBox.TextChanged -= RewardRiskTextBox_TextChanged;
+                if (maxLossQuickTextBox != null)
+                    maxLossQuickTextBox.TextChanged -= MaxLossTextBox_TextChanged;
                 if (commissionTextBox != null)
                     commissionTextBox.TextChanged -= CommissionTextBox_TextChanged;
                 if (feesTextBox != null)
@@ -1542,6 +1922,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     feePresetComboBox.SelectionChanged -= FeePresetComboBox_SelectionChanged;
                 if (instrumentFeePresetComboBox != null)
                     instrumentFeePresetComboBox.SelectionChanged -= InstrumentFeePresetComboBox_SelectionChanged;
+                if (undersizedRiskModeComboBox != null)
+                    undersizedRiskModeComboBox.SelectionChanged -= UndersizedRiskModeComboBox_SelectionChanged;
                 if (showPlanLinesCheckBox != null)
                 {
                     showPlanLinesCheckBox.Checked -= ShowPlanLinesCheckBox_Checked;
@@ -1557,11 +1939,32 @@ namespace NinjaTrader.NinjaScript.Strategies
                     allowMultipleEntriesCheckBox.Checked -= AllowMultipleEntriesCheckBox_Checked;
                     allowMultipleEntriesCheckBox.Unchecked -= AllowMultipleEntriesCheckBox_Checked;
                 }
+                if (settingsExpander != null)
+                {
+                    settingsExpander.Expanded -= SettingsExpander_Expanded;
+                    settingsExpander.Collapsed -= SettingsExpander_Collapsed;
+                }
+                if (panelCollapseToggleButton != null)
+                    panelCollapseToggleButton.Click -= PanelCollapseToggleButton_Click;
 
+                if (panelHeaderGrid != null)
+                {
+                    panelHeaderGrid.MouseMove -= PanelHeader_MouseMove;
+                    panelHeaderGrid.MouseLeftButtonDown -= PanelHeader_MouseLeftButtonDown;
+                    panelHeaderGrid.MouseLeftButtonUp -= PanelHeader_MouseLeftButtonUp;
+                }
                 if (panelGrid != null)
+                {
+                    panelGrid.ReleaseMouseCapture();
                     UserControlCollection.Remove(panelGrid);
+                }
 
                 panelGrid = null;
+                panelBodyGrid = null;
+                panelHeaderGrid = null;
+                panelBorder = null;
+                panelTransform = null;
+                orderButtons.Clear();
                 panelHostChartControl = null;
             });
         }
@@ -1616,6 +2019,35 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ApplyPresetSelections();
                 UpdateControlPanelAsync();
             }, null);
+        }
+
+        private void UndersizedRiskModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (isPanelUpdating || undersizedRiskModeComboBox == null || undersizedRiskModeComboBox.SelectedItem == null)
+                return;
+
+            AtrUndersizedRiskMode selected = (AtrUndersizedRiskMode)undersizedRiskModeComboBox.SelectedItem;
+            TriggerCustomEvent(delegate(object o)
+            {
+                UndersizedRiskMode = selected;
+                UpdateControlPanelAsync();
+            }, null);
+        }
+
+        private void SettingsExpander_Expanded(object sender, RoutedEventArgs e)
+        {
+            if (isPanelUpdating)
+                return;
+
+            settingsExpandedState = true;
+        }
+
+        private void SettingsExpander_Collapsed(object sender, RoutedEventArgs e)
+        {
+            if (isPanelUpdating)
+                return;
+
+            settingsExpandedState = false;
         }
 
         private void ShowPlanLinesCheckBox_Checked(object sender, RoutedEventArgs e)
@@ -1680,8 +2112,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPanelUpdating)
                 return;
 
+            TextBox source = sender as TextBox;
+            string text = source != null ? source.Text : (atrMultiplierTextBox != null ? atrMultiplierTextBox.Text : string.Empty);
             double value;
-            if (!TryParseDouble(atrMultiplierTextBox.Text, out value) || value <= 0)
+            if (!TryParseDouble(text, out value) || value <= 0)
                 return;
 
             TriggerCustomEvent(delegate(object o)
@@ -1696,8 +2130,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPanelUpdating)
                 return;
 
+            TextBox source = sender as TextBox;
+            string text = source != null ? source.Text : (rewardRiskTextBox != null ? rewardRiskTextBox.Text : string.Empty);
             double value;
-            if (!TryParseDouble(rewardRiskTextBox.Text, out value) || value <= 0)
+            if (!TryParseDouble(text, out value) || value <= 0)
                 return;
 
             TriggerCustomEvent(delegate(object o)
@@ -1712,8 +2148,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPanelUpdating)
                 return;
 
+            TextBox source = sender as TextBox;
+            string text = source != null ? source.Text : (maxLossTextBox != null ? maxLossTextBox.Text : string.Empty);
             double value;
-            if (!TryParseDouble(maxLossTextBox.Text, out value) || value <= 0)
+            if (!TryParseDouble(text, out value) || value <= 0)
                 return;
 
             TriggerCustomEvent(delegate(object o)
@@ -1826,6 +2264,31 @@ namespace NinjaTrader.NinjaScript.Strategies
             return CurrentBar >= 0 ? FormatPrice(Close[0]) : string.Empty;
         }
 
+        private string TryGetMicroSuggestionSymbol()
+        {
+            if (Instrument == null || Instrument.MasterInstrument == null || string.IsNullOrWhiteSpace(Instrument.MasterInstrument.Name))
+                return string.Empty;
+
+            string name = Instrument.MasterInstrument.Name.ToUpperInvariant();
+            switch (name)
+            {
+                case "ES":
+                    return "MES";
+                case "NQ":
+                    return "MNQ";
+                case "YM":
+                    return "MYM";
+                case "RTY":
+                    return "M2K";
+                case "CL":
+                    return "MCL";
+                case "GC":
+                    return "MGC";
+                default:
+                    return string.Empty;
+            }
+        }
+
         private void SetTextIfIdle(TextBox textBox, string text)
         {
             if (textBox == null || textBox.IsKeyboardFocusWithin)
@@ -1884,6 +2347,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int MaxQuantity { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Undersized Risk Mode", GroupName = "3. Sizing", Order = 3)]
+        public AtrUndersizedRiskMode UndersizedRiskMode { get; set; }
+
+        [NinjaScriptProperty]
         [Display(Name = "Show plan lines on chart", GroupName = "4. Panel", Order = 1)]
         public bool ShowPlanLines { get; set; }
 
@@ -1894,6 +2361,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Allow Multiple Entries", GroupName = "4. Panel", Order = 3)]
         public bool AllowMultipleEntries { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Settings Expanded By Default", GroupName = "4. Panel", Order = 4)]
+        public bool SettingsExpandedByDefault { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Panel Position", GroupName = "4. Panel", Order = 5)]
+        public AtrPanelCorner PanelPosition { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Exit On Session Close", GroupName = "5. Safety", Order = 1)]
