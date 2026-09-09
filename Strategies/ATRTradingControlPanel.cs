@@ -171,6 +171,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private Brush statusBrush = Brushes.DarkOrange;
         private bool flattenRequested;
         private bool flattenInFlight;
+        private DateTime lastVisualRefreshUtc = DateTime.MinValue;
+
+        private static readonly TimeSpan VisualRefreshThrottleInterval = TimeSpan.FromMilliseconds(250);
 
         protected override void OnStateChange()
         {
@@ -235,10 +238,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 hasInitializedPendingPrice = true;
             }
 
-            RenderStatusText();
-            UpdatePlanDrawings();
             TryCreateControlPanel();
-            UpdateControlPanelAsync();
+            RefreshVisualsIfDue();
         }
 
         protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled,
@@ -734,12 +735,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (plan == null || plan.EntryOrder == null)
                     continue;
 
-                bool entryStillWorking = plan.EntryOrder.OrderState == OrderState.Working
-                    || plan.EntryOrder.OrderState == OrderState.Accepted
-                    || plan.EntryOrder.OrderState == OrderState.Submitted
-                    || plan.EntryOrder.OrderState == OrderState.PartFilled;
-
-                if (entryStillWorking && plan.FilledQuantity == 0)
+                if (IsOrderWorking(plan.EntryOrder) && plan.FilledQuantity == 0)
                 {
                     CancelOrder(plan.EntryOrder);
                     cancelled++;
@@ -892,7 +888,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             return order.OrderState == OrderState.Working
                 || order.OrderState == OrderState.Accepted
                 || order.OrderState == OrderState.Submitted
-                || order.OrderState == OrderState.PartFilled;
+                || order.OrderState == OrderState.PartFilled
+                || order.OrderState == OrderState.CancelPending
+                || order.OrderState == OrderState.ChangePending;
         }
 
         private bool HasAnyWorkingOrders()
@@ -1030,6 +1028,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             statusBrush = brush ?? Brushes.DimGray;
             UpdateControlPanelAsync();
             RenderStatusText();
+        }
+
+        private void RefreshVisualsIfDue()
+        {
+            DateTime nowUtc = DateTime.UtcNow;
+            if (lastVisualRefreshUtc != DateTime.MinValue && nowUtc - lastVisualRefreshUtc < VisualRefreshThrottleInterval)
+                return;
+
+            lastVisualRefreshUtc = nowUtc;
+            RenderStatusText();
+            UpdatePlanDrawings();
+            UpdateControlPanelAsync();
         }
 
         private void UpdatePlanDrawings()
