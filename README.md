@@ -8,6 +8,29 @@ ATRTradingControlPanel is a discretionary execution strategy that sizes contract
 
 **Quick install:** copy `Strategies/ATRTradingControlPanel.cs` to `Documents\NinjaTrader 8\bin\Custom\Strategies\`, open NinjaScript Editor, right-click **Strategies** → *Compile*, then add **ATRTradingControlPanel** to a chart. Test in **Sim** first.
 
+### Trading full-size contracts (NQ/ES)
+
+If ATR risk for one full-size contract exceeds your Max Loss (example: NQ ATR `15.19` × `1.5` = `22.75` pts ≈ `$458.20` true risk/ct vs `$200` max loss), use **Undersized Risk Mode**:
+
+- `Block` — disable entry and explain why
+- `ShrinkStopToFit` (default) — cap stop to fit 1 contract inside Max Loss
+- `TradeMinQtyAnyway` — keep ATR stop and allow overshoot with warning
+
+### Why are the buttons greyed out?
+
+- Strategy is not in realtime yet, or
+- In `Block` mode, `Qty` is zero because one contract risk is above Max Loss.
+
+The panel now shows a prominent reason banner and disabled-button tooltips with suggested fixes.
+
+### Panel UX improvements (v1.1)
+
+- Compact ~236px panel with 3-line live metrics
+- `Settings` expander (collapsed by default, configurable)
+- Corner `Panel Position` option + drag-to-move header
+- ▲/▼ header collapse toggle (header + banner/status view)
+- Chart-Trader-style button colors and disabled opacity
+
 ---
 
 # IQMainGPU — Traders Reality inspired Main Indicator

@@ -55,7 +55,6 @@ NinjaTrader 8 unmanaged-order strategy that adds an on-chart **ATR CONTROL PANEL
   - `NinjaTraderLifetime`
   - `NinjaTraderFree`
   - `TradovateFree`
-  - `Manual`
 - **Instrument Fee Preset** — example-only exchange-fee presets for:
   - `ES`, `MES`, `NQ`, `MNQ`, `YM`, `MYM`, `RTY`, `M2K`, `CL`, `MCL`, `GC`, `MGC`
 
@@ -65,11 +64,17 @@ NinjaTrader 8 unmanaged-order strategy that adds an on-chart **ATR CONTROL PANEL
 
 - **Min Quantity** — lower hard clamp on computed quantity. Default `1`.
 - **Max Quantity** — upper hard clamp on computed quantity. Default `10`.
-- If true risk for one contract is already above your max-loss budget, or if your minimum quantity would exceed that budget, the strategy blocks the trade and shows:
-  - `Risk too small for 1 contract: true risk/contract = $X`
+- **Undersized Risk Mode** — behavior when ATR stop risk is too large for 1 contract:
+  - `Block` — disable entries and show a red explanation banner.
+  - `ShrinkStopToFit` (default) — cap stop distance to fit one contract inside Max Loss.
+  - `TradeMinQtyAnyway` — keep full ATR stop and allow 1+ contract with risk-overshoot warning.
 
 ### Panel / execution behavior
 
+- **Panel Position** — `TopLeft`, `TopRight`, `BottomLeft`, `BottomRight`.
+- **Settings Expanded By Default** — controls initial state of the Settings expander.
+- **Header drag-to-move** — drag panel by the header (cursor is move icon).
+- **▲/▼ collapse toggle** — collapse to header + banner/status only.
 - **Show plan lines on chart** — shows projected long/short entry, stop, and target lines while flat.
 - **Use ATR at fill for pending orders** — pending order quantity is frozen at placement, but stop/target distance can be recalculated at fill from the then-current ATR.
 - **Allow Multiple Entries** — default `false`. When on, the strategy only allows additional entries in the **same** direction as the current position/working plan.
@@ -137,7 +142,33 @@ This is a tradeoff between adapting to fill-time volatility and keeping the orig
 - **CANCEL PENDING** — cancels working entry orders from this strategy
 - **FLATTEN** — cancels working orders from this strategy and submits a market order to flatten the current net position
 
-Buttons are disabled when the strategy is not in **Realtime**. Entry buttons are also disabled when the computed quantity is `0`.
+Buttons are disabled when the strategy is not in **Realtime**. Entry buttons are also disabled when the computed quantity is `0` in `Block` mode. Disabled entry buttons show the same reason in a tooltip.
+
+## Trading full-size contracts (NQ/ES)
+
+Example from first live test on **NQ**:
+
+- ATR `15.19`, Mult `1.5` → stop `22.75` pts (`91` ticks)
+- Gross risk/ct `91 × $5 = $455`
+- With friction, true risk/ct = **$458.20**
+- Max Loss = **$200** → full ATR stop cannot fit 1 NQ contract
+
+Undersized modes handle this:
+
+- **Block**: no entry; banner explains what to change.
+- **ShrinkStopToFit** (default): caps stop to the largest tick distance that fits 1 contract (example: `9.75` pts / `39` ticks), keeps R:R target scaling, and shows amber `STOP CAPPED BY RISK`.
+- **TradeMinQtyAnyway**: keeps ATR stop, enables orders, and shows red `RISK OVERSHOOT`.
+
+## Why are the buttons greyed out?
+
+Most common reasons:
+
+1. Strategy is not in **Realtime** yet (`Waiting for realtime` banner).
+2. In `Block` mode, **1 contract risk > Max Loss**. The red `NO SIZE` banner suggests fixes:
+   - switch to the mapped micro (e.g., `NQ → MNQ`, `ES → MES`)
+   - raise Max Loss to at least `ceil(true risk/ct)`
+   - lower ATR Mult to the suggested max
+   - or set mode to `ShrinkStopToFit`
 
 ## Known limitations
 
