@@ -108,7 +108,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             public void PrepareForBar(int barIdx)
             {
-                if (lastBarIdx < 0 || barIdx == lastBarIdx || closedBarIdx == lastBarIdx) return;
+                if (lastBarIdx < 0 || barIdx <= lastBarIdx || closedBarIdx >= lastBarIdx) return;
                 ClosedCumPV += lastBarPV;
                 ClosedCumVol += lastBarVol;
                 ClosedCumTPVSq += lastBarTPVSq;
