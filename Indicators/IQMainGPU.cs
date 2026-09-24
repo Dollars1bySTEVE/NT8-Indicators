@@ -282,8 +282,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             return TimeZoneInfo.ConvertTime(tUnspec, sourceZone, EtZone);
         }
 
-        private static readonly TimeSpan BandWindowStartDefaultEt = new TimeSpan(20, 0, 0);
-        private static readonly TimeSpan BandWindowEndDefaultEt   = new TimeSpan(3, 0, 0);
+        private static readonly TimeSpan BandWindowStartDefaultEt = new TimeSpan(9, 30, 0);
+        private static readonly TimeSpan BandWindowEndDefaultEt   = new TimeSpan(17, 0, 0);
         private static readonly TimeSpan RthBandStartDefaultEt    = new TimeSpan(9, 30, 0);
         private static readonly TimeSpan RthBandEndDefaultEt      = new TimeSpan(17, 0, 0);
         private static readonly TimeSpan EthBandStartDefaultEt    = new TimeSpan(18, 0, 0);
@@ -487,35 +487,31 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool RthBandsEnabled { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Continuous Bands Enabled", Order = 3, GroupName = "4. Band Window")]
-        public bool ContinuousBandsEnabled { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Band Window Mode", Order = 4, GroupName = "4. Band Window")]
+        [Display(Name = "Band Window Mode", Order = 3, GroupName = "4. Band Window")]
         public IQVwapBandWindow BandWindowMode { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Band Window Start ET (HH:mm)", Order = 5, GroupName = "4. Band Window")]
+        [Display(Name = "Band Window Start ET (HH:mm)", Order = 4, GroupName = "4. Band Window")]
         public string BandWindowStartEt { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Band Window End ET (HH:mm)", Order = 6, GroupName = "4. Band Window")]
+        [Display(Name = "Band Window End ET (HH:mm)", Order = 5, GroupName = "4. Band Window")]
         public string BandWindowEndEt { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "RTH Band Start ET (HH:mm)", Order = 7, GroupName = "4. Band Window")]
+        [Display(Name = "RTH Band Start ET (HH:mm)", Order = 6, GroupName = "4. Band Window")]
         public string RthBandStartEt { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "RTH Band End ET (HH:mm)", Order = 8, GroupName = "4. Band Window")]
+        [Display(Name = "RTH Band End ET (HH:mm)", Order = 7, GroupName = "4. Band Window")]
         public string RthBandEndEt { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "ETH Band Start ET (HH:mm)", Order = 9, GroupName = "4. Band Window")]
+        [Display(Name = "ETH Band Start ET (HH:mm)", Order = 8, GroupName = "4. Band Window")]
         public string EthBandStartEt { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "ETH Band End ET (HH:mm)", Order = 10, GroupName = "4. Band Window")]
+        [Display(Name = "ETH Band End ET (HH:mm)", Order = 9, GroupName = "4. Band Window")]
         public string EthBandEndEt { get; set; }
 
         #endregion
@@ -1809,7 +1805,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // 4. Band Window
                 EthBandsEnabled        = true;
                 RthBandsEnabled        = true;
-                ContinuousBandsEnabled = false;
                 BandWindowMode         = IQVwapBandWindow.AnchorSession;
                 BandWindowStartEt      = "09:30";
                 BandWindowEndEt        = "17:00";
@@ -4113,6 +4108,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             });
 
             // ── RTH-anchored VWAP (resets at 09:30 ET = US cash open) ────────
+            DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
             bool inRth = barEt >= rthStart;
 
             if (inRth)
@@ -4821,40 +4817,53 @@ namespace NinjaTrader.NinjaScript.Indicators
             var rt = RenderTarget;
             if (rt == null || fillBrush == null) return;
 
-            for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+            // One geometry per band per render pass — appending each visible segment as a
+            // figure avoids allocating a PathGeometry/sink for every bar on every paint.
+            using (var path = new SharpDX.Direct2D1.PathGeometry(rt.Factory))
             {
-                if (barIdx < 0 || barIdx + 1 >= Bars.Count) continue;
-                VwapBarData d0 = GetVwapDataAt(data, barIdx);
-                VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
-                if (d0 == null || d1 == null) continue;
-                if (!ShouldRenderBandSegment(d0, d1, anchorKind)) continue;
+                bool hasFigure = false;
 
-                float x0 = cc.GetXByBarIndex(ChartBars, barIdx);
-                float x1 = cc.GetXByBarIndex(ChartBars, barIdx + 1);
-                if (x1 <= x0) continue;
+                using (var sink = path.Open())
+                {
+                    for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+                    {
+                        if (barIdx < 0 || barIdx + 1 >= Bars.Count) continue;
+                        VwapBarData d0 = GetVwapDataAt(data, barIdx);
+                        VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
+                        if (d0 == null || d1 == null) continue;
+                        if (!ShouldRenderBandSegment(d0, d1, anchorKind)) continue;
 
-                if (bandNum == 1)
-                {
-                    FillBandQuad(rt, cs, x0, x1, d0.Band1Upper, d1.Band1Upper, d0.Band1Lower, d1.Band1Lower, fillBrush);
+                        float x0 = cc.GetXByBarIndex(ChartBars, barIdx);
+                        float x1 = cc.GetXByBarIndex(ChartBars, barIdx + 1);
+                        if (x1 <= x0) continue;
+
+                        if (bandNum == 1)
+                        {
+                            hasFigure |= AddBandQuadFigure(sink, cs, x0, x1, d0.Band1Upper, d1.Band1Upper, d0.Band1Lower, d1.Band1Lower);
+                        }
+                        else if (bandNum == 2)
+                        {
+                            hasFigure |= AddBandQuadFigure(sink, cs, x0, x1, d0.Band2Upper, d1.Band2Upper, d0.Band1Upper, d1.Band1Upper);
+                            hasFigure |= AddBandQuadFigure(sink, cs, x0, x1, d0.Band2Lower, d1.Band2Lower, d0.Band1Lower, d1.Band1Lower);
+                        }
+                        else if (bandNum == 3)
+                        {
+                            hasFigure |= AddBandQuadFigure(sink, cs, x0, x1, d0.Band3Upper, d1.Band3Upper, d0.Band2Upper, d1.Band2Upper);
+                            hasFigure |= AddBandQuadFigure(sink, cs, x0, x1, d0.Band3Lower, d1.Band3Lower, d0.Band2Lower, d1.Band2Lower);
+                        }
+                    }
+
+                    sink.Close();
                 }
-                else if (bandNum == 2)
-                {
-                    FillBandQuad(rt, cs, x0, x1, d0.Band2Upper, d1.Band2Upper, d0.Band1Upper, d1.Band1Upper, fillBrush);
-                    FillBandQuad(rt, cs, x0, x1, d0.Band2Lower, d1.Band2Lower, d0.Band1Lower, d1.Band1Lower, fillBrush);
-                }
-                else if (bandNum == 3)
-                {
-                    FillBandQuad(rt, cs, x0, x1, d0.Band3Upper, d1.Band3Upper, d0.Band2Upper, d1.Band2Upper, fillBrush);
-                    FillBandQuad(rt, cs, x0, x1, d0.Band3Lower, d1.Band3Lower, d0.Band2Lower, d1.Band2Lower, fillBrush);
-                }
+
+                if (hasFigure)
+                    rt.FillGeometry(path, fillBrush);
             }
         }
 
         private bool ShouldRenderBandSegment(VwapBarData d0, VwapBarData d1, int anchorKind)
         {
-            bool anchorEnabled = anchorKind == 0 ? EthBandsEnabled
-                               : anchorKind == 1 ? RthBandsEnabled
-                               : ContinuousBandsEnabled;
+            bool anchorEnabled = anchorKind == 0 ? EthBandsEnabled : RthBandsEnabled;
             if (!anchorEnabled)
                 return false;
 
@@ -4868,9 +4877,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             return true;
         }
 
-        private void FillBandQuad(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs,
-            float x0, float x1, double outer0, double outer1, double inner0, double inner1,
-            SharpDX.Direct2D1.SolidColorBrush brush)
+        private static bool AddBandQuadFigure(SharpDX.Direct2D1.GeometrySink sink, ChartScale cs,
+            float x0, float x1, double outer0, double outer1, double inner0, double inner1)
         {
             float yOuter0 = cs.GetYByValue(outer0);
             float yOuter1 = cs.GetYByValue(outer1);
@@ -4878,23 +4886,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             float yInner1 = cs.GetYByValue(inner1);
 
             if (float.IsNaN(yOuter0) || float.IsNaN(yOuter1) || float.IsNaN(yInner0) || float.IsNaN(yInner1))
-                return;
+                return false;
             if (float.IsInfinity(yOuter0) || float.IsInfinity(yOuter1) || float.IsInfinity(yInner0) || float.IsInfinity(yInner1))
-                return;
+                return false;
 
-            using (var path = new SharpDX.Direct2D1.PathGeometry(rt.Factory))
-            {
-                using (var sink = path.Open())
-                {
-                    sink.BeginFigure(new SharpDX.Vector2(x0, yOuter0), SharpDX.Direct2D1.FigureBegin.Filled);
-                    sink.AddLine(new SharpDX.Vector2(x1, yOuter1));
-                    sink.AddLine(new SharpDX.Vector2(x1, yInner1));
-                    sink.AddLine(new SharpDX.Vector2(x0, yInner0));
-                    sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
-                    sink.Close();
-                }
-                rt.FillGeometry(path, brush);
-            }
+            sink.BeginFigure(new SharpDX.Vector2(x0, yOuter0), SharpDX.Direct2D1.FigureBegin.Filled);
+            sink.AddLine(new SharpDX.Vector2(x1, yOuter1));
+            sink.AddLine(new SharpDX.Vector2(x1, yInner1));
+            sink.AddLine(new SharpDX.Vector2(x0, yInner0));
+            sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
+            return true;
         }
 
         private VwapBarData GetVwapDataAt(List<VwapBarData> data, int barIdx)
