@@ -556,24 +556,23 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // ── ETH (18:00 ET → 18:00 ET) ─────────────────────────────────
             DateTime ethStart = GetEthSessionStartEt(barEt);
-            if (ethAnchor.SessionStart != ethStart) ethAnchor.Reset(ethStart);
             ethAnchor.PrepareForBar(CurrentBar);
+            if (ethAnchor.SessionStart != ethStart) ethAnchor.Reset(ethStart);
             ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, false));
 
             // ── RTH (09:30 ET → 16:00 ET) ─────────────────────────────────
             DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
             DateTime rthEnd   = barEt.Date.AddHours(16);
             bool inRth = barEt >= rthStart && barEt < rthEnd;
+            rthAnchor.PrepareForBar(CurrentBar);
             if (inRth)
             {
                 if (rthAnchor.SessionStart != rthStart) rthAnchor.Reset(rthStart);
-                rthAnchor.PrepareForBar(CurrentBar);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, true));
             }
             else if (!RthOnlyDuringSession && rthAnchor.HasAnyVolume())
             {
                 // Carry last RTH value flat through the overnight (no accumulation)
-                rthAnchor.PrepareForBar(CurrentBar);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, 0, CurrentBar), barEt, inBandWindow, false));
             }
             else
@@ -582,6 +581,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 24/7 continuous ───────────────────────────────────────────
+            contAnchor.PrepareForBar(CurrentBar);
             if (ContinuousReset == IQVwapContinuousReset.Weekly)
             {
                 DateTime weekStart = GetWeekStartEt(barEt);
@@ -591,7 +591,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 contAnchor.Reset(barEt);
             }
-            contAnchor.PrepareForBar(CurrentBar);
             contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, inRth));
 
             ForceRefresh();
