@@ -1787,8 +1787,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RthBandsEnabled        = true;
                 ContinuousBandsEnabled = false;
                 BandWindowMode         = IQVwapBandWindow.AnchorSession;
-                BandWindowStartEt      = "20:00";
-                BandWindowEndEt        = "03:00";
+                BandWindowStartEt      = "09:30";
+                BandWindowEndEt        = "17:00";
 
                 // 2. EMAs
                 LabelOffsetBars  = 2;
@@ -2067,7 +2067,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapAboveColor    = Brushes.LimeGreen;
                 VwapBelowColor    = Brushes.Crimson;
                 VwapNeutralColor  = Brushes.Yellow;
-                ShowVwapBand1     = true;
+                ShowVwapBand1     = false;
                 VwapBand1Color    = Brushes.DodgerBlue;
                 VwapBand1Opacity  = 60;
                 VwapBand1Thickness = 1;
@@ -2075,7 +2075,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapBand2Color    = Brushes.Orange;
                 VwapBand2Opacity  = 50;
                 VwapBand2Thickness = 1;
-                ShowVwapBand3     = false;
+                ShowVwapBand3     = true;
                 VwapBand3Color    = Brushes.Purple;
                 VwapBand3Opacity  = 40;
                 VwapBand3Thickness = 1;
@@ -4018,7 +4018,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             double vol = Volume[0];
             bool inBandWindow = IsBarInBandWindowEt(barEt);
             DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
-            DateTime rthEnd   = barEt.Date.AddHours(16);
+            DateTime rthEnd   = barEt.Date.AddHours(17);
             bool inRthSession = barEt >= rthStart && barEt < rthEnd;
 
             // ── ETH-anchored VWAP (resets at 18:00 ET = CME Globex daily open) ─
@@ -4810,10 +4810,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return d0.InBandWindow && d1.InBandWindow;
 
             if (anchorKind == 0)
-                return true;
+                return IsInEthBandAnchorWindow(d0.BarEt) && IsInEthBandAnchorWindow(d1.BarEt);
             if (anchorKind == 1)
                 return d0.InRthSession && d1.InRthSession;
             return true;
+        }
+
+        private static bool IsInEthBandAnchorWindow(DateTime barEt)
+        {
+            TimeSpan t = barEt.TimeOfDay;
+            bool firstWindow  = t >= new TimeSpan(18, 0, 0) && t < new TimeSpan(3, 0, 0);
+            bool secondWindow = t >= new TimeSpan(3, 0, 0)  && t < new TimeSpan(9, 30, 0);
+            return firstWindow || secondWindow;
         }
 
         private void FillBandQuad(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs,
