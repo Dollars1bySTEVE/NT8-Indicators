@@ -14,8 +14,7 @@
 //   • Time[0] / Bars.GetTime(CurrentBar) is in the chart/PC time zone, not the trading-hours template zone
 //
 // This file is self-contained at runtime: it does NOT call into IQMainGPU.cs,
-// IQMainGPU_Enhanced.cs or IQMainUltimate.cs. It reuses the global IQVwapBandWindow
-// enum declared in IQMainGPU.cs so NinjaScript does not see a duplicate type.
+// IQMainGPU_Enhanced.cs or IQMainUltimate.cs.
 
 #region Using declarations
 using System;
@@ -33,9 +32,7 @@ using NinjaTrader.NinjaScript;
 #endregion
 
 // NinjaTrader 8 requires custom enums declared OUTSIDE all namespaces.
-// Names are prefixed with IQVwap to avoid clashing with enums in IQMainGPU.cs.
-// IQVwapBandWindow is already declared globally in IQMainGPU.cs and is reused here
-// to avoid a duplicate NinjaScript enum definition.
+// Names are prefixed with IQVwap to avoid clashing with other scripts.
 
 /// <summary>Line style for VWAP and band lines.</summary>
 public enum IQVwapLineStyle { Solid, Dashed, Dotted }
@@ -48,6 +45,10 @@ public enum IQVwapContinuousReset
     /// <summary>Reset every Sunday at 18:00 ET (CME weekly open).</summary>
     Weekly
 }
+
+/// <summary>Band gating mode for IQVwapSuite. Named distinctly from IQMainGPU's
+/// IQVwapBandWindow so this file stays standalone and never collides.</summary>
+public enum IQVwapSuiteBandWindow { AnchorSession, CustomEtTimes }
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
@@ -80,47 +81,52 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double   CumPV;
             public double   CumVol;
             public double   CumTPVSq;
+            public double   ClosedCumPV;
+            public double   ClosedCumVol;
+            public double   ClosedCumTPVSq;
             public DateTime SessionStart = DateTime.MinValue;
-
-            // Snapshot of the cumulative sums as they stood *before* the current bar's
-            // contribution, so an in-progress bar can be re-accumulated on every tick.
-            private double baseCumPV, baseCumVol, baseCumTPVSq;
-            private int    baseBarIdx = -1;
+            private int     closedBarIdx = -1;
+            private int     lastBarIdx = -1;
+            private double  lastBarPV;
+            private double  lastBarVol;
+            private double  lastBarTPVSq;
 
             public void Reset(DateTime start)
             {
                 SessionStart = start;
                 CumPV = CumVol = CumTPVSq = 0;
-                baseCumPV = baseCumVol = baseCumTPVSq = 0;
+                ClosedCumPV = ClosedCumVol = ClosedCumTPVSq = 0;
+                closedBarIdx = -1;
+                lastBarIdx = -1;
+                lastBarPV = lastBarVol = lastBarTPVSq = 0;
             }
 
-            /// <summary>Roll the cumulative sums back to the state before <paramref name="barIdx"/>
-            /// was accumulated, so intrabar updates replace (not add to) the bar's contribution.</summary>
-            public void BeginBar(int barIdx)
+            public void CommitClosedBarIfNeeded(bool shouldCommit)
             {
-                if (baseBarIdx != barIdx)
-                {
-                    baseBarIdx   = barIdx;
-                    baseCumPV    = CumPV;
-                    baseCumVol   = CumVol;
-                    baseCumTPVSq = CumTPVSq;
-                }
-                else
-                {
-                    CumPV    = baseCumPV;
-                    CumVol   = baseCumVol;
-                    CumTPVSq = baseCumTPVSq;
-                }
+                if (!shouldCommit || lastBarIdx < 0 || closedBarIdx == lastBarIdx) return;
+                ClosedCumPV += lastBarPV;
+                ClosedCumVol += lastBarVol;
+                ClosedCumTPVSq += lastBarTPVSq;
+                closedBarIdx = lastBarIdx;
             }
 
-            public VwapBarData Accumulate(double tp, double vol)
+            public VwapBarData AccumulateForDisplay(double tp, double vol, int barIdx)
             {
+                double barPV = 0;
+                double barTPVSq = 0;
                 if (vol > 0)
                 {
-                    CumPV    += tp * vol;
-                    CumVol   += vol;
-                    CumTPVSq += tp * tp * vol;
+                    barPV = tp * vol;
+                    barTPVSq = tp * tp * vol;
                 }
+                CumPV = ClosedCumPV + barPV;
+                CumVol = ClosedCumVol + vol;
+                CumTPVSq = ClosedCumTPVSq + barTPVSq;
+                lastBarIdx = barIdx;
+                lastBarPV = barPV;
+                lastBarVol = vol;
+                lastBarTPVSq = barTPVSq;
+
                 double vwap = CumVol > 0 ? CumPV / CumVol : tp;
                 double var  = CumVol > 0 ? Math.Max(0, (CumTPVSq / CumVol) - vwap * vwap) : 0;
                 double sd   = Math.Sqrt(var);
@@ -431,7 +437,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Band Window Mode", Order = 4, GroupName = "4. Band Window")]
-        public IQVwapBandWindow BandWindowMode { get; set; }
+        public IQVwapSuiteBandWindow BandWindowMode { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Band Window Start ET (HH:mm)", Order = 5, GroupName = "4. Band Window")]
@@ -508,7 +514,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EthBandsEnabled        = true;
                 RthBandsEnabled        = true;
                 ContinuousBandsEnabled = false;
-                BandWindowMode         = IQVwapBandWindow.AnchorSession;
+                BandWindowMode         = IQVwapSuiteBandWindow.AnchorSession;
                 BandWindowStartEt      = "20:00";
                 BandWindowEndEt        = "03:00";
             }
@@ -542,12 +548,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
             double vol = Volume[0];
             bool inBandWindow = IsBarInBandWindowEt(barEt);
+            bool commitClosedBar = IsFirstTickOfBar || State == State.Historical;
 
             // ── ETH (18:00 ET → 18:00 ET) ─────────────────────────────────
             DateTime ethStart = GetEthSessionStartEt(barEt);
             if (ethAnchor.SessionStart != ethStart) ethAnchor.Reset(ethStart);
-            ethAnchor.BeginBar(CurrentBar);
-            ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.Accumulate(tp, vol), barEt, inBandWindow, false));
+            ethAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+            ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, false));
 
             // ── RTH (09:30 ET → 16:00 ET) ─────────────────────────────────
             DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
@@ -556,14 +563,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (inRth)
             {
                 if (rthAnchor.SessionStart != rthStart) rthAnchor.Reset(rthStart);
-                rthAnchor.BeginBar(CurrentBar);
-                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.Accumulate(tp, vol), barEt, inBandWindow, true));
+                rthAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, true));
             }
             else if (!RthOnlyDuringSession && rthAnchor.CumVol > 0)
             {
                 // Carry last RTH value flat through the overnight (no accumulation)
-                rthAnchor.BeginBar(CurrentBar);
-                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.Accumulate(tp, 0), barEt, inBandWindow, false));
+                rthAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, 0, CurrentBar), barEt, inBandWindow, false));
             }
             else
             {
@@ -580,8 +587,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 contAnchor.Reset(barEt);
             }
-            contAnchor.BeginBar(CurrentBar);
-            contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.Accumulate(tp, vol), barEt, inBandWindow, inRth));
+            contAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+            contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, inRth));
 
             ForceRefresh();
         }
@@ -838,7 +845,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!anchorEnabled)
                 return false;
 
-            if (BandWindowMode == IQVwapBandWindow.CustomEtTimes)
+            if (BandWindowMode == IQVwapSuiteBandWindow.CustomEtTimes)
                 return d0.InBandWindow && d1.InBandWindow;
 
             if (anchorKind == AnchorKindEth)
