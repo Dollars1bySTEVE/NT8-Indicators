@@ -284,8 +284,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private static readonly TimeSpan BandWindowStartDefaultEt = new TimeSpan(20, 0, 0);
         private static readonly TimeSpan BandWindowEndDefaultEt   = new TimeSpan(3, 0, 0);
+        private static readonly TimeSpan RthBandStartDefaultEt    = new TimeSpan(9, 30, 0);
+        private static readonly TimeSpan RthBandEndDefaultEt      = new TimeSpan(17, 0, 0);
+        private static readonly TimeSpan EthBandStartDefaultEt    = new TimeSpan(18, 0, 0);
+        private static readonly TimeSpan EthBandEndDefaultEt      = new TimeSpan(9, 30, 0);
         private bool bandWindowStartParseWarned;
         private bool bandWindowEndParseWarned;
+        private bool rthBandStartParseWarned;
+        private bool rthBandEndParseWarned;
+        private bool ethBandStartParseWarned;
+        private bool ethBandEndParseWarned;
 
         private double psyWeekHigh, psyWeekLow;
         private int    psyWeekStartBar;
@@ -493,6 +501,22 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Band Window End ET (HH:mm)", Order = 6, GroupName = "4. Band Window")]
         public string BandWindowEndEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "RTH Band Start ET (HH:mm)", Order = 7, GroupName = "4. Band Window")]
+        public string RthBandStartEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "RTH Band End ET (HH:mm)", Order = 8, GroupName = "4. Band Window")]
+        public string RthBandEndEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ETH Band Start ET (HH:mm)", Order = 9, GroupName = "4. Band Window")]
+        public string EthBandStartEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "ETH Band End ET (HH:mm)", Order = 10, GroupName = "4. Band Window")]
+        public string EthBandEndEt { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1789,6 +1813,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BandWindowMode         = IQVwapBandWindow.AnchorSession;
                 BandWindowStartEt      = "09:30";
                 BandWindowEndEt        = "17:00";
+                RthBandStartEt         = "09:30";
+                RthBandEndEt           = "17:00";
+                EthBandStartEt         = "18:00";
+                EthBandEndEt           = "09:30";
 
                 // 2. EMAs
                 LabelOffsetBars  = 2;
@@ -2127,6 +2155,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 bandWindowStartParseWarned = false;
                 bandWindowEndParseWarned   = false;
+                rthBandStartParseWarned    = false;
+                rthBandEndParseWarned      = false;
+                ethBandStartParseWarned    = false;
+                ethBandEndParseWarned      = false;
 
                 // Sessions / pivot / range collections
                 dailyRanges   = new Queue<double>(32);
@@ -3934,14 +3966,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             TryParseBandWindowTime(BandWindowStartEt, "BandWindowStartEt", BandWindowStartDefaultEt, ref bandWindowStartParseWarned, out startEt);
             TryParseBandWindowTime(BandWindowEndEt, "BandWindowEndEt", BandWindowEndDefaultEt, ref bandWindowEndParseWarned, out endEt);
 
-            TimeSpan timeOfDay = barEt.TimeOfDay;
-            if (startEt == endEt)
-                return false;
-
-            if (startEt < endEt)
-                return timeOfDay >= startEt && timeOfDay < endEt;
-
-            return timeOfDay >= startEt || timeOfDay < endEt;
+            return IsTimeOfDayInWindow(barEt.TimeOfDay, startEt, endEt);
         }
 
         private void TryParseBandWindowTime(string text, string propertyName, TimeSpan fallback, ref bool warned, out TimeSpan parsed)
@@ -3970,6 +3995,35 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Print("IQMainGPU: Invalid " + propertyName + " value '" + text + "'. Using default " + fallback.ToString(@"hh\:mm") + " ET.");
                 warned = true;
             }
+        }
+
+        private static bool IsTimeOfDayInWindow(TimeSpan t, TimeSpan startEt, TimeSpan endEt)
+        {
+            if (startEt == endEt)
+                return false;
+
+            if (startEt < endEt)
+                return t >= startEt && t < endEt;
+
+            return t >= startEt || t < endEt;
+        }
+
+        private bool IsInConfiguredRthBandAnchorWindow(DateTime barEt)
+        {
+            TimeSpan startEt;
+            TimeSpan endEt;
+            TryParseBandWindowTime(RthBandStartEt, "RthBandStartEt", RthBandStartDefaultEt, ref rthBandStartParseWarned, out startEt);
+            TryParseBandWindowTime(RthBandEndEt, "RthBandEndEt", RthBandEndDefaultEt, ref rthBandEndParseWarned, out endEt);
+            return IsTimeOfDayInWindow(barEt.TimeOfDay, startEt, endEt);
+        }
+
+        private bool IsInConfiguredEthBandAnchorWindow(DateTime barEt)
+        {
+            TimeSpan startEt;
+            TimeSpan endEt;
+            TryParseBandWindowTime(EthBandStartEt, "EthBandStartEt", EthBandStartDefaultEt, ref ethBandStartParseWarned, out startEt);
+            TryParseBandWindowTime(EthBandEndEt, "EthBandEndEt", EthBandEndDefaultEt, ref ethBandEndParseWarned, out endEt);
+            return IsTimeOfDayInWindow(barEt.TimeOfDay, startEt, endEt);
         }
 
         private void UpdateRthEntry(bool inSession, DateTime sessionStart, DateTime sessionEnd,
@@ -4017,9 +4071,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
             double vol = Volume[0];
             bool inBandWindow = IsBarInBandWindowEt(barEt);
-            DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
-            DateTime rthEnd   = barEt.Date.AddHours(17);
-            bool inRthSession = barEt >= rthStart && barEt < rthEnd;
+            bool inRthSession = IsInConfiguredRthBandAnchorWindow(barEt);
 
             // ── ETH-anchored VWAP (resets at 18:00 ET = CME Globex daily open) ─
             DateTime ethStart = GetEthSessionStartEt(barEt);
@@ -4810,18 +4862,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return d0.InBandWindow && d1.InBandWindow;
 
             if (anchorKind == 0)
-                return IsInEthBandAnchorWindow(d0.BarEt) && IsInEthBandAnchorWindow(d1.BarEt);
+                return IsInConfiguredEthBandAnchorWindow(d0.BarEt) && IsInConfiguredEthBandAnchorWindow(d1.BarEt);
             if (anchorKind == 1)
                 return d0.InRthSession && d1.InRthSession;
             return true;
-        }
-
-        private static bool IsInEthBandAnchorWindow(DateTime barEt)
-        {
-            TimeSpan t = barEt.TimeOfDay;
-            bool firstWindow  = t >= new TimeSpan(18, 0, 0) && t < new TimeSpan(3, 0, 0);
-            bool secondWindow = t >= new TimeSpan(3, 0, 0)  && t < new TimeSpan(9, 30, 0);
-            return firstWindow || secondWindow;
         }
 
         private void FillBandQuad(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs,
