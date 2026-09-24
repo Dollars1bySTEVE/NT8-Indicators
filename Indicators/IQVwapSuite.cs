@@ -82,10 +82,35 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double   CumTPVSq;
             public DateTime SessionStart = DateTime.MinValue;
 
+            // Snapshot of the cumulative sums as they stood *before* the current bar's
+            // contribution, so an in-progress bar can be re-accumulated on every tick.
+            private double baseCumPV, baseCumVol, baseCumTPVSq;
+            private int    baseBarIdx = -1;
+
             public void Reset(DateTime start)
             {
                 SessionStart = start;
                 CumPV = CumVol = CumTPVSq = 0;
+                baseCumPV = baseCumVol = baseCumTPVSq = 0;
+            }
+
+            /// <summary>Roll the cumulative sums back to the state before <paramref name="barIdx"/>
+            /// was accumulated, so intrabar updates replace (not add to) the bar's contribution.</summary>
+            public void BeginBar(int barIdx)
+            {
+                if (baseBarIdx != barIdx)
+                {
+                    baseBarIdx   = barIdx;
+                    baseCumPV    = CumPV;
+                    baseCumVol   = CumVol;
+                    baseCumTPVSq = CumTPVSq;
+                }
+                else
+                {
+                    CumPV    = baseCumPV;
+                    CumVol   = baseCumVol;
+                    CumTPVSq = baseCumTPVSq;
+                }
             }
 
             public VwapBarData Accumulate(double tp, double vol)
@@ -512,7 +537,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnBarUpdate()
         {
             if (CurrentBar < 0) return;
-            if (!(IsFirstTickOfBar || Calculate == Calculate.OnBarClose)) { ForceRefresh(); return; }
 
             DateTime barEt = BarTimeEt();
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
@@ -522,6 +546,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── ETH (18:00 ET → 18:00 ET) ─────────────────────────────────
             DateTime ethStart = GetEthSessionStartEt(barEt);
             if (ethAnchor.SessionStart != ethStart) ethAnchor.Reset(ethStart);
+            ethAnchor.BeginBar(CurrentBar);
             ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.Accumulate(tp, vol), barEt, inBandWindow, false));
 
             // ── RTH (09:30 ET → 16:00 ET) ─────────────────────────────────
@@ -531,11 +556,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (inRth)
             {
                 if (rthAnchor.SessionStart != rthStart) rthAnchor.Reset(rthStart);
+                rthAnchor.BeginBar(CurrentBar);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.Accumulate(tp, vol), barEt, inBandWindow, true));
             }
             else if (!RthOnlyDuringSession && rthAnchor.CumVol > 0)
             {
                 // Carry last RTH value flat through the overnight (no accumulation)
+                rthAnchor.BeginBar(CurrentBar);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.Accumulate(tp, 0), barEt, inBandWindow, false));
             }
             else
@@ -553,6 +580,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 contAnchor.Reset(barEt);
             }
+            contAnchor.BeginBar(CurrentBar);
             contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.Accumulate(tp, vol), barEt, inBandWindow, inRth));
 
             ForceRefresh();
