@@ -101,9 +101,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 lastBarPV = lastBarVol = lastBarTPVSq = 0;
             }
 
-            public void CommitClosedBarIfNeeded(bool shouldCommit)
+            public bool HasAnyVolume()
             {
-                if (!shouldCommit || lastBarIdx < 0 || closedBarIdx == lastBarIdx) return;
+                return ClosedCumVol > 0 || CumVol > 0;
+            }
+
+            public void PrepareForBar(int barIdx)
+            {
+                if (lastBarIdx < 0 || barIdx == lastBarIdx || closedBarIdx == lastBarIdx) return;
                 ClosedCumPV += lastBarPV;
                 ClosedCumVol += lastBarVol;
                 ClosedCumTPVSq += lastBarTPVSq;
@@ -548,12 +553,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
             double vol = Volume[0];
             bool inBandWindow = IsBarInBandWindowEt(barEt);
-            bool commitClosedBar = IsFirstTickOfBar || State == State.Historical;
 
             // ── ETH (18:00 ET → 18:00 ET) ─────────────────────────────────
             DateTime ethStart = GetEthSessionStartEt(barEt);
             if (ethAnchor.SessionStart != ethStart) ethAnchor.Reset(ethStart);
-            ethAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+            ethAnchor.PrepareForBar(CurrentBar);
             ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, false));
 
             // ── RTH (09:30 ET → 16:00 ET) ─────────────────────────────────
@@ -563,13 +567,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (inRth)
             {
                 if (rthAnchor.SessionStart != rthStart) rthAnchor.Reset(rthStart);
-                rthAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+                rthAnchor.PrepareForBar(CurrentBar);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, true));
             }
-            else if (!RthOnlyDuringSession && rthAnchor.CumVol > 0)
+            else if (!RthOnlyDuringSession && rthAnchor.HasAnyVolume())
             {
                 // Carry last RTH value flat through the overnight (no accumulation)
-                rthAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+                rthAnchor.PrepareForBar(CurrentBar);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, 0, CurrentBar), barEt, inBandWindow, false));
             }
             else
@@ -587,7 +591,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 contAnchor.Reset(barEt);
             }
-            contAnchor.CommitClosedBarIfNeeded(commitClosedBar);
+            contAnchor.PrepareForBar(CurrentBar);
             contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, inRth));
 
             ForceRefresh();
