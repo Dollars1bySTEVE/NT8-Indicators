@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Media;
 using System.Xml.Serialization;
@@ -47,6 +48,7 @@ public enum IQMCandleColorMode
 
 /// <summary>Session anchor for VWAP calculation reset.</summary>
 public enum VwapSessionAnchor { ETH, RTH_US, Both }
+public enum IQVwapBandWindow { AnchorSession, CustomEtTimes }
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
@@ -75,6 +77,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///  • Order-book wall detection
     ///  • Unified on-chart dashboard
     ///  • All SharpDX types fully qualified — no namespace conflicts
+    ///  • Time[0] is in the chart/PC time zone (General Options), not Trading Hours template TZ
     /// </summary>
     public class IQMainGPU : Indicator
     {
@@ -169,6 +172,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Band2Lower;
             public double Band3Upper;
             public double Band3Lower;
+            public DateTime BarEt;
+            public bool InBandWindow;
+            public bool InRthSession;
         }
 
         /// <summary>OTE (Optimal Trade Entry) zone based on ICT Fibonacci retracement levels.</summary>
@@ -262,9 +268,24 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime BarTimeEt()
         {
             DateTime t = Bars.GetTime(CurrentBar);
+            TimeZoneInfo sourceZone = null;
+
+            if (NinjaTrader.Core.Globals.GeneralOptions != null)
+                sourceZone = NinjaTrader.Core.Globals.GeneralOptions.TimeZoneInfo;
+            if (sourceZone == null)
+                sourceZone = TimeZoneInfo.Local;
+
+            if (sourceZone == EtZone || string.Equals(sourceZone.Id, EtZone.Id, StringComparison.OrdinalIgnoreCase))
+                return t;
+
             DateTime tUnspec = DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
-            return TimeZoneInfo.ConvertTime(tUnspec, Bars.TradingHours.TimeZoneInfo, EtZone);
+            return TimeZoneInfo.ConvertTime(tUnspec, sourceZone, EtZone);
         }
+
+        private static readonly TimeSpan BandWindowStartDefaultEt = new TimeSpan(20, 0, 0);
+        private static readonly TimeSpan BandWindowEndDefaultEt   = new TimeSpan(3, 0, 0);
+        private bool bandWindowStartParseWarned;
+        private bool bandWindowEndParseWarned;
 
         private double psyWeekHigh, psyWeekLow;
         private int    psyWeekStartBar;
@@ -417,7 +438,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.SolidColorBrush dxVwapBand1Brush;
         private SharpDX.Direct2D1.SolidColorBrush dxVwapBand2Brush;
         private SharpDX.Direct2D1.SolidColorBrush dxVwapBand3Brush;
-        private SharpDX.Direct2D1.SolidColorBrush dxVwapFillBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBand1FillBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBand2FillBrush;
+        private SharpDX.Direct2D1.SolidColorBrush dxVwapBand3FillBrush;
 
         // OTE zone brushes
         private SharpDX.Direct2D1.SolidColorBrush dxOTEBullishBrush;
@@ -442,6 +465,34 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Enable Level 2 (Order Book)", Order = 3, GroupName = "1. Core",
             Description = "Subscribe to market depth (L2) data. Requires broker support.")]
         public bool EnableLevel2 { get; set; }
+
+        #endregion
+        // ════════════════════════════════════════════════════════════════════════
+        #region Parameters — 4. Band Window
+
+        [NinjaScriptProperty]
+        [Display(Name = "ETH Bands Enabled", Order = 1, GroupName = "4. Band Window")]
+        public bool EthBandsEnabled { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "RTH Bands Enabled", Order = 2, GroupName = "4. Band Window")]
+        public bool RthBandsEnabled { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Continuous Bands Enabled", Order = 3, GroupName = "4. Band Window")]
+        public bool ContinuousBandsEnabled { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band Window Mode", Order = 4, GroupName = "4. Band Window")]
+        public IQVwapBandWindow BandWindowMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band Window Start ET (HH:mm)", Order = 5, GroupName = "4. Band Window")]
+        public string BandWindowStartEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band Window End ET (HH:mm)", Order = 6, GroupName = "4. Band Window")]
+        public string BandWindowEndEt { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1581,13 +1632,52 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int VwapBand3Thickness { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Fill Between Bands", Order = 25, GroupName = "14. VWAP")]
-        public bool VwapFillBands { get; set; }
+        [Display(Name = "Fill Band 1", Order = 25, GroupName = "14. VWAP")]
+        public bool FillBand1 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band 1 Fill Color", Order = 26, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Band1FillColor { get; set; }
+        [Browsable(false)]
+        public string Band1FillColorSerializable { get => Serialize.BrushToString(Band1FillColor); set => Band1FillColor = Serialize.StringToBrush(value); }
 
         [NinjaScriptProperty]
         [Range(1, 50)]
-        [Display(Name = "Band Fill Opacity %", Order = 26, GroupName = "14. VWAP")]
-        public int VwapFillOpacity { get; set; }
+        [Display(Name = "Band 1 Fill Opacity %", Order = 27, GroupName = "14. VWAP")]
+        public int Band1FillOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Fill Band 2", Order = 28, GroupName = "14. VWAP")]
+        public bool FillBand2 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band 2 Fill Color", Order = 29, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Band2FillColor { get; set; }
+        [Browsable(false)]
+        public string Band2FillColorSerializable { get => Serialize.BrushToString(Band2FillColor); set => Band2FillColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Band 2 Fill Opacity %", Order = 30, GroupName = "14. VWAP")]
+        public int Band2FillOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Fill Band 3", Order = 31, GroupName = "14. VWAP")]
+        public bool FillBand3 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Band 3 Fill Color", Order = 32, GroupName = "14. VWAP")]
+        [XmlIgnore]
+        public System.Windows.Media.Brush Band3FillColor { get; set; }
+        [Browsable(false)]
+        public string Band3FillColorSerializable { get => Serialize.BrushToString(Band3FillColor); set => Band3FillColor = Serialize.StringToBrush(value); }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Band 3 Fill Opacity %", Order = 33, GroupName = "14. VWAP")]
+        public int Band3FillOpacity { get; set; }
 
         #endregion
         // ════════════════════════════════════════════════════════════════════════
@@ -1691,6 +1781,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 AssetClass   = IQMAssetClass.Futures;
                 ColorMode    = IQMCandleColorMode.VolumeDelta;
                 EnableLevel2 = false;
+
+                // 4. Band Window
+                EthBandsEnabled        = true;
+                RthBandsEnabled        = true;
+                ContinuousBandsEnabled = false;
+                BandWindowMode         = IQVwapBandWindow.AnchorSession;
+                BandWindowStartEt      = "20:00";
+                BandWindowEndEt        = "03:00";
 
                 // 2. EMAs
                 LabelOffsetBars  = 2;
@@ -1981,8 +2079,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapBand3Color    = Brushes.Purple;
                 VwapBand3Opacity  = 40;
                 VwapBand3Thickness = 1;
-                VwapFillBands     = false;
-                VwapFillOpacity   = 15;
+                FillBand1         = false;
+                Band1FillColor    = Brushes.DodgerBlue;
+                Band1FillOpacity  = 15;
+                FillBand2         = false;
+                Band2FillColor    = Brushes.Orange;
+                Band2FillOpacity  = 15;
+                FillBand3         = false;
+                Band3FillColor    = Brushes.Purple;
+                Band3FillOpacity  = 15;
 
                 // 15. OTE Zones
                 ShowOTE            = false;
@@ -2020,6 +2125,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.DataLoaded)
             {
+                bandWindowStartParseWarned = false;
+                bandWindowEndParseWarned   = false;
+
                 // Sessions / pivot / range collections
                 dailyRanges   = new Queue<double>(32);
                 weeklyRanges  = new Queue<double>(56);
@@ -3819,6 +3927,51 @@ namespace NinjaTrader.NinjaScript.Indicators
             return barEt.Date.AddDays(-1).AddHours(18);
         }
 
+        private bool IsBarInBandWindowEt(DateTime barEt)
+        {
+            TimeSpan startEt;
+            TimeSpan endEt;
+            TryParseBandWindowTime(BandWindowStartEt, "BandWindowStartEt", BandWindowStartDefaultEt, ref bandWindowStartParseWarned, out startEt);
+            TryParseBandWindowTime(BandWindowEndEt, "BandWindowEndEt", BandWindowEndDefaultEt, ref bandWindowEndParseWarned, out endEt);
+
+            TimeSpan timeOfDay = barEt.TimeOfDay;
+            if (startEt == endEt)
+                return false;
+
+            if (startEt < endEt)
+                return timeOfDay >= startEt && timeOfDay < endEt;
+
+            return timeOfDay >= startEt || timeOfDay < endEt;
+        }
+
+        private void TryParseBandWindowTime(string text, string propertyName, TimeSpan fallback, ref bool warned, out TimeSpan parsed)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                parsed = fallback;
+                if (!warned)
+                {
+                    Print("IQMainGPU: " + propertyName + " is empty. Using default " + fallback.ToString(@"hh\:mm") + " ET.");
+                    warned = true;
+                }
+                return;
+            }
+
+            if (TimeSpan.TryParseExact(text, @"hh\:mm", CultureInfo.InvariantCulture, out parsed) ||
+                TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out parsed))
+            {
+                if (parsed >= TimeSpan.Zero && parsed < TimeSpan.FromDays(1))
+                    return;
+            }
+
+            parsed = fallback;
+            if (!warned)
+            {
+                Print("IQMainGPU: Invalid " + propertyName + " value '" + text + "'. Using default " + fallback.ToString(@"hh\:mm") + " ET.");
+                warned = true;
+            }
+        }
+
         private void UpdateRthEntry(bool inSession, DateTime sessionStart, DateTime sessionEnd,
             ref SessionOpenEntry currentEntry, List<SessionOpenEntry> entryList)
         {
@@ -3863,6 +4016,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
             double vol = Volume[0];
+            bool inBandWindow = IsBarInBandWindowEt(barEt);
+            DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
+            DateTime rthEnd   = barEt.Date.AddHours(16);
+            bool inRthSession = barEt >= rthStart && barEt < rthEnd;
 
             // ── ETH-anchored VWAP (resets at 18:00 ET = CME Globex daily open) ─
             DateTime ethStart = GetEthSessionStartEt(barEt);
@@ -3897,12 +4054,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Band2Upper = ethVwap + 2 * ethStdDev,
                 Band2Lower = ethVwap - 2 * ethStdDev,
                 Band3Upper = ethVwap + 3 * ethStdDev,
-                Band3Lower = ethVwap - 3 * ethStdDev
+                Band3Lower = ethVwap - 3 * ethStdDev,
+                BarEt = barEt,
+                InBandWindow = inBandWindow,
+                InRthSession = inRthSession
             });
 
             // ── RTH-anchored VWAP (resets at 09:30 ET = US cash open) ────────
-            DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
-            bool     inRth    = barEt >= rthStart;
+            bool inRth = barEt >= rthStart;
 
             if (inRth)
             {
@@ -3937,7 +4096,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Band2Upper = rthVwap + 2 * rthStdDev,
                     Band2Lower = rthVwap - 2 * rthStdDev,
                     Band3Upper = rthVwap + 3 * rthStdDev,
-                    Band3Lower = rthVwap - 3 * rthStdDev
+                    Band3Lower = rthVwap - 3 * rthStdDev,
+                    BarEt = barEt,
+                    InBandWindow = inBandWindow,
+                    InRthSession = inRthSession
                 });
             }
             else
@@ -4475,23 +4637,30 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool showEth = (VwapAnchor == VwapSessionAnchor.ETH || VwapAnchor == VwapSessionAnchor.Both);
             bool showRth = (VwapAnchor == VwapSessionAnchor.RTH_US || VwapAnchor == VwapSessionAnchor.Both);
 
-            if (showEth) RenderVwapLine(cc, cs, fromBar, toBar, vwapEthData, VwapEthLabel);
-            if (showRth) RenderVwapLine(cc, cs, fromBar, toBar, vwapRthData, VwapRthLabel);
+            if (showEth) RenderVwapLine(cc, cs, fromBar, toBar, vwapEthData, VwapEthLabel, 0);
+            if (showRth) RenderVwapLine(cc, cs, fromBar, toBar, vwapRthData, VwapRthLabel, 1);
         }
 
         private void RenderVwapLine(ChartControl cc, ChartScale cs, int fromBar, int toBar,
-            List<VwapBarData> data, string label)
+            List<VwapBarData> data, string label, int anchorKind)
         {
             var rt = RenderTarget;
             if (rt == null || data == null || data.Count == 0) return;
 
-            // Render bands behind the VWAP line
+            // Draw order: band 3 fill -> band 2 fill -> band 1 fill -> band lines -> VWAP -> labels
+            if (FillBand3 && dxVwapBand3FillBrush != null)
+                RenderVwapBandFill(cc, cs, fromBar, toBar, data, 3, dxVwapBand3FillBrush, anchorKind);
+            if (FillBand2 && dxVwapBand2FillBrush != null)
+                RenderVwapBandFill(cc, cs, fromBar, toBar, data, 2, dxVwapBand2FillBrush, anchorKind);
+            if (FillBand1 && dxVwapBand1FillBrush != null)
+                RenderVwapBandFill(cc, cs, fromBar, toBar, data, 1, dxVwapBand1FillBrush, anchorKind);
+
             if (ShowVwapBand3 && dxVwapBand3Brush != null)
-                RenderVwapBandPair(cc, cs, fromBar, toBar, data, 3, dxVwapBand3Brush, VwapBand3Thickness);
+                RenderVwapBandLines(cc, cs, fromBar, toBar, data, 3, dxVwapBand3Brush, VwapBand3Thickness, anchorKind);
             if (ShowVwapBand2 && dxVwapBand2Brush != null)
-                RenderVwapBandPair(cc, cs, fromBar, toBar, data, 2, dxVwapBand2Brush, VwapBand2Thickness);
+                RenderVwapBandLines(cc, cs, fromBar, toBar, data, 2, dxVwapBand2Brush, VwapBand2Thickness, anchorKind);
             if (ShowVwapBand1 && dxVwapBand1Brush != null)
-                RenderVwapBandPair(cc, cs, fromBar, toBar, data, 1, dxVwapBand1Brush, VwapBand1Thickness);
+                RenderVwapBandLines(cc, cs, fromBar, toBar, data, 1, dxVwapBand1Brush, VwapBand1Thickness, anchorKind);
 
             // Render VWAP line with dynamic color
             for (int barIdx = fromBar; barIdx < toBar; barIdx++)
@@ -4556,9 +4725,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderVwapBandPair(ChartControl cc, ChartScale cs, int fromBar, int toBar,
+        private void RenderVwapBandLines(ChartControl cc, ChartScale cs, int fromBar, int toBar,
             List<VwapBarData> data, int bandNum,
-            SharpDX.Direct2D1.SolidColorBrush brush, int thickness)
+            SharpDX.Direct2D1.SolidColorBrush brush, int thickness, int anchorKind)
         {
             var rt = RenderTarget;
             if (rt == null) return;
@@ -4569,6 +4738,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VwapBarData d0 = GetVwapDataAt(data, barIdx);
                 VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
                 if (d0 == null || d1 == null) continue;
+                if (!ShouldRenderBandSegment(d0, d1, anchorKind)) continue;
 
                 double upper0 = 0, lower0 = 0, upper1 = 0, lower1 = 0;
                 switch (bandNum)
@@ -4589,18 +4759,89 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 DrawStyledLine(x0, yU0, x1, yU1, brush, thickness, IQMLineStyle.Dashed);
                 DrawStyledLine(x0, yL0, x1, yL1, brush, thickness, IQMLineStyle.Dashed);
+            }
+        }
 
-                // Optional fill between upper and lower band
-                if (VwapFillBands && dxVwapFillBrush != null)
+        private void RenderVwapBandFill(ChartControl cc, ChartScale cs, int fromBar, int toBar,
+            List<VwapBarData> data, int bandNum,
+            SharpDX.Direct2D1.SolidColorBrush fillBrush, int anchorKind)
+        {
+            var rt = RenderTarget;
+            if (rt == null || fillBrush == null) return;
+
+            for (int barIdx = fromBar; barIdx < toBar; barIdx++)
+            {
+                if (barIdx < 0 || barIdx + 1 >= Bars.Count) continue;
+                VwapBarData d0 = GetVwapDataAt(data, barIdx);
+                VwapBarData d1 = GetVwapDataAt(data, barIdx + 1);
+                if (d0 == null || d1 == null) continue;
+                if (!ShouldRenderBandSegment(d0, d1, anchorKind)) continue;
+
+                float x0 = cc.GetXByBarIndex(ChartBars, barIdx);
+                float x1 = cc.GetXByBarIndex(ChartBars, barIdx + 1);
+                if (x1 <= x0) continue;
+
+                if (bandNum == 1)
                 {
-                    float fillTop    = Math.Min(yU0, yU1);   // highest point of upper band
-                    float fillBottom = Math.Max(yL0, yL1);   // lowest point of lower band
-                    float width      = x1 - x0;
-                    if (width > 0 && fillBottom > fillTop)
-                        rt.FillRectangle(
-                            new SharpDX.RectangleF(x0, fillTop, width, fillBottom - fillTop),
-                            dxVwapFillBrush);
+                    FillBandQuad(rt, cs, x0, x1, d0.Band1Upper, d1.Band1Upper, d0.Band1Lower, d1.Band1Lower, fillBrush);
                 }
+                else if (bandNum == 2)
+                {
+                    FillBandQuad(rt, cs, x0, x1, d0.Band2Upper, d1.Band2Upper, d0.Band1Upper, d1.Band1Upper, fillBrush);
+                    FillBandQuad(rt, cs, x0, x1, d0.Band2Lower, d1.Band2Lower, d0.Band1Lower, d1.Band1Lower, fillBrush);
+                }
+                else if (bandNum == 3)
+                {
+                    FillBandQuad(rt, cs, x0, x1, d0.Band3Upper, d1.Band3Upper, d0.Band2Upper, d1.Band2Upper, fillBrush);
+                    FillBandQuad(rt, cs, x0, x1, d0.Band3Lower, d1.Band3Lower, d0.Band2Lower, d1.Band2Lower, fillBrush);
+                }
+            }
+        }
+
+        private bool ShouldRenderBandSegment(VwapBarData d0, VwapBarData d1, int anchorKind)
+        {
+            bool anchorEnabled = anchorKind == 0 ? EthBandsEnabled
+                               : anchorKind == 1 ? RthBandsEnabled
+                               : ContinuousBandsEnabled;
+            if (!anchorEnabled)
+                return false;
+
+            if (BandWindowMode == IQVwapBandWindow.CustomEtTimes)
+                return d0.InBandWindow && d1.InBandWindow;
+
+            if (anchorKind == 0)
+                return true;
+            if (anchorKind == 1)
+                return d0.InRthSession && d1.InRthSession;
+            return true;
+        }
+
+        private void FillBandQuad(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs,
+            float x0, float x1, double outer0, double outer1, double inner0, double inner1,
+            SharpDX.Direct2D1.SolidColorBrush brush)
+        {
+            float yOuter0 = cs.GetYByValue(outer0);
+            float yOuter1 = cs.GetYByValue(outer1);
+            float yInner0 = cs.GetYByValue(inner0);
+            float yInner1 = cs.GetYByValue(inner1);
+
+            if (float.IsNaN(yOuter0) || float.IsNaN(yOuter1) || float.IsNaN(yInner0) || float.IsNaN(yInner1))
+                return;
+            if (float.IsInfinity(yOuter0) || float.IsInfinity(yOuter1) || float.IsInfinity(yInner0) || float.IsInfinity(yInner1))
+                return;
+
+            using (var path = new SharpDX.Direct2D1.PathGeometry(rt.Factory))
+            {
+                using (var sink = path.Open())
+                {
+                    sink.BeginFigure(new SharpDX.Vector2(x0, yOuter0), SharpDX.Direct2D1.FigureBegin.Filled);
+                    sink.AddLine(new SharpDX.Vector2(x1, yOuter1));
+                    sink.AddLine(new SharpDX.Vector2(x1, yInner1));
+                    sink.AddLine(new SharpDX.Vector2(x0, yInner0));
+                    sink.EndFigure(SharpDX.Direct2D1.FigureEnd.Closed);
+                    sink.Close();
+                }
+                rt.FillGeometry(path, brush);
             }
         }
 
@@ -4738,7 +4979,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxVwapBand1Brush   = MakeBrush(rt, VwapBand1Color,   VwapBand1Opacity / 100f);
                 dxVwapBand2Brush   = MakeBrush(rt, VwapBand2Color,   VwapBand2Opacity / 100f);
                 dxVwapBand3Brush   = MakeBrush(rt, VwapBand3Color,   VwapBand3Opacity / 100f);
-                dxVwapFillBrush    = MakeBrush(rt, VwapNeutralColor, VwapFillOpacity  / 100f);
+                dxVwapBand1FillBrush = MakeBrush(rt, Band1FillColor, Band1FillOpacity / 100f);
+                dxVwapBand2FillBrush = MakeBrush(rt, Band2FillColor, Band2FillOpacity / 100f);
+                dxVwapBand3FillBrush = MakeBrush(rt, Band3FillColor, Band3FillOpacity / 100f);
 
                 // OTE zone brushes
                 float oteAlphaF     = Math.Max(0.02f, Math.Min(0.80f, (float)OTEZoneOpacity / 100f));
@@ -4828,7 +5071,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             DisposeRef(ref dxVwapBand1Brush);
             DisposeRef(ref dxVwapBand2Brush);
             DisposeRef(ref dxVwapBand3Brush);
-            DisposeRef(ref dxVwapFillBrush);
+            DisposeRef(ref dxVwapBand1FillBrush);
+            DisposeRef(ref dxVwapBand2FillBrush);
+            DisposeRef(ref dxVwapBand3FillBrush);
             DisposeRef(ref dxOTEBullishBrush);
             DisposeRef(ref dxOTEBearishBrush);
             DisposeRef(ref dxOTELineBrush);
