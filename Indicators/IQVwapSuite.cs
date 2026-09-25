@@ -676,10 +676,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (anchor.SessionStart == DateTime.MinValue)
                 return true;
 
-            if (anchor.SessionStart == expectedStart)
-                return false;
-
-            return barEt >= anchor.SessionStart.AddDays(1);
+            return anchor.SessionStart != expectedStart && barEt >= expectedStart;
         }
 
         private static bool ShouldResetWeeklyAnchor(VwapAnchor anchor, DateTime barEt, DateTime expectedStart)
@@ -687,10 +684,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (anchor.SessionStart == DateTime.MinValue)
                 return true;
 
-            if (anchor.SessionStart == expectedStart)
-                return false;
-
-            return barEt >= anchor.SessionStart.AddDays(7);
+            return anchor.SessionStart != expectedStart && barEt >= expectedStart;
         }
 
         private static VwapBarData FinalizeBarData(VwapBarData data, DateTime barEt, bool inBandWindow, bool inRthSession)
