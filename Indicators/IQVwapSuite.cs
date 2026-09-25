@@ -598,10 +598,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             double vol = Volume[0];
             bool excludeForMaintenance = IsBarInMaintenanceBreakEt(barEt);
             bool inBandWindow = !excludeForMaintenance && IsBarInBandWindowEt(barEt);
+            DateTime ethStart = GetEthSessionStartEt(barEt);
+            DateTime rthStart = GetRthSessionStartEt(barEt);
+            DateTime rthEnd   = barEt.Date.Add(RthSessionEndDefaultEt);
+            bool inRth = barEt >= rthStart && barEt < rthEnd;
 
             ethAnchor.PrepareForBar(CurrentBar);
             rthAnchor.PrepareForBar(CurrentBar);
             contAnchor.PrepareForBar(CurrentBar);
+
+            if (ShouldResetDailyAnchor(ethAnchor, barEt, ethStart)) ethAnchor.Reset(ethStart);
+            if (inRth && ShouldResetDailyAnchor(rthAnchor, barEt, rthStart)) rthAnchor.Reset(rthStart);
+            if (ContinuousReset == IQVwapContinuousReset.Weekly)
+            {
+                DateTime weekStart = GetWeekStartEt(barEt);
+                if (ShouldResetWeeklyAnchor(contAnchor, barEt, weekStart)) contAnchor.Reset(weekStart);
+            }
+            else if (contAnchor.SessionStart == DateTime.MinValue && !excludeForMaintenance)
+            {
+                contAnchor.Reset(barEt);
+            }
 
             if (excludeForMaintenance)
             {
@@ -613,17 +629,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── ETH (18:00 ET → 18:00 ET) ─────────────────────────────────
-            DateTime ethStart = GetEthSessionStartEt(barEt);
-            if (ShouldResetDailyAnchor(ethAnchor, barEt, ethStart)) ethAnchor.Reset(ethStart);
             ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.AccumulateForDisplay(tp, vol, CurrentBar, true), barEt, inBandWindow, false));
 
             // ── RTH (09:30 ET → 16:00 ET) ─────────────────────────────────
-            DateTime rthStart = GetRthSessionStartEt(barEt);
-            DateTime rthEnd   = barEt.Date.Add(RthSessionEndDefaultEt);
-            bool inRth = barEt >= rthStart && barEt < rthEnd;
             if (inRth)
             {
-                if (ShouldResetDailyAnchor(rthAnchor, barEt, rthStart)) rthAnchor.Reset(rthStart);
                 rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, vol, CurrentBar, true), barEt, inBandWindow, true));
             }
             else if (!RthOnlyDuringSession && rthAnchor.HasAnyVolume())
@@ -637,15 +647,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 24/7 continuous ───────────────────────────────────────────
-            if (ContinuousReset == IQVwapContinuousReset.Weekly)
-            {
-                DateTime weekStart = GetWeekStartEt(barEt);
-                if (ShouldResetWeeklyAnchor(contAnchor, barEt, weekStart)) contAnchor.Reset(weekStart);
-            }
-            else if (contAnchor.SessionStart == DateTime.MinValue)
-            {
-                contAnchor.Reset(barEt);
-            }
             contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.AccumulateForDisplay(tp, vol, CurrentBar, true), barEt, inBandWindow, inRth));
 
             ForceRefresh();
