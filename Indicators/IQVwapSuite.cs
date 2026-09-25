@@ -72,6 +72,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime BarEt;
             public bool InBandWindow;
             public bool InRthSession;
+            public int BarsSinceReset;
         }
 
         /// <summary>One VWAP accumulator (ETH, RTH or Continuous).</summary>
@@ -84,9 +85,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double   ClosedCumPV;
             public double   ClosedCumVol;
             public double   ClosedCumTPVSq;
+            public int      BarsSinceReset;
             public DateTime SessionStart = DateTime.MinValue;
             private int     closedBarIdx = -1;
             private int     lastBarIdx = -1;
+            private int     lastCountedBarIdx = -1;
             private double  lastBarPV;
             private double  lastBarVol;
             private double  lastBarTPVSq;
@@ -96,8 +99,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 SessionStart = start;
                 CumPV = CumVol = CumTPVSq = 0;
                 ClosedCumPV = ClosedCumVol = ClosedCumTPVSq = 0;
+                BarsSinceReset = 0;
                 closedBarIdx = -1;
                 lastBarIdx = -1;
+                lastCountedBarIdx = -1;
                 lastBarPV = lastBarVol = lastBarTPVSq = 0;
             }
 
@@ -115,7 +120,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 closedBarIdx = lastBarIdx;
             }
 
-            public VwapBarData AccumulateForDisplay(double tp, double vol, int barIdx)
+            public VwapBarData AccumulateForDisplay(double tp, double vol, int barIdx, bool countBar)
             {
                 double barPV = 0;
                 double barTPVSq = 0;
@@ -123,6 +128,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     barPV = tp * vol;
                     barTPVSq = tp * tp * vol;
+                }
+                if (countBar && barIdx != lastCountedBarIdx)
+                {
+                    lastCountedBarIdx = barIdx;
+                    BarsSinceReset++;
                 }
                 CumPV = ClosedCumPV + barPV;
                 CumVol = ClosedCumVol + vol;
@@ -140,7 +150,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Vwap = vwap, StdDev = sd,
                     Band1Upper = vwap + sd,     Band1Lower = vwap - sd,
                     Band2Upper = vwap + 2 * sd, Band2Lower = vwap - 2 * sd,
-                    Band3Upper = vwap + 3 * sd, Band3Lower = vwap - 3 * sd
+                    Band3Upper = vwap + 3 * sd, Band3Lower = vwap - 3 * sd,
+                    BarsSinceReset = BarsSinceReset
                 };
             }
 
@@ -194,8 +205,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private static readonly TimeSpan BandWindowStartDefaultEt = new TimeSpan(20, 0, 0);
         private static readonly TimeSpan BandWindowEndDefaultEt   = new TimeSpan(3, 0, 0);
+        private static readonly TimeSpan RthSessionStartDefaultEt = new TimeSpan(9, 30, 0);
+        private static readonly TimeSpan RthSessionEndDefaultEt   = new TimeSpan(16, 0, 0);
+        private static readonly TimeSpan MaintenanceStartDefaultEt = new TimeSpan(17, 0, 0);
+        private static readonly TimeSpan MaintenanceEndDefaultEt   = new TimeSpan(18, 0, 0);
         private bool bandWindowStartParseWarned;
         private bool bandWindowEndParseWarned;
+        private bool maintenanceStartParseWarned;
+        private bool maintenanceEndParseWarned;
 
         // SharpDX resources
         private bool dxReady;
@@ -454,6 +471,27 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
         // ═══════════════════════════════════════════════════════════════
+        #region Parameters — 5. Session Handling
+
+        [NinjaScriptProperty]
+        [Display(Name = "Exclude Maintenance Break", Order = 1, GroupName = "5. Session Handling")]
+        public bool ExcludeMaintenanceBreak { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Maintenance Start ET (HH:mm)", Order = 2, GroupName = "5. Session Handling")]
+        public string MaintenanceStartEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Maintenance End ET (HH:mm)", Order = 3, GroupName = "5. Session Handling")]
+        public string MaintenanceEndEt { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Min Bars For Bands", Order = 4, GroupName = "5. Session Handling")]
+        public int MinBarsForBands { get; set; }
+
+        #endregion
+        // ═══════════════════════════════════════════════════════════════
         #region OnStateChange
 
         protected override void OnStateChange()
@@ -522,6 +560,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 BandWindowMode         = IQVwapSuiteBandWindow.AnchorSession;
                 BandWindowStartEt      = "20:00";
                 BandWindowEndEt        = "03:00";
+                ExcludeMaintenanceBreak = true;
+                MaintenanceStartEt      = "17:00";
+                MaintenanceEndEt        = "18:00";
+                MinBarsForBands         = 5;
             }
             else if (State == State.Configure)
             {
@@ -531,6 +573,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 bandWindowStartParseWarned = false;
                 bandWindowEndParseWarned   = false;
+                maintenanceStartParseWarned = false;
+                maintenanceEndParseWarned   = false;
                 ethAnchor  = new VwapAnchor();
                 rthAnchor  = new VwapAnchor();
                 contAnchor = new VwapAnchor();
@@ -552,28 +596,40 @@ namespace NinjaTrader.NinjaScript.Indicators
             DateTime barEt = BarTimeEt();
             double tp  = (High[0] + Low[0] + Close[0]) / 3.0;
             double vol = Volume[0];
-            bool inBandWindow = IsBarInBandWindowEt(barEt);
+            bool excludeForMaintenance = IsBarInMaintenanceBreakEt(barEt);
+            bool inBandWindow = !excludeForMaintenance && IsBarInBandWindowEt(barEt);
+
+            ethAnchor.PrepareForBar(CurrentBar);
+            rthAnchor.PrepareForBar(CurrentBar);
+            contAnchor.PrepareForBar(CurrentBar);
+
+            if (excludeForMaintenance)
+            {
+                ethAnchor.Store(CurrentBar, null);
+                rthAnchor.Store(CurrentBar, null);
+                contAnchor.Store(CurrentBar, null);
+                ForceRefresh();
+                return;
+            }
 
             // ── ETH (18:00 ET → 18:00 ET) ─────────────────────────────────
             DateTime ethStart = GetEthSessionStartEt(barEt);
-            ethAnchor.PrepareForBar(CurrentBar);
-            if (ethAnchor.SessionStart != ethStart) ethAnchor.Reset(ethStart);
-            ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, false));
+            if (ShouldResetDailyAnchor(ethAnchor, barEt, ethStart)) ethAnchor.Reset(ethStart);
+            ethAnchor.Store(CurrentBar, FinalizeBarData(ethAnchor.AccumulateForDisplay(tp, vol, CurrentBar, true), barEt, inBandWindow, false));
 
             // ── RTH (09:30 ET → 16:00 ET) ─────────────────────────────────
-            DateTime rthStart = barEt.Date.AddHours(9).AddMinutes(30);
-            DateTime rthEnd   = barEt.Date.AddHours(16);
+            DateTime rthStart = GetRthSessionStartEt(barEt);
+            DateTime rthEnd   = barEt.Date.Add(RthSessionEndDefaultEt);
             bool inRth = barEt >= rthStart && barEt < rthEnd;
-            rthAnchor.PrepareForBar(CurrentBar);
             if (inRth)
             {
-                if (rthAnchor.SessionStart != rthStart) rthAnchor.Reset(rthStart);
-                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, true));
+                if (ShouldResetDailyAnchor(rthAnchor, barEt, rthStart)) rthAnchor.Reset(rthStart);
+                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, vol, CurrentBar, true), barEt, inBandWindow, true));
             }
             else if (!RthOnlyDuringSession && rthAnchor.HasAnyVolume())
             {
                 // Carry last RTH value flat through the overnight (no accumulation)
-                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, 0, CurrentBar), barEt, inBandWindow, false));
+                rthAnchor.Store(CurrentBar, FinalizeBarData(rthAnchor.AccumulateForDisplay(tp, 0, CurrentBar, false), barEt, inBandWindow, false));
             }
             else
             {
@@ -581,17 +637,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 24/7 continuous ───────────────────────────────────────────
-            contAnchor.PrepareForBar(CurrentBar);
             if (ContinuousReset == IQVwapContinuousReset.Weekly)
             {
                 DateTime weekStart = GetWeekStartEt(barEt);
-                if (contAnchor.SessionStart != weekStart) contAnchor.Reset(weekStart);
+                if (ShouldResetWeeklyAnchor(contAnchor, barEt, weekStart)) contAnchor.Reset(weekStart);
             }
             else if (contAnchor.SessionStart == DateTime.MinValue)
             {
                 contAnchor.Reset(barEt);
             }
-            contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.AccumulateForDisplay(tp, vol, CurrentBar), barEt, inBandWindow, inRth));
+            contAnchor.Store(CurrentBar, FinalizeBarData(contAnchor.AccumulateForDisplay(tp, vol, CurrentBar, true), barEt, inBandWindow, inRth));
 
             ForceRefresh();
         }
@@ -603,12 +658,39 @@ namespace NinjaTrader.NinjaScript.Indicators
             return barEt >= today18 ? today18 : barEt.Date.AddDays(-1).AddHours(18);
         }
 
+        private static DateTime GetRthSessionStartEt(DateTime barEt)
+        {
+            return barEt.Date.Add(RthSessionStartDefaultEt);
+        }
+
         /// <summary>Weekly anchor = most recent Sunday 18:00 ET at or before barEt.</summary>
         private static DateTime GetWeekStartEt(DateTime barEt)
         {
             DateTime ethStart = GetEthSessionStartEt(barEt);           // 18:00 of some day
             int daysSinceSunday = (int)ethStart.DayOfWeek;              // Sun=0
             return ethStart.AddDays(-daysSinceSunday);
+        }
+
+        private static bool ShouldResetDailyAnchor(VwapAnchor anchor, DateTime barEt, DateTime expectedStart)
+        {
+            if (anchor.SessionStart == DateTime.MinValue)
+                return true;
+
+            if (anchor.SessionStart == expectedStart)
+                return false;
+
+            return barEt >= anchor.SessionStart.AddDays(1);
+        }
+
+        private static bool ShouldResetWeeklyAnchor(VwapAnchor anchor, DateTime barEt, DateTime expectedStart)
+        {
+            if (anchor.SessionStart == DateTime.MinValue)
+                return true;
+
+            if (anchor.SessionStart == expectedStart)
+                return false;
+
+            return barEt >= anchor.SessionStart.AddDays(7);
         }
 
         private static VwapBarData FinalizeBarData(VwapBarData data, DateTime barEt, bool inBandWindow, bool inRthSession)
@@ -624,12 +706,24 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             TimeSpan startEt;
             TimeSpan endEt;
-            TryParseBandWindowTime(BandWindowStartEt, "BandWindowStartEt", BandWindowStartDefaultEt, ref bandWindowStartParseWarned, out startEt);
-            TryParseBandWindowTime(BandWindowEndEt, "BandWindowEndEt", BandWindowEndDefaultEt, ref bandWindowEndParseWarned, out endEt);
+            TryParseEtTime(BandWindowStartEt, "BandWindowStartEt", BandWindowStartDefaultEt, ref bandWindowStartParseWarned, out startEt);
+            TryParseEtTime(BandWindowEndEt, "BandWindowEndEt", BandWindowEndDefaultEt, ref bandWindowEndParseWarned, out endEt);
             return IsTimeOfDayInWindow(barEt.TimeOfDay, startEt, endEt);
         }
 
-        private void TryParseBandWindowTime(string text, string propertyName, TimeSpan fallback, ref bool warned, out TimeSpan parsed)
+        private bool IsBarInMaintenanceBreakEt(DateTime barEt)
+        {
+            if (!ExcludeMaintenanceBreak)
+                return false;
+
+            TimeSpan startEt;
+            TimeSpan endEt;
+            TryParseEtTime(MaintenanceStartEt, "MaintenanceStartEt", MaintenanceStartDefaultEt, ref maintenanceStartParseWarned, out startEt);
+            TryParseEtTime(MaintenanceEndEt, "MaintenanceEndEt", MaintenanceEndDefaultEt, ref maintenanceEndParseWarned, out endEt);
+            return IsTimeOfDayInWindow(barEt.TimeOfDay, startEt, endEt);
+        }
+
+        private void TryParseEtTime(string text, string propertyName, TimeSpan fallback, ref bool warned, out TimeSpan parsed)
         {
             if (string.IsNullOrWhiteSpace(text))
             {
@@ -846,6 +940,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     ? RthBandsEnabled
                     : ContinuousBandsEnabled;
             if (!anchorEnabled)
+                return false;
+
+            if (MinBarsForBands > 0 && (d0.BarsSinceReset < MinBarsForBands || d1.BarsSinceReset < MinBarsForBands))
                 return false;
 
             if (BandWindowMode == IQVwapSuiteBandWindow.CustomEtTimes)
