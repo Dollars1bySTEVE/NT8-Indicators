@@ -614,7 +614,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DateTime weekStart = GetWeekStartEt(barEt);
                 if (ShouldResetWeeklyAnchor(contAnchor, barEt, weekStart)) contAnchor.Reset(weekStart);
             }
-            else if (contAnchor.SessionStart == DateTime.MinValue && !excludeForMaintenance)
+            else if (contAnchor.SessionStart == DateTime.MinValue)
             {
                 contAnchor.Reset(barEt);
             }
