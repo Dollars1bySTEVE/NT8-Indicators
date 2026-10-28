@@ -49,6 +49,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Price;
             public bool IsAsk;
             public DateTime FirstSeen;
+            public DateTime LastSeenAboveThreshold;
             public long PeakSize;
             public long LastSize;
             public double TradedBuy;
@@ -73,6 +74,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             EthLondon,
             RthOpen,
             Rth,
+            EthPostRth,
             PostClose
         }
 
@@ -115,7 +117,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int lastSessionIteratorBarIndex = -1;
         private long eventTimeBinary;
         private long lastDepthEventTimeBinary;
+        private long lastDepthArrivalUtcBinary;
         private long lastForceRefreshTimestamp;
+        private System.Threading.Timer feedRefreshTimer;
 
         private double currentDayOpen;
         private double currentDayHigh;
@@ -188,6 +192,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ScaleWallsBySize = true;
                 MinWallLabelSpacing = 12;
                 WallMinAgeSeconds = 3;
+                WallGraceMilliseconds = 1000;
                 FeedStaleSeconds = 5;
                 ShowWalls = true;
                 ShowWallLabels = true;
@@ -292,8 +297,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 weeklyVwapSeries = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 sessionIterator = new SessionIterator(Bars);
             }
+            else if (State == State.Realtime)
+            {
+                feedRefreshTimer = new System.Threading.Timer(delegate(object state)
+                {
+                    if (State == State.Realtime)
+                        ThrottledForceRefresh();
+                }, null, 1000, 1000);
+            }
             else if (State == State.Terminated)
             {
+                if (feedRefreshTimer != null)
+                {
+                    feedRefreshTimer.Dispose();
+                    feedRefreshTimer = null;
+                }
                 DisposeDxResources();
             }
         }
@@ -549,38 +567,40 @@ namespace NinjaTrader.NinjaScript.Indicators
                     bidRows.Clear();
                     askWalls.Clear();
                     bidWalls.Clear();
-                    return;
                 }
 
                 bool isAsk = e.MarketDataType == MarketDataType.Ask;
-                if (!isAsk && e.MarketDataType != MarketDataType.Bid)
-                    return;
-                List<DepthRow> rows = isAsk ? askRows : bidRows;
-                int position = e.Position;
-                if (e.Operation == Operation.Add)
+                if (!e.IsReset && (isAsk || e.MarketDataType == MarketDataType.Bid))
                 {
-                    if (position >= 0 && position <= rows.Count)
+                    List<DepthRow> rows = isAsk ? askRows : bidRows;
+                    int position = e.Position;
+                    if (e.Operation == Operation.Add)
                     {
-                        rows.Insert(position, new DepthRow
+                        if (position >= 0 && position <= rows.Count)
                         {
-                            Price = Instrument.MasterInstrument.RoundToTickSize(e.Price),
-                            Size = Math.Max(0L, e.Volume)
-                        });
+                            rows.Insert(position, new DepthRow
+                            {
+                                Price = Instrument.MasterInstrument.RoundToTickSize(e.Price),
+                                Size = Math.Max(0L, e.Volume)
+                            });
+                        }
                     }
-                }
-                else if (e.Operation == Operation.Update)
-                {
-                    if (position >= 0 && position < rows.Count)
+                    else if (e.Operation == Operation.Update)
                     {
-                        rows[position].Price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
-                        rows[position].Size = Math.Max(0L, e.Volume);
+                        if (position >= 0 && position < rows.Count)
+                        {
+                            rows[position].Price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
+                            rows[position].Size = Math.Max(0L, e.Volume);
+                        }
+                    }
+                    else if (e.Operation == Operation.Remove && position >= 0 && position < rows.Count)
+                    {
+                        rows.RemoveAt(position);
                     }
                 }
-                else if (e.Operation == Operation.Remove && position >= 0 && position < rows.Count)
-                {
-                    rows.RemoveAt(position);
-                }
+                RunDetectionLocked(FeedNow());
             }
+            ThrottledForceRefresh();
         }
 
         protected override void OnMarketData(MarketDataEventArgs e)
@@ -589,7 +609,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             SetEventTime(e.Time, false);
-            bool refresh = false;
             lock (bookLock)
             {
                 if (e.MarketDataType == MarketDataType.Bid)
@@ -619,50 +638,56 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
 
-                DateTime now = FeedNow();
-                SessionPhase phase = GetSessionPhase(now);
-                if (!phaseInitialized || phase != lastPhase)
-                {
-                    phaseInitialized = true;
-                    lastPhase = phase;
-                    sizeSamples.Clear();
-                    adaptiveBaseline = double.NaN;
-                    lastSampleTime = DateTime.MinValue;
-                    lastDetectionTime = DateTime.MinValue;
-                    if (phase == SessionPhase.EthOvernight)
-                    {
-                        sessionAggBuy = 0;
-                        sessionAggSell = 0;
-                    }
-                    if (phase == SessionPhase.PostClose)
-                    {
-                        askRows.Clear();
-                        bidRows.Clear();
-                        askWalls.Clear();
-                        bidWalls.Clear();
-                    }
-                }
+                RunDetectionLocked(FeedNow());
+            }
+            ThrottledForceRefresh();
+        }
 
-                if (lastDetectionTime == DateTime.MinValue
-                    || (now - lastDetectionTime).TotalMilliseconds >= 150)
+        private void RunDetectionLocked(DateTime now)
+        {
+            SessionPhase phase = GetSessionPhase(now);
+            if (!phaseInitialized || phase != lastPhase)
+            {
+                phaseInitialized = true;
+                lastPhase = phase;
+                sizeSamples.Clear();
+                adaptiveBaseline = double.NaN;
+                lastSampleTime = DateTime.MinValue;
+                lastDetectionTime = DateTime.MinValue;
+                if (phase == SessionPhase.EthOvernight)
                 {
-                    lastDetectionTime = now;
-                    UpdateAdaptiveBaselineLocked(now);
-                    RefreshWallsLocked(askRows, askWalls, true, now);
-                    RefreshWallsLocked(bidRows, bidWalls, false, now);
-                    refresh = true;
+                    sessionAggBuy = 0;
+                    sessionAggSell = 0;
                 }
             }
 
-            if (refresh)
-                ThrottledForceRefresh();
+            if (phase == SessionPhase.PostClose)
+            {
+                askRows.Clear();
+                bidRows.Clear();
+                askWalls.Clear();
+                bidWalls.Clear();
+                return;
+            }
+
+            if (lastDetectionTime == DateTime.MinValue
+                || (now - lastDetectionTime).TotalMilliseconds >= 150)
+            {
+                lastDetectionTime = now;
+                UpdateAdaptiveBaselineLocked(now);
+                RefreshWallsLocked(askRows, askWalls, true, now);
+                RefreshWallsLocked(bidRows, bidWalls, false, now);
+            }
         }
 
         private void SetEventTime(DateTime time, bool isDepth)
         {
             Interlocked.Exchange(ref eventTimeBinary, time.ToBinary());
             if (isDepth)
+            {
                 Interlocked.Exchange(ref lastDepthEventTimeBinary, time.ToBinary());
+                Interlocked.Exchange(ref lastDepthArrivalUtcBinary, DateTime.UtcNow.ToBinary());
+            }
         }
 
         private DateTime FeedNow()
@@ -677,6 +702,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             return binary == 0 ? DateTime.MinValue : DateTime.FromBinary(binary);
         }
 
+        private bool IsBookStale()
+        {
+            if (State == State.Realtime && Connection.PlaybackConnection == null)
+            {
+                long binary = Interlocked.Read(ref lastDepthArrivalUtcBinary);
+                return binary == 0
+                    || (DateTime.UtcNow - DateTime.FromBinary(binary)).TotalSeconds > FeedStaleSeconds;
+            }
+            DateTime lastDepth = GetLastDepthTime();
+            return lastDepth == DateTime.MinValue
+                || (FeedNow() - lastDepth).TotalSeconds > FeedStaleSeconds;
+        }
+
         private SessionPhase GetSessionPhase(DateTime eventTime)
         {
             DateTime et = TimeZoneInfo.ConvertTime(eventTime, TimeZoneInfo.Local, EasternTz);
@@ -685,7 +723,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (cachedSessionEndEastern != DateTime.MinValue
                     && cachedSessionEndEastern.Date == et.Date
-                    && cachedSessionEndEastern.TimeOfDay < new TimeSpan(16, 0, 0)
+                    && cachedSessionEndEastern.TimeOfDay < new TimeSpan(17, 0, 0)
                     && et >= cachedSessionEndEastern
                     && time < new TimeSpan(18, 0, 0))
                     return SessionPhase.PostClose;
@@ -694,7 +732,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return SessionPhase.RthOpen;
             if (time >= new TimeSpan(10, 0, 0) && time < new TimeSpan(16, 0, 0))
                 return SessionPhase.Rth;
-            if (time >= new TimeSpan(16, 0, 0) && time < new TimeSpan(18, 0, 0))
+            if (time >= new TimeSpan(16, 0, 0) && time < new TimeSpan(17, 0, 0))
+                return SessionPhase.EthPostRth;
+            if (time >= new TimeSpan(17, 0, 0) && time < new TimeSpan(18, 0, 0))
                 return SessionPhase.PostClose;
             if (time >= new TimeSpan(3, 0, 0) && time < new TimeSpan(9, 30, 0))
                 return SessionPhase.EthLondon;
@@ -754,11 +794,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 0; i < rows.Count; i++)
             {
                 DepthRow row = rows[i];
-                if (row.Size < threshold)
+                WallState wall;
+                bool active = walls.TryGetValue(row.Price, out wall) && wall.Active;
+                if (active)
+                    wall.LastSize = row.Size;
+                if (row.Size < (active ? 0.8 * threshold : threshold))
                     continue;
                 seen.Add(row.Price);
-                WallState wall;
-                if (!walls.TryGetValue(row.Price, out wall) || !wall.Active)
+                if (!active)
                 {
                     wall = new WallState
                     {
@@ -769,13 +812,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     };
                     walls[row.Price] = wall;
                 }
+                wall.LastSeenAboveThreshold = now;
                 wall.LastSize = row.Size;
                 wall.PeakSize = Math.Max(wall.PeakSize, row.Size);
             }
 
             foreach (WallState wall in walls.Values)
             {
-                if (wall.Active && !seen.Contains(wall.Price))
+                if (wall.Active && !seen.Contains(wall.Price)
+                    && (now - wall.LastSeenAboveThreshold).TotalMilliseconds >= WallGraceMilliseconds)
                 {
                     wall.Active = false;
                     // v0.2 hook: classify inactive walls as pulled or filled after the grace window.
@@ -908,9 +953,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             long threshold;
             lock (bookLock)
             {
-                DateTime lastDepth = GetLastDepthTime();
-                stale = lastDepth == DateTime.MinValue
-                    || (now - lastDepth).TotalSeconds > FeedStaleSeconds;
+                stale = IsBookStale();
                 threshold = GetWallThresholdLocked();
                 CopyActiveWalls(askWalls, snapshot);
                 CopyActiveWalls(bidWalls, snapshot);
@@ -956,7 +999,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     : (wall.IsAsk ? dxAskWall : dxBidWall);
                 if (brush == null)
                     continue;
-                brush.Opacity = ScaleWallsBySize ? (float)sizeScale : 1f;
+                brush.Opacity = ScaleWallsBySize
+                    ? Math.Max(0f, Math.Min(1f, 0.4f + 0.6f * (float)sizeScale)) : 1f;
                 RenderTarget.DrawLine(new Vector2(start, y), new Vector2(right, y), brush,
                     width, wallStrokeStyle);
 
@@ -1045,9 +1089,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 baseline = adaptiveBaseline;
                 threshold = GetWallThresholdLocked();
                 delta = sessionAggBuy - sessionAggSell;
-                DateTime lastDepth = GetLastDepthTime();
-                stale = lastDepth == DateTime.MinValue
-                    || (now - lastDepth).TotalSeconds > FeedStaleSeconds;
+                stale = IsBookStale();
             }
             SessionPhase phase = GetSessionPhase(now);
             string hud = PhaseLabel(phase) + " | baseline "
@@ -1079,6 +1121,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case SessionPhase.EthLondon: return "ETH-LONDON";
                 case SessionPhase.RthOpen: return "RTH-OPEN";
                 case SessionPhase.Rth: return "RTH";
+                case SessionPhase.EthPostRth: return "ETH-POST-RTH";
                 default: return "POST-CLOSE";
             }
         }
@@ -1295,6 +1338,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(0, 3600)]
         [Display(Name = "Wall Minimum Age Seconds", Order = 9, GroupName = "1. Liquidity Walls")]
         public int WallMinAgeSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 10000)]
+        [Display(Name = "Wall Grace Milliseconds", Order = 24, GroupName = "1. Liquidity Walls")]
+        public int WallGraceMilliseconds { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 300)]
