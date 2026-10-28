@@ -1,7 +1,8 @@
 # LiquidityPulse — Level 2 Liquidity and Reference Levels for NinjaTrader 8
 
-**Version:** v0.1 — Foundation  
-**Type:** On-chart overlay indicator (SharpDX)  
+**Version:** v0.1 — Foundation
+
+**Type:** On-chart overlay indicator (SharpDX)
 **Related specification:** [Issue #196](https://github.com/Dollars1bySTEVE/NT8-Indicators/issues/196)
 
 ---
