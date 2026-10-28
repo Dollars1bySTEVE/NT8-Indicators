@@ -49,11 +49,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Price;
             public bool IsAsk;
             public DateTime FirstSeen;
+            public DateTime LastSeenAboveThreshold;
             public long PeakSize;
             public long LastSize;
             public double TradedBuy;
             public double TradedSell;
             public bool Active;
+            public bool LostQualification;
         }
 
         private class WallSnapshot
@@ -73,6 +75,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             EthLondon,
             RthOpen,
             Rth,
+            EthPostRth,
             PostClose
         }
 
@@ -104,6 +107,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime cachedSessionEndEastern = DateTime.MinValue;
         private DateTime lastSampleTime = DateTime.MinValue;
         private DateTime lastDetectionTime = DateTime.MinValue;
+        private DateTime lastClockTime = DateTime.MinValue;
+        private bool pendingDetection;
         private SessionPhase lastPhase;
         private bool phaseInitialized;
         private double adaptiveBaseline = double.NaN;
@@ -115,7 +120,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int lastSessionIteratorBarIndex = -1;
         private long eventTimeBinary;
         private long lastDepthEventTimeBinary;
+        private long lastDepthArrivalUtcBinary;
+        private long lastEventArrivalUtcBinary;
         private long lastForceRefreshTimestamp;
+        private System.Threading.Timer feedRefreshTimer;
+        private System.Threading.Timer trailingDetectionTimer;
 
         private double currentDayOpen;
         private double currentDayHigh;
@@ -188,6 +197,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ScaleWallsBySize = true;
                 MinWallLabelSpacing = 12;
                 WallMinAgeSeconds = 3;
+                WallGraceMilliseconds = 1000;
                 FeedStaleSeconds = 5;
                 ShowWalls = true;
                 ShowWallLabels = true;
@@ -292,8 +302,27 @@ namespace NinjaTrader.NinjaScript.Indicators
                 weeklyVwapSeries = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 sessionIterator = new SessionIterator(Bars);
             }
+            else if (State == State.Realtime)
+            {
+                trailingDetectionTimer = new System.Threading.Timer(OnTrailingDetection, null,
+                    Timeout.Infinite, Timeout.Infinite);
+                feedRefreshTimer = new System.Threading.Timer(OnFeedRefreshTimer, null, 1000, 1000);
+            }
             else if (State == State.Terminated)
             {
+                if (feedRefreshTimer != null)
+                {
+                    feedRefreshTimer.Dispose();
+                    feedRefreshTimer = null;
+                }
+                lock (bookLock)
+                {
+                    if (trailingDetectionTimer != null)
+                    {
+                        trailingDetectionTimer.Dispose();
+                        trailingDetectionTimer = null;
+                    }
+                }
                 DisposeDxResources();
             }
         }
@@ -543,44 +572,42 @@ namespace NinjaTrader.NinjaScript.Indicators
             SetEventTime(e.Time, true);
             lock (bookLock)
             {
+                DateTime now = AdvanceClockLocked(FeedNow());
                 if (e.IsReset)
-                {
-                    askRows.Clear();
-                    bidRows.Clear();
-                    askWalls.Clear();
-                    bidWalls.Clear();
-                    return;
-                }
+                    ResetBookLocked();
 
                 bool isAsk = e.MarketDataType == MarketDataType.Ask;
-                if (!isAsk && e.MarketDataType != MarketDataType.Bid)
-                    return;
-                List<DepthRow> rows = isAsk ? askRows : bidRows;
-                int position = e.Position;
-                if (e.Operation == Operation.Add)
+                if (!e.IsReset && (isAsk || e.MarketDataType == MarketDataType.Bid))
                 {
-                    if (position >= 0 && position <= rows.Count)
+                    List<DepthRow> rows = isAsk ? askRows : bidRows;
+                    int position = e.Position;
+                    if (e.Operation == Operation.Add)
                     {
-                        rows.Insert(position, new DepthRow
+                        if (position >= 0 && position <= rows.Count)
                         {
-                            Price = Instrument.MasterInstrument.RoundToTickSize(e.Price),
-                            Size = Math.Max(0L, e.Volume)
-                        });
+                            rows.Insert(position, new DepthRow
+                            {
+                                Price = Instrument.MasterInstrument.RoundToTickSize(e.Price),
+                                Size = Math.Max(0L, e.Volume)
+                            });
+                        }
                     }
-                }
-                else if (e.Operation == Operation.Update)
-                {
-                    if (position >= 0 && position < rows.Count)
+                    else if (e.Operation == Operation.Update)
                     {
-                        rows[position].Price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
-                        rows[position].Size = Math.Max(0L, e.Volume);
+                        if (position >= 0 && position < rows.Count)
+                        {
+                            rows[position].Price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
+                            rows[position].Size = Math.Max(0L, e.Volume);
+                        }
+                    }
+                    else if (e.Operation == Operation.Remove && position >= 0 && position < rows.Count)
+                    {
+                        rows.RemoveAt(position);
                     }
                 }
-                else if (e.Operation == Operation.Remove && position >= 0 && position < rows.Count)
-                {
-                    rows.RemoveAt(position);
-                }
+                RunDetectionLocked(now, false);
             }
+            ThrottledForceRefresh();
         }
 
         protected override void OnMarketData(MarketDataEventArgs e)
@@ -589,9 +616,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             SetEventTime(e.Time, false);
-            bool refresh = false;
             lock (bookLock)
             {
+                DateTime now = AdvanceClockLocked(FeedNow());
                 if (e.MarketDataType == MarketDataType.Bid)
                     lastBid = e.Price;
                 else if (e.MarketDataType == MarketDataType.Ask)
@@ -619,50 +646,154 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
 
-                DateTime now = FeedNow();
-                SessionPhase phase = GetSessionPhase(now);
-                if (!phaseInitialized || phase != lastPhase)
-                {
-                    phaseInitialized = true;
-                    lastPhase = phase;
-                    sizeSamples.Clear();
-                    adaptiveBaseline = double.NaN;
-                    lastSampleTime = DateTime.MinValue;
-                    lastDetectionTime = DateTime.MinValue;
-                    if (phase == SessionPhase.EthOvernight)
-                    {
-                        sessionAggBuy = 0;
-                        sessionAggSell = 0;
-                    }
-                    if (phase == SessionPhase.PostClose)
-                    {
-                        askRows.Clear();
-                        bidRows.Clear();
-                        askWalls.Clear();
-                        bidWalls.Clear();
-                    }
-                }
+                RunDetectionLocked(now, false);
+            }
+            ThrottledForceRefresh();
+        }
 
-                if (lastDetectionTime == DateTime.MinValue
-                    || (now - lastDetectionTime).TotalMilliseconds >= 150)
+        private void OnFeedRefreshTimer(object state)
+        {
+            if (State != State.Realtime)
+                return;
+            // Live feeds advance the event clock by elapsed wall time so grace expiry and
+            // maintenance/early-close boundaries are handled without new events; Playback stays on event time.
+            if (Connection.PlaybackConnection == null && Interlocked.Read(ref eventTimeBinary) != 0)
+            {
+                lock (bookLock)
+                    RunDetectionLocked(AdvanceClockLocked(TimerNow()), false);
+            }
+            ThrottledForceRefresh();
+        }
+
+        private void OnTrailingDetection(object state)
+        {
+            if (State != State.Realtime)
+                return;
+            lock (bookLock)
+            {
+                if (!pendingDetection)
+                    return;
+                RunDetectionLocked(AdvanceClockLocked(TimerNow()), true);
+            }
+            ThrottledForceRefresh();
+        }
+
+        private DateTime TimerNow()
+        {
+            DateTime now = FeedNow();
+            long arrival = Interlocked.Read(ref lastEventArrivalUtcBinary);
+            if (Connection.PlaybackConnection != null || arrival == 0)
+                return now;
+            TimeSpan elapsed = DateTime.UtcNow - DateTime.FromBinary(arrival);
+            return elapsed > TimeSpan.Zero ? now + elapsed : now;
+        }
+
+        private DateTime AdvanceClockLocked(DateTime now)
+        {
+            if (lastClockTime != DateTime.MinValue)
+            {
+                if (now < lastClockTime)
                 {
-                    lastDetectionTime = now;
-                    UpdateAdaptiveBaselineLocked(now);
-                    RefreshWallsLocked(askRows, askWalls, true, now);
-                    RefreshWallsLocked(bidRows, bidWalls, false, now);
-                    refresh = true;
+                    // Absorb small jitter between extrapolated timer time and event timestamps.
+                    if ((lastClockTime - now).TotalSeconds <= 2)
+                        now = lastClockTime;
+                }
+                else if (CrossedSessionCloseLocked(lastClockTime, now))
+                {
+                    ResetBookLocked();
+                }
+            }
+            lastClockTime = now;
+            return now;
+        }
+
+        private bool CrossedSessionCloseLocked(DateTime previous, DateTime now)
+        {
+            DateTime previousEt = TimeZoneInfo.ConvertTime(previous, TimeZoneInfo.Local, EasternTz);
+            DateTime nowEt = TimeZoneInfo.ConvertTime(now, TimeZoneInfo.Local, EasternTz);
+            if ((nowEt - previousEt).TotalDays > 7)
+                return true;
+            for (DateTime day = previousEt.Date; day <= nowEt.Date; day = day.AddDays(1))
+            {
+                DateTime closeStart = day.AddHours(17);
+                if (cachedSessionEndEastern != DateTime.MinValue
+                    && cachedSessionEndEastern.Date == day
+                    && cachedSessionEndEastern < closeStart)
+                    closeStart = cachedSessionEndEastern;
+                if (previousEt < closeStart && nowEt >= closeStart)
+                    return true;
+            }
+            return false;
+        }
+
+        private void ResetBookLocked()
+        {
+            askRows.Clear();
+            bidRows.Clear();
+            askWalls.Clear();
+            bidWalls.Clear();
+            pendingDetection = false;
+        }
+
+        private void RunDetectionLocked(DateTime now, bool force)
+        {
+            SessionPhase phase = GetSessionPhase(now);
+            if (!phaseInitialized || phase != lastPhase)
+            {
+                phaseInitialized = true;
+                lastPhase = phase;
+                sizeSamples.Clear();
+                adaptiveBaseline = double.NaN;
+                lastSampleTime = DateTime.MinValue;
+                lastDetectionTime = DateTime.MinValue;
+                if (phase == SessionPhase.EthOvernight)
+                {
+                    sessionAggBuy = 0;
+                    sessionAggSell = 0;
                 }
             }
 
-            if (refresh)
-                ThrottledForceRefresh();
+            if (phase == SessionPhase.PostClose)
+            {
+                // The book is reset once on entering the close; depth received during maintenance
+                // is kept so positional updates at reopening still apply, but walls are suppressed.
+                askWalls.Clear();
+                bidWalls.Clear();
+                pendingDetection = false;
+                return;
+            }
+
+            double sinceLast = lastDetectionTime == DateTime.MinValue
+                ? double.MaxValue
+                : (now - lastDetectionTime).TotalMilliseconds;
+            if (force || sinceLast >= 150)
+            {
+                lastDetectionTime = now;
+                pendingDetection = false;
+                UpdateAdaptiveBaselineLocked(now);
+                RefreshWallsLocked(askRows, askWalls, true, now);
+                RefreshWallsLocked(bidRows, bidWalls, false, now);
+            }
+            else if (!pendingDetection)
+            {
+                pendingDetection = true;
+                if (trailingDetectionTimer != null)
+                {
+                    int delay = (int)Math.Max(1, Math.Min(150, 150 - Math.Max(0, sinceLast)));
+                    trailingDetectionTimer.Change(delay, Timeout.Infinite);
+                }
+            }
         }
 
         private void SetEventTime(DateTime time, bool isDepth)
         {
             Interlocked.Exchange(ref eventTimeBinary, time.ToBinary());
+            Interlocked.Exchange(ref lastEventArrivalUtcBinary, DateTime.UtcNow.ToBinary());
             if (isDepth)
+            {
                 Interlocked.Exchange(ref lastDepthEventTimeBinary, time.ToBinary());
+                Interlocked.Exchange(ref lastDepthArrivalUtcBinary, DateTime.UtcNow.ToBinary());
+            }
         }
 
         private DateTime FeedNow()
@@ -671,10 +802,28 @@ namespace NinjaTrader.NinjaScript.Indicators
             return binary == 0 ? DateTime.Now : DateTime.FromBinary(binary);
         }
 
+        private DateTime DetectionNowLocked(DateTime fallback)
+        {
+            return lastClockTime == DateTime.MinValue ? fallback : lastClockTime;
+        }
+
         private DateTime GetLastDepthTime()
         {
             long binary = Interlocked.Read(ref lastDepthEventTimeBinary);
             return binary == 0 ? DateTime.MinValue : DateTime.FromBinary(binary);
+        }
+
+        private bool IsBookStale()
+        {
+            if (State == State.Realtime && Connection.PlaybackConnection == null)
+            {
+                long binary = Interlocked.Read(ref lastDepthArrivalUtcBinary);
+                return binary == 0
+                    || (DateTime.UtcNow - DateTime.FromBinary(binary)).TotalSeconds > FeedStaleSeconds;
+            }
+            DateTime lastDepth = GetLastDepthTime();
+            return lastDepth == DateTime.MinValue
+                || (FeedNow() - lastDepth).TotalSeconds > FeedStaleSeconds;
         }
 
         private SessionPhase GetSessionPhase(DateTime eventTime)
@@ -685,7 +834,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (cachedSessionEndEastern != DateTime.MinValue
                     && cachedSessionEndEastern.Date == et.Date
-                    && cachedSessionEndEastern.TimeOfDay < new TimeSpan(16, 0, 0)
+                    && cachedSessionEndEastern.TimeOfDay < new TimeSpan(17, 0, 0)
                     && et >= cachedSessionEndEastern
                     && time < new TimeSpan(18, 0, 0))
                     return SessionPhase.PostClose;
@@ -694,7 +843,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return SessionPhase.RthOpen;
             if (time >= new TimeSpan(10, 0, 0) && time < new TimeSpan(16, 0, 0))
                 return SessionPhase.Rth;
-            if (time >= new TimeSpan(16, 0, 0) && time < new TimeSpan(18, 0, 0))
+            if (time >= new TimeSpan(16, 0, 0) && time < new TimeSpan(17, 0, 0))
+                return SessionPhase.EthPostRth;
+            if (time >= new TimeSpan(17, 0, 0) && time < new TimeSpan(18, 0, 0))
                 return SessionPhase.PostClose;
             if (time >= new TimeSpan(3, 0, 0) && time < new TimeSpan(9, 30, 0))
                 return SessionPhase.EthLondon;
@@ -754,11 +905,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 0; i < rows.Count; i++)
             {
                 DepthRow row = rows[i];
-                if (row.Size < threshold)
+                WallState wall;
+                bool active = walls.TryGetValue(row.Price, out wall) && wall.Active;
+                if (active && wall.LostQualification
+                    && (now - wall.LastSeenAboveThreshold).TotalMilliseconds >= WallGraceMilliseconds)
+                {
+                    // Qualification was observed lost and grace elapsed before it returned: end that lifecycle.
+                    wall.Active = false;
+                    active = false;
+                }
+                if (active)
+                    wall.LastSize = row.Size;
+                if (row.Size < (active ? 0.8 * threshold : threshold))
                     continue;
                 seen.Add(row.Price);
-                WallState wall;
-                if (!walls.TryGetValue(row.Price, out wall) || !wall.Active)
+                if (!active)
                 {
                     wall = new WallState
                     {
@@ -769,6 +930,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     };
                     walls[row.Price] = wall;
                 }
+                wall.LostQualification = false;
+                wall.LastSeenAboveThreshold = now;
                 wall.LastSize = row.Size;
                 wall.PeakSize = Math.Max(wall.PeakSize, row.Size);
             }
@@ -777,8 +940,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (wall.Active && !seen.Contains(wall.Price))
                 {
-                    wall.Active = false;
-                    // v0.2 hook: classify inactive walls as pulled or filled after the grace window.
+                    wall.LostQualification = true;
+                    if ((now - wall.LastSeenAboveThreshold).TotalMilliseconds >= WallGraceMilliseconds)
+                    {
+                        wall.Active = false;
+                        // v0.2 hook: classify inactive walls as pulled or filled after the grace window.
+                    }
                 }
             }
         }
@@ -908,9 +1075,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             long threshold;
             lock (bookLock)
             {
-                DateTime lastDepth = GetLastDepthTime();
-                stale = lastDepth == DateTime.MinValue
-                    || (now - lastDepth).TotalSeconds > FeedStaleSeconds;
+                now = DetectionNowLocked(now);
+                stale = IsBookStale();
                 threshold = GetWallThresholdLocked();
                 CopyActiveWalls(askWalls, snapshot);
                 CopyActiveWalls(bidWalls, snapshot);
@@ -956,7 +1122,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     : (wall.IsAsk ? dxAskWall : dxBidWall);
                 if (brush == null)
                     continue;
-                brush.Opacity = ScaleWallsBySize ? (float)sizeScale : 1f;
+                brush.Opacity = ScaleWallsBySize
+                    ? Math.Max(0f, Math.Min(1f, 0.4f + 0.6f * (float)sizeScale)) : 1f;
                 RenderTarget.DrawLine(new Vector2(start, y), new Vector2(right, y), brush,
                     width, wallStrokeStyle);
 
@@ -1042,12 +1209,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool stale;
             lock (bookLock)
             {
+                now = DetectionNowLocked(now);
                 baseline = adaptiveBaseline;
                 threshold = GetWallThresholdLocked();
                 delta = sessionAggBuy - sessionAggSell;
-                DateTime lastDepth = GetLastDepthTime();
-                stale = lastDepth == DateTime.MinValue
-                    || (now - lastDepth).TotalSeconds > FeedStaleSeconds;
+                stale = IsBookStale();
             }
             SessionPhase phase = GetSessionPhase(now);
             string hud = PhaseLabel(phase) + " | baseline "
@@ -1079,6 +1245,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case SessionPhase.EthLondon: return "ETH-LONDON";
                 case SessionPhase.RthOpen: return "RTH-OPEN";
                 case SessionPhase.Rth: return "RTH";
+                case SessionPhase.EthPostRth: return "ETH-POST-RTH";
                 default: return "POST-CLOSE";
             }
         }
@@ -1295,6 +1462,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(0, 3600)]
         [Display(Name = "Wall Minimum Age Seconds", Order = 9, GroupName = "1. Liquidity Walls")]
         public int WallMinAgeSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 10000)]
+        [Display(Name = "Wall Grace Milliseconds", Order = 24, GroupName = "1. Liquidity Walls")]
+        public int WallGraceMilliseconds { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 300)]

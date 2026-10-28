@@ -42,9 +42,10 @@ This release is the foundation only. It does not label pulls, fills, absorption,
 | Minimum Lot Floor | 8 | Threshold during warmup and the minimum threshold. |
 | Maximum Walls Per Side | 5 | Largest visible active walls retained per side. |
 | Walls From Last Bar | On | Starts wall lines at the last bar and extends them right. |
-| Scale Walls By Size | On | Scales line width and opacity by size relative to threshold. |
+| Scale Walls By Size | On | Scales line width and opacity by size relative to threshold; brightness scaling retains a 40% minimum before the configured opacity. |
 | Minimum Wall Label Spacing | 12 px | Vertical separation used to avoid label overlap. |
 | Wall Minimum Age Seconds | 3 | Suppresses short-lived walls. |
+| Wall Grace Milliseconds | 1000 | Event-time grace (0–10000 ms) before a wall below its retention threshold becomes inactive. |
 | Feed Stale Seconds | 5 | Marks the HUD stale and greys the walls after this long without depth. |
 | Show Walls / Show Wall Labels | On / On | Independent wall and label display switches. |
 | Ask / Bid / Stale Wall Color | Crimson / Lime Green / Gray | Independently serialized colors. |
@@ -92,10 +93,10 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 
 1. **Book:** market-depth Add/Update/Remove operations modify positional ask and bid row lists using `e.Position`; reset events clear the lists. Book updates are performed under a single lock.
 2. **Tape:** bid and ask quotes are cached. Last trades at or above the ask add aggressive-buy volume; trades at or below the bid add aggressive-sell volume. Trades between the quotes are unclassified. Classified volume is credited to active walls at the matching price.
-3. **Wall lifecycle:** each threshold-qualified price tracks first-seen time, peak/current size, trade volume, and active state. A wall is rendered only after its minimum age. Inactive classification is intentionally deferred to v0.2.
-4. **Clock and phases:** depth/trade event timestamps drive session phase, wall age, sampling, and feed-stale logic. Before the first event, the local clock is used only as a fallback. Eastern time is resolved with the DST-aware `Eastern Standard Time` zone. Phases are ETH Overnight (18:00–03:00), ETH London (03:00–09:30), RTH Open (09:30–10:00), RTH (10:00–16:00), and Post-Close (16:00–18:00). The chart's `SessionIterator` supplies its session end when available, including early closes; Post-Close clears the book.
+3. **Wall lifecycle:** each threshold-qualified price tracks first-seen time, last-qualified time, peak/current size, trade volume, and active state. Existing walls stay qualified at 80% of the current threshold (hysteresis). Below that level or absent from the book, they remain active until **Wall Grace Milliseconds** elapses since last qualification. Returning within grace preserves age, peak size, and traded volumes. Once a detection pass has observed the loss of qualification, a return after grace has elapsed ends the old lifecycle and must meet the full entry threshold again; walls that stay continuously qualified during quiet periods are never reset. Only active walls past their minimum age are rendered. Inactive classification is intentionally deferred to v0.2.
+4. **Clock and phases:** depth/trade event timestamps drive session phase, wall age, and sampling. Before the first event, the local clock is used only as a fallback. Live realtime feed health instead uses UTC wall-clock time since the last depth arrival, so a complete feed drop still becomes stale; Playback retains event-time feed health, including when paused. Eastern time is resolved with the DST-aware `Eastern Standard Time` zone. Phases are ETH Overnight (18:00–03:00), ETH London (03:00–09:30), RTH Open (09:30–10:00), RTH (10:00–16:00), ETH Post-RTH (16:00–17:00, HUD `ETH-POST-RTH`), and Post-Close (17:00–18:00 CME maintenance). The chart's `SessionIterator` supplies its session end when available, including early closes; the book and wall lifecycles are reset once whenever the clock crosses the 17:00 close or an earlier actual session end, even if no event arrived inside the closed interval. Walls stay suppressed until 18:00, but depth received during maintenance is retained so positional updates at reopening still apply. In live realtime, the timer advances the event clock by elapsed wall-clock time since the last event so grace expiry and close boundaries are processed without new data; Playback stays on event time.
 5. **Levels:** previous/current day, week, and trading session OH/L are updated from primary bars. Session and weekly profile/VWAP calculations replace the current developing-bar contribution before adding the updated value, preventing cumulative-volume overcounting with `Calculate.OnEachTick`.
-6. **Rendering:** wall refresh/baseline work is throttled to approximately 150 ms and chart invalidation to at most about 13 times per second. Rendering snapshots wall state under the book lock, filters to the visible price scale, selects the largest walls, and avoids nearby labels. SharpDX brushes, text formats, and stroke styles are reused and disposed on render-target changes and termination.
+6. **Rendering:** both depth and trade/quote events run shared wall refresh/baseline work throttled to approximately 150 ms; book changes skipped by the throttle schedule a trailing detection pass so the final change in a burst is always reconciled. Chart invalidation is limited to at most about 13 times per second. A realtime timer also requests a repaint about once per second without new data so stale status and grey walls remain visible; it is disposed at termination. Rendering snapshots active wall state under the book lock, filters to the visible price scale, selects the largest walls, and avoids nearby labels. SharpDX brushes, text formats, and stroke styles are reused and disposed on render-target changes and termination.
 
 ## Recommended charts
 
@@ -123,7 +124,7 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 
 ### HUD says `BOOK STALE`
 
-Check the connection and instrument's depth subscription. The HUD uses depth-event timestamps, so a continuing trade feed alone cannot make the book healthy.
+Check the connection and instrument's depth subscription. Live realtime uses elapsed UTC time since the last depth arrival, even if all feeds stop; Playback uses elapsed feed-event time since the last depth update. A continuing trade feed alone cannot make the book healthy.
 
 ### No bias shading
 
