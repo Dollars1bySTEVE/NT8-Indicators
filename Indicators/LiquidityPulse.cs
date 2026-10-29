@@ -154,6 +154,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly LinkedList<TradeSample> recentSellMaxPrices = new LinkedList<TradeSample>();
         private double recentBuyVolume;
         private double recentSellVolume;
+        private bool buySweepEpisodeActive;
+        private bool sellSweepEpisodeActive;
         private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
         private readonly List<WallFade> wallFades = new List<WallFade>();
         private readonly List<SweepCandidate> sweepCandidates = new List<SweepCandidate>();
@@ -389,7 +391,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 FailedRunWindowSeconds = 10;
                 LargeTradeMinimumContracts = 20;
                 KeyLevelProximityTicks = 2;
-                EventCooldownSeconds = 2;
+                EventCooldownSeconds = 5;
                 PullEventColor = System.Windows.Media.Brushes.Crimson;
                 FilledEventColor = System.Windows.Media.Brushes.Orange;
                 AbsorptionEventColor = System.Windows.Media.Brushes.Gold;
@@ -1164,21 +1166,37 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void DetectSweepLocked(DateTime now, int aggressor, double price)
         {
-            DateTime lastSweep = aggressor > 0 ? lastSweepBuyTime : lastSweepSellTime;
-            if (lastSweep != DateTime.MinValue
-                && (now - lastSweep).TotalSeconds < EventCooldownSeconds)
-                return;
-
             // Rolling per-side aggregates: progress is measured from the earlier extreme opposite the
             // aggressor direction to the current print, so only time-ordered movement counts.
             double tickSize = Instrument.MasterInstrument.TickSize;
             double volume = aggressor > 0 ? recentBuyVolume : recentSellVolume;
             LinkedList<TradeSample> extremes = aggressor > 0 ? recentBuyMinPrices : recentSellMaxPrices;
-            if (extremes.Count == 0 || tickSize <= 0 || volume < SweepMinimumVolume)
+            bool qualifies = extremes.Count > 0 && tickSize > 0 && volume >= SweepMinimumVolume;
+            double minPrice = aggressor > 0 && qualifies ? extremes.First.Value.Price : price;
+            double maxPrice = aggressor > 0 ? price
+                : (qualifies ? extremes.First.Value.Price : price);
+            qualifies = qualifies && (maxPrice - minPrice) / tickSize >= SweepMinimumTicks;
+            if (!qualifies)
+            {
+                if (aggressor > 0)
+                    buySweepEpisodeActive = false;
+                else
+                    sellSweepEpisodeActive = false;
                 return;
-            double minPrice = aggressor > 0 ? extremes.First.Value.Price : price;
-            double maxPrice = aggressor > 0 ? price : extremes.First.Value.Price;
-            if ((maxPrice - minPrice) / tickSize < SweepMinimumTicks)
+            }
+
+            bool alreadyEmitted = aggressor > 0
+                ? buySweepEpisodeActive : sellSweepEpisodeActive;
+            if (alreadyEmitted)
+                return;
+            if (aggressor > 0)
+                buySweepEpisodeActive = true;
+            else
+                sellSweepEpisodeActive = true;
+
+            DateTime lastSweep = aggressor > 0 ? lastSweepBuyTime : lastSweepSellTime;
+            if (lastSweep != DateTime.MinValue
+                && (now - lastSweep).TotalSeconds < EventCooldownSeconds)
                 return;
 
             bool isUp = aggressor > 0;
@@ -1248,7 +1266,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     AddWallFadeLocked(LiquidityEventType.Pull, wall.Price, now);
                     wall.DisappearanceEventEmitted = true;
                     int recentPullCount = CountRecentPullsLocked(isAsk, now);
-                    if (recentPullCount >= 3)
+                    if (recentPullCount == 3)
                         AddEventLocked(LiquidityEventType.Pull, wall.Price, isAsk, now,
                             string.Format("{0}× {1} PULLS", recentPullCount, isAsk ? "ASK" : "BID"),
                             keyLevel);
@@ -1862,7 +1880,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             List<float> usedYs = new List<float>();
             float right = ChartPanel.X + ChartPanel.W;
             int drawn = 0;
-            for (int i = snapshot.Count - 1; i >= 0 && drawn < 100; i--)
+            for (int i = snapshot.Count - 1; i >= 0 && drawn < 12; i--)
             {
                 EventMarker marker = snapshot[i];
                 if (!IsEventVisible(marker.Type) || marker.Price < chartScale.MinValue
@@ -1872,7 +1890,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (brush == null)
                     continue;
                 float y = chartScale.GetYByValue(marker.Price);
-                float labelY = FindWallLabelY(y, usedYs, Math.Max(MinWallLabelSpacing, EventMarkerFontSize + 2));
+                float labelY;
+                if (!TryFindEventLabelY(y, usedYs,
+                    Math.Max(MinWallLabelSpacing, EventMarkerFontSize + 2), out labelY))
+                    continue;
                 usedYs.Add(labelY);
                 RenderTarget.DrawLine(new Vector2(right - 58f, y), new Vector2(right - 4f, y),
                     brush, 2f, null);
@@ -1883,6 +1904,45 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 drawn++;
             }
+        }
+
+        private bool TryFindEventLabelY(float y, List<float> usedYs, int spacing, out float labelY)
+        {
+            float top = ChartPanel.Y;
+            float bottom = ChartPanel.Y + ChartPanel.H - EventMarkerFontSize - 2f;
+            float initial = y - EventMarkerFontSize - 2f;
+            int maxSteps = Math.Max(1, (int)((bottom - top) / Math.Max(1, spacing)));
+            for (int step = 0; step <= maxSteps; step++)
+            {
+                float above = initial - step * spacing;
+                if (IsEventLabelSlotFree(above, top, bottom, usedYs, spacing))
+                {
+                    labelY = above;
+                    return true;
+                }
+                if (step > 0)
+                {
+                    float below = initial + step * spacing;
+                    if (IsEventLabelSlotFree(below, top, bottom, usedYs, spacing))
+                    {
+                        labelY = below;
+                        return true;
+                    }
+                }
+            }
+            labelY = 0;
+            return false;
+        }
+
+        private bool IsEventLabelSlotFree(float candidate, float top, float bottom,
+            List<float> usedYs, int spacing)
+        {
+            if (candidate < top || candidate > bottom)
+                return false;
+            for (int i = 0; i < usedYs.Count; i++)
+                if (Math.Abs(candidate - usedYs[i]) < spacing)
+                    return false;
+            return true;
         }
 
         private void RenderWallFades(ChartScale chartScale)
