@@ -192,6 +192,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
         private readonly List<WallFade> wallFades = new List<WallFade>();
         private readonly List<ResidualZone> residualZones = new List<ResidualZone>();
+        private readonly HashSet<double> drawnAskWallLabels = new HashSet<double>();
+        private readonly HashSet<double> drawnBidWallLabels = new HashSet<double>();
         private readonly Queue<HeatmapSnapshot> heatmapSnapshots = new Queue<HeatmapSnapshot>();
         private readonly List<SweepCandidate> sweepCandidates = new List<SweepCandidate>();
         private readonly Dictionary<string, SharpDX.Direct2D1.SolidColorBrush> levelBrushes =
@@ -1654,7 +1656,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         break;
                     }
 
-                if (size >= Math.Max(1, zone.PeakSize / 2))
+                if (size >= Math.Max(1, (zone.PeakSize + 1) / 2))
                 {
                     zone.State = ResidualZoneState.Held;
                     zone.LowSince = DateTime.MinValue;
@@ -1899,6 +1901,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderHeatmap(chartScale);
             RenderReferenceLevels(chartControl, chartScale);
             RenderProfileLevels(chartControl, chartScale, firstBar, renderLastBar);
+            drawnAskWallLabels.Clear();
+            drawnBidWallLabels.Clear();
             if (ShowWalls)
             {
                 RenderWalls(chartScale);
@@ -2013,6 +2017,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         RenderTarget.DrawTextLayout(new Vector2(start + 3f, labelY), layout, brush);
                     }
+                    (wall.IsAsk ? drawnAskWallLabels : drawnBidWallLabels).Add(wall.Price);
                 }
                 brush.Opacity = 1f;
             }
@@ -2024,8 +2029,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             DateTime now = FeedNow();
             List<ResidualZone> zones = new List<ResidualZone>();
-            HashSet<double> activeAsk = new HashSet<double>();
-            HashSet<double> activeBid = new HashSet<double>();
             lock (bookLock)
             {
                 now = DetectionNowLocked(now);
@@ -2042,12 +2045,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                         State = z.State
                     });
                 }
-                foreach (WallState wall in askWalls.Values)
-                    if (wall.Active)
-                        activeAsk.Add(wall.Price);
-                foreach (WallState wall in bidWalls.Values)
-                    if (wall.Active)
-                        activeBid.Add(wall.Price);
             }
 
             float left = ChartPanel.X;
@@ -2077,7 +2074,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 StrokeStyle style = zone.State == ResidualZoneState.Held ? null : pullFadeStrokeStyle;
                 RenderTarget.DrawLine(new Vector2(x0, y), new Vector2(x1, y), brush, width, style);
 
-                bool coveredByWall = zone.IsAsk ? activeAsk.Contains(zone.Price) : activeBid.Contains(zone.Price);
+                bool coveredByWall = zone.IsAsk ? drawnAskWallLabels.Contains(zone.Price)
+                    : drawnBidWallLabels.Contains(zone.Price);
                 if (wallFormat != null && !coveredByWall)
                 {
                     string label;
