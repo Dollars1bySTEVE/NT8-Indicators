@@ -150,7 +150,7 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 | Enable Session Log | Off | Writes a CSV log while the indicator runs in realtime. Historical bars are never logged. |
 | Snapshot Seconds | 5 | Seconds between `SNAPSHOT` rows. 0 logs only events, walls, and zone changes. |
 
-Files are written to `Documents\NinjaTrader 8\LiquidityPulse\logs\<instrument>_<yyyy-MM-dd>.csv`, one file per instrument per day, appended if the indicator is reloaded. Times are feed times in NinjaTrader's local timezone. Writing happens on a background timer about once per second, so the chart is not slowed by disk access. If the file cannot be written, logging stops and a message is printed to the NinjaScript Output window.
+Files are written to `Documents\NinjaTrader 8\LiquidityPulse\logs\<instrument>_<yyyy-MM-dd>.csv`, one file per instrument per day, appended if the indicator is reloaded. Multiple charts on the same instrument share one writer and append to the same file. Times are feed times in NinjaTrader's local timezone. Writing happens on a background timer about once per second, so the chart is not slowed by disk access. If the file cannot be written, logging stops and a message is printed to the NinjaScript Output window.
 
 Columns: `time, kind, side, price, size, last, bid, ask, book_imbalance_pct, session_delta, baseline, wall_threshold, detail`.
 

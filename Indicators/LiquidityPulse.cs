@@ -121,6 +121,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             public string Text;
         }
 
+        // One writer per log file shared by all instances, so charts on the same instrument append safely.
+        private class SharedSessionLogWriter
+        {
+            public System.IO.StreamWriter Writer;
+            public int RefCount;
+        }
+
         private class HeatmapLevel
         {
             public double Price;
@@ -257,8 +264,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private System.Threading.Timer feedRefreshTimer;
         private System.Threading.Timer sessionLogTimer;
         private readonly ConcurrentQueue<SessionLogLine> sessionLogQueue = new ConcurrentQueue<SessionLogLine>();
-        private readonly object sessionLogWriteLock = new object();
-        private System.IO.StreamWriter sessionLogWriter;
+        private static readonly object sessionLogWriteLock = new object();
+        private static readonly Dictionary<string, SharedSessionLogWriter> sharedSessionLogWriters =
+            new Dictionary<string, SharedSessionLogWriter>(StringComparer.OrdinalIgnoreCase);
+        private SharedSessionLogWriter sessionLogWriter;
         private string sessionLogPath;
         private DateTime lastSessionLogSnapshot = DateTime.MinValue;
         private bool sessionLogFailed;
@@ -1405,7 +1414,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 if (!IsPriceInVisibleWindowLocked(rows, wall.Price, isAsk))
                 {
-                    AddResidualZoneLocked(wall);
+                    AddResidualZoneLocked(wall, now);
                     wall.DisappearanceEventEmitted = true;
                     continue;
                 }
@@ -1649,7 +1658,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             });
         }
 
-        private void AddResidualZoneLocked(WallState wall)
+        private void AddResidualZoneLocked(WallState wall, DateTime now)
         {
             // Only walls that left visible depth without being traded through or mostly filled.
             double traded = wall.IsAsk ? wall.TradedBuy : wall.TradedSell;
@@ -1678,9 +1687,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PeakSize = wall.PeakSize,
                 State = ResidualZoneState.Untested
             });
-            LogSessionLocked(wall.LastSeenAboveThreshold, "ZONE_NEW", wall.IsAsk ? "ASK" : "BID",
+            LogSessionLocked(now, "ZONE_NEW", wall.IsAsk ? "ASK" : "BID",
                 wall.Price, wall.PeakSize, string.Format(CultureInfo.InvariantCulture,
-                    "first_seen={0:HH:mm:ss} traded={1:F0}", wall.FirstSeen, traded));
+                    "first_seen={0:HH:mm:ss} last_seen={1:HH:mm:ss} traded={2:F0}",
+                    wall.FirstSeen, wall.LastSeenAboveThreshold, traded));
         }
 
         private void UpdateResidualZonesLocked(DateTime now)
@@ -1867,32 +1877,69 @@ namespace NinjaTrader.NinjaScript.Indicators
                         string path = GetSessionLogPath(line.Time);
                         if (sessionLogWriter == null || path != sessionLogPath)
                         {
-                            if (sessionLogWriter != null)
-                                sessionLogWriter.Dispose();
-                            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
-                            bool isNew = !System.IO.File.Exists(path);
-                            sessionLogWriter = new System.IO.StreamWriter(path, true, new System.Text.UTF8Encoding(false));
+                            ReleaseSessionLogWriterLocked();
+                            sessionLogWriter = AcquireSessionLogWriterLocked(path);
                             sessionLogPath = path;
-                            if (isNew)
-                                sessionLogWriter.WriteLine("time,kind,side,price,size,last,bid,ask,book_imbalance_pct,session_delta,baseline,wall_threshold,detail");
                         }
-                        sessionLogWriter.WriteLine(line.Text);
+                        sessionLogWriter.Writer.WriteLine(line.Text);
                     }
-                    if (sessionLogWriter != null)
-                        sessionLogWriter.Flush();
+                    if (!sessionLogFailed && sessionLogWriter != null)
+                        sessionLogWriter.Writer.Flush();
                 }
                 catch (Exception ex)
                 {
                     // Stop logging rather than failing repeatedly; the indicator keeps running.
                     sessionLogFailed = true;
+                    ReleaseSessionLogWriterLocked();
                     Print("LiquidityPulse session log disabled: " + ex.Message);
                 }
-                if (close && sessionLogWriter != null)
+                if (close)
+                    ReleaseSessionLogWriterLocked();
+            }
+        }
+
+        private static SharedSessionLogWriter AcquireSessionLogWriterLocked(string path)
+        {
+            SharedSessionLogWriter shared;
+            if (!sharedSessionLogWriters.TryGetValue(path, out shared))
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+                bool isNew = !System.IO.File.Exists(path);
+                shared = new SharedSessionLogWriter
                 {
-                    try { sessionLogWriter.Dispose(); } catch { }
-                    sessionLogWriter = null;
-                    sessionLogPath = null;
+                    Writer = new System.IO.StreamWriter(path, true, new System.Text.UTF8Encoding(false))
+                };
+                try
+                {
+                    if (isNew)
+                        shared.Writer.WriteLine("time,kind,side,price,size,last,bid,ask,book_imbalance_pct,session_delta,baseline,wall_threshold,detail");
                 }
+                catch
+                {
+                    try { shared.Writer.Dispose(); } catch { }
+                    throw;
+                }
+                sharedSessionLogWriters[path] = shared;
+            }
+            shared.RefCount++;
+            return shared;
+        }
+
+        private void ReleaseSessionLogWriterLocked()
+        {
+            SharedSessionLogWriter shared = sessionLogWriter;
+            string path = sessionLogPath;
+            sessionLogWriter = null;
+            sessionLogPath = null;
+            if (shared == null)
+                return;
+            shared.RefCount--;
+            if (shared.RefCount <= 0)
+            {
+                SharedSessionLogWriter current;
+                if (path != null && sharedSessionLogWriters.TryGetValue(path, out current) && current == shared)
+                    sharedSessionLogWriters.Remove(path);
+                try { shared.Writer.Dispose(); } catch { }
             }
         }
 
