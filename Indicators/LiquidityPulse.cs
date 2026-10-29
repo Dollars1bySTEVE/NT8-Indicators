@@ -2022,13 +2022,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                         GetWallMultiple(wall.Size),
                         FormatAge(now - wall.FirstSeen));
                     float labelY = FindWallLabelY(y, labelYs, MinWallLabelSpacing);
-                    labelYs.Add(labelY);
-                    using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
-                        label, wallFormat, Math.Max(150f, right - start), WallLabelFontSize + 4f))
+                    if (!float.IsNaN(labelY))
                     {
-                        RenderTarget.DrawTextLayout(new Vector2(start + 3f, labelY), layout, brush);
+                        labelYs.Add(labelY);
+                        using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
+                            label, wallFormat, Math.Max(150f, right - start), WallLabelFontSize + 4f))
+                        {
+                            RenderTarget.DrawTextLayout(new Vector2(start + 3f, labelY), layout, brush);
+                        }
+                        (wall.IsAsk ? drawnAskWallLabels : drawnBidWallLabels).Add(wall.Price);
                     }
-                    (wall.IsAsk ? drawnAskWallLabels : drawnBidWallLabels).Add(wall.Price);
                 }
                 brush.Opacity = 1f;
             }
@@ -2127,8 +2130,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (labelX >= left && labelX + layout.Metrics.Width <= right)
                         {
                             float labelY = FindWallLabelY(y, labelYs, MinWallLabelSpacing);
-                            labelYs.Add(labelY);
-                            RenderTarget.DrawTextLayout(new Vector2(labelX, labelY), layout, brush);
+                            if (!float.IsNaN(labelY))
+                            {
+                                labelYs.Add(labelY);
+                                RenderTarget.DrawTextLayout(new Vector2(labelX, labelY), layout, brush);
+                            }
                         }
                     }
                 }
@@ -2161,18 +2167,31 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        // Returns NaN when no free slot exists near the line, so crowded labels are skipped
+        // instead of piling up at the panel edge.
         private float FindWallLabelY(float y, List<float> usedYs, int spacing)
         {
-            float result = y - WallLabelFontSize - 2f;
-            for (int i = 0; i < usedYs.Count; i++)
+            float preferred = y - WallLabelFontSize - 2f;
+            float top = ChartPanel.Y;
+            float bottom = ChartPanel.Y + ChartPanel.H - WallLabelFontSize;
+            float step = Math.Max(1, spacing);
+            for (int k = 0; k <= 6; k++)
             {
-                if (Math.Abs(result - usedYs[i]) < spacing)
-                {
-                    result = usedYs[i] + spacing;
-                    i = -1;
-                }
+                float offset = ((k + 1) / 2) * step * (k % 2 == 1 ? 1f : -1f);
+                float candidate = preferred + offset;
+                if (candidate < top || candidate > bottom)
+                    continue;
+                bool free = true;
+                for (int i = 0; i < usedYs.Count; i++)
+                    if (Math.Abs(candidate - usedYs[i]) < step)
+                    {
+                        free = false;
+                        break;
+                    }
+                if (free)
+                    return candidate;
             }
-            return Math.Max(ChartPanel.Y, Math.Min(ChartPanel.Y + ChartPanel.H - WallLabelFontSize, result));
+            return float.NaN;
         }
 
         private string FormatAge(TimeSpan age)

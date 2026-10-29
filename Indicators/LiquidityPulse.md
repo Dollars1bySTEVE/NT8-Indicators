@@ -87,7 +87,7 @@ The book-imbalance readout in the HUD is a smoothed bid-versus-ask size comparis
 
 Depth is sampled at most every 250 ms, retaining at most 240 snapshots and the top 10 rows per side. The heatmap begins only after live/Playback depth arrives and does not backfill historical depth. It uses aggregated displayed size, not individual order identity. The strip occupies chart space at the right edge; a chart right margin can help keep it clear of the latest bars.
 
-Event labels are anchored to their event time and price instead of collecting at the latest bar. Labels outside the visible chart range are skipped, nearby labels are repositioned to avoid overlap, and each label has a dark backing so it stays readable over volumetric bars.
+Event labels are anchored to their event time and price instead of collecting at the latest bar. Labels outside the visible chart range are skipped, nearby labels are repositioned to avoid overlap (wall and zone labels that cannot find a free slot within three rows of their line are skipped rather than stacked at the chart edge), and each label has a dark backing so it stays readable over volumetric bars.
 
 ### Residual liquidity zones
 
