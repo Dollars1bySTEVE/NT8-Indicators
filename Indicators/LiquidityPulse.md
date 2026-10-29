@@ -89,6 +89,24 @@ Depth is sampled at most every 250 ms, retaining at most 240 snapshots and the t
 
 Event labels are anchored to their event time and price instead of collecting at the latest bar. Labels outside the visible chart range are skipped, nearby labels are repositioned to avoid overlap, and each label has a dark backing so it stays readable over volumetric bars.
 
+### Residual liquidity zones
+
+| Setting | Default | Description |
+|---|---:|---|
+| Show Residual Liquidity Zones | On | Keeps walls that price left behind as lines extending to the right. |
+| Show Resolved Zones | On | Keeps taken/gone zones as faded lines that stop at their resolution time. |
+| Residual Zone Max Minutes | 120 | Zones older than this (measured from when the wall first appeared) are removed. |
+| Residual Zone Opacity | 70% | Opacity of live zones; resolved zones draw at about a third of this. |
+
+A zone is created when a qualified wall, older than **Wall Minimum Age Seconds**, drops out of the visible depth window because price moved away, without being traded through and with less aggressive volume than its peak size. The line starts where the wall first appeared and is labeled with side, peak size, and age (for example `BID 14 6m00s`).
+
+- **Dashed:** last seen here; not yet revisited.
+- **Solid `HELD`:** price returned close enough for the level to be visible again, and at least half the peak size is still resting there.
+- **`TAKEN`:** price traded through the level, or it emptied after enough aggressive volume hit it.
+- **`GONE`:** the level came back into view but stayed below half its peak size for **Wall Grace Milliseconds** without enough volume traded there; the liquidity was likely pulled while price was away.
+
+While price is away, NT8's aggregated top-of-book feed cannot see the level, so a dashed zone means "last seen", not "still resting". Zones are kept only in memory, do not backfill from history, and are capped at 150.
+
 ### HUD and bias shading
 
 | Setting | Default | Description |
@@ -146,7 +164,7 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 - Only the provider's visible top ~10 depth levels are available; this is aggregated MBP data, not per-order MBO.
 - There is no historical depth replay on ordinary chart history. Walls, tape, and heatmap snapshots start on load; Market Replay works only when depth data is present.
 - Pull/break, absorption, sweep, failed-run, held-run, and large-trade markers are heuristics, not proof of spoofing, iceberg orders, stop hunts, or future price direction.
-- A disappearing level that falls outside the currently visible depth window is not classified as a pull or break. Aggregated Level 2 cannot identify individual order cancellations or fills.
+- A disappearing level that falls outside the currently visible depth window is not classified as a pull or break; it becomes a residual liquidity zone instead. Aggregated Level 2 cannot identify individual order cancellations or fills.
 - Failed sweeps require a level crossing, return across it, and enough opposite aggressive volume; held-run detection uses visible depth as a rough liquidity-vacuum proxy.
 - Event markers exist only in memory and disappear when the indicator is reloaded. Alerts and CSV/outcome tracking are not part of this release.
 - Session/day/week bar-derived references depend on the chart's data and trading-hours template.
