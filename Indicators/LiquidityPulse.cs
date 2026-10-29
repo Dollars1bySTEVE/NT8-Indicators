@@ -1901,15 +1901,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderHeatmap(chartScale);
             RenderReferenceLevels(chartControl, chartScale);
             RenderProfileLevels(chartControl, chartScale, firstBar, renderLastBar);
+            List<float> wallLabelYs = new List<float>();
             drawnAskWallLabels.Clear();
             drawnBidWallLabels.Clear();
             if (ShowWalls)
             {
-                RenderWalls(chartScale);
+                RenderWalls(chartScale, wallLabelYs);
                 RenderWallFades(chartScale);
             }
             if (ShowResidualZones)
-                RenderResidualZones(chartControl, chartScale);
+                RenderResidualZones(chartControl, chartScale, wallLabelYs);
             if (ShowEventMarkers)
                 RenderEvents(chartControl, chartScale);
             if (ShowHud)
@@ -1941,7 +1942,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderWalls(ChartScale chartScale)
+        private void RenderWalls(ChartScale chartScale, List<float> labelYs)
         {
             if (dxAskWall == null || dxBidWall == null)
                 return;
@@ -1976,7 +1977,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (right - start < 16f)
                 start = ChartPanel.X;
 
-            List<float> labelYs = new List<float>();
             int askCount = 0;
             int bidCount = 0;
             for (int i = 0; i < visible.Count; i++)
@@ -2023,7 +2023,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderResidualZones(ChartControl chartControl, ChartScale chartScale)
+        private void RenderResidualZones(ChartControl chartControl, ChartScale chartScale, List<float> labelYs)
         {
             if (chartControl == null || chartScale == null || dxAskWall == null || dxBidWall == null)
                 return;
@@ -2053,7 +2053,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ? right - Math.Min(Math.Max(40, HeatmapWidth), ChartPanel.W) - 4f
                 : right - 4f;
             float baseOpacity = Math.Max(0, Math.Min(100, ResidualZoneOpacity)) / 100f;
-            List<float> labelYs = new List<float>();
             for (int i = zones.Count - 1; i >= 0; i--)
             {
                 ResidualZone zone = zones[i];
