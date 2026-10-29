@@ -1186,6 +1186,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Active = true
                     };
                     walls[row.Price] = wall;
+                    RemovePulledZonesLocked(row.Price, isAsk);
                 }
                 wall.LostQualification = false;
                 wall.DisappearanceStarted = DateTime.MinValue;
@@ -1607,6 +1608,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             return zone.State == ResidualZoneState.Untested || zone.State == ResidualZoneState.Held;
         }
 
+        private void RemovePulledZonesLocked(double price, bool isAsk)
+        {
+            // A replacement wall supersedes any stale PULLED zone at the same price and side.
+            residualZones.RemoveAll(delegate(ResidualZone old)
+            {
+                return old.State == ResidualZoneState.Gone && old.IsAsk == isAsk
+                    && old.Price.ApproxCompare(price) == 0;
+            });
+        }
+
         private void AddResidualZoneLocked(WallState wall)
         {
             // Only walls that left visible depth without being traded through or mostly filled.
@@ -1626,12 +1637,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return;
                 }
             }
-            residualZones.RemoveAll(delegate(ResidualZone old)
-            {
-                return old.State == ResidualZoneState.Gone && old.IsAsk == wall.IsAsk
-                    && old.Price.ApproxCompare(wall.Price) == 0;
-            });
-
             residualZones.Add(new ResidualZone
             {
                 Price = wall.Price,
