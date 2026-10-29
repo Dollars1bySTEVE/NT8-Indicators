@@ -94,16 +94,18 @@ Event labels are anchored to their event time and price instead of collecting at
 | Setting | Default | Description |
 |---|---:|---|
 | Show Residual Liquidity Zones | On | Keeps walls that price left behind as lines extending to the right. |
-| Show Resolved Zones | On | Keeps taken/gone zones as faded lines that stop at their resolution time. |
+| Show Taken Zones | On | Shows taken zones as faint lines that stop where they were taken, then fade out. |
 | Residual Zone Max Minutes | 120 | Zones older than this (measured from when the wall first appeared) are removed. |
 | Residual Zone Opacity | 70% | Opacity of live zones; resolved zones draw at about a third of this. |
+| Taken Zone Fade Minutes | 5 | Taken zones fade to nothing over this many minutes, then are removed. 0 hides them immediately. |
+| Show Pulled Zones | On | Keeps zones whose liquidity vanished without trading (likely pulled or spoofed) as dotted `PULLED` lines until Residual Zone Max Minutes. |
 
 A zone is created when a qualified wall, older than **Wall Minimum Age Seconds**, drops out of the visible depth window because price moved away, without being traded through and with less aggressive volume than its peak size. The line starts where the wall first appeared and is labeled with side, peak size, and age (for example `BID 14 6m00s`).
 
 - **Dashed:** last seen here; not yet revisited.
 - **Solid `HELD`:** price returned close enough for the level to be visible again, and at least half the peak size is still resting there.
-- **`TAKEN`:** price traded through the level, or it emptied after enough aggressive volume hit it.
-- **`GONE`:** the level came back into view but stayed below half its peak size for **Wall Grace Milliseconds** without enough volume traded there; the liquidity was likely pulled while price was away.
+- **`TAKEN`:** price traded through the level, or it emptied after enough aggressive volume hit it. Taken zones fade out over **Taken Zone Fade Minutes**.
+- **Dotted `PULLED`:** the level came back into view but stayed below half its peak size for **Wall Grace Milliseconds** without enough volume traded there; the liquidity was likely pulled (or spoofed) while price was away. Pulled zones stay visible as possible areas of interest until they expire, since someone deliberately showed size there.
 
 While price is away, NT8's aggregated top-of-book feed cannot see the level, so a dashed zone means "last seen", not "still resting". Zones are kept only in memory, do not backfill from history, and are capped at 150.
 

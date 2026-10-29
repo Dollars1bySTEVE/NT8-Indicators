@@ -296,6 +296,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private TextFormat levelLabelFormat;
         private StrokeStyle wallStrokeStyle;
         private StrokeStyle pullFadeStrokeStyle;
+        private StrokeStyle pulledZoneStrokeStyle;
         private StrokeStyle referenceStrokeStyle;
         private StrokeStyle profileStrokeStyle;
 
@@ -425,6 +426,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowResolvedResidualZones = true;
                 ResidualZoneMaxMinutes = 120;
                 ResidualZoneOpacity = 70;
+                TakenZoneFadeMinutes = 5;
+                ShowPulledZones = true;
                 HeatmapHistorySeconds = 60;
                 HeatmapWidth = 160;
                 HeatmapOpacity = 70;
@@ -1591,7 +1594,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             double zoneRetention = Math.Max(1, ResidualZoneMaxMinutes);
             residualZones.RemoveAll(delegate(ResidualZone zone)
             {
-                return (now - zone.Created).TotalMinutes > zoneRetention;
+                return (now - zone.Created).TotalMinutes > zoneRetention
+                    || (zone.State == ResidualZoneState.Taken
+                        && (now - zone.Resolved).TotalMinutes >= TakenZoneFadeMinutes);
             });
             while (residualZones.Count > 150)
                 residualZones.RemoveAt(0);
@@ -1621,6 +1626,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return;
                 }
             }
+            residualZones.RemoveAll(delegate(ResidualZone old)
+            {
+                return old.State == ResidualZoneState.Gone && old.IsAsk == wall.IsAsk
+                    && old.Price.ApproxCompare(wall.Price) == 0;
+            });
 
             residualZones.Add(new ResidualZone
             {
@@ -1868,6 +1878,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     FontWeight.SemiBold, FontStyle.Normal, 9f);
                 wallStrokeStyle = CreateStrokeStyle(WallDashStyle);
                 pullFadeStrokeStyle = CreateStrokeStyle(DashStyleHelper.Dash);
+                pulledZoneStrokeStyle = CreateStrokeStyle(DashStyleHelper.Dot);
                 referenceStrokeStyle = CreateStrokeStyle(ReferenceLineStyle);
                 profileStrokeStyle = CreateStrokeStyle(ProfileLineStyle);
             }
@@ -2057,20 +2068,36 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 ResidualZone zone = zones[i];
                 bool live = IsResidualZoneLive(zone);
-                if ((!live && !ShowResolvedResidualZones)
+                bool pulled = zone.State == ResidualZoneState.Gone;
+                bool taken = zone.State == ResidualZoneState.Taken;
+                if ((taken && !ShowResolvedResidualZones) || (pulled && !ShowPulledZones)
                     || zone.Price < chartScale.MinValue || zone.Price > chartScale.MaxValue)
                     continue;
 
+                float opacity = baseOpacity;
+                if (taken)
+                {
+                    // Taken zones fade linearly to nothing over TakenZoneFadeMinutes.
+                    double fadeMinutes = Math.Max(0, TakenZoneFadeMinutes);
+                    double elapsed = (now - zone.Resolved).TotalMinutes;
+                    if (fadeMinutes <= 0 || elapsed >= fadeMinutes)
+                        continue;
+                    opacity = baseOpacity * 0.35f * (float)(1.0 - Math.Max(0, elapsed) / fadeMinutes);
+                }
+                else if (pulled)
+                    opacity = baseOpacity * 0.6f;
+
                 float x0 = Math.Max(left, chartControl.GetXByTime(zone.Created));
-                float x1 = live ? right : Math.Min(right, chartControl.GetXByTime(zone.Resolved));
+                float x1 = taken ? Math.Min(right, chartControl.GetXByTime(zone.Resolved)) : right;
                 if (x1 <= left || x0 >= right || x1 - x0 < 1f)
                     continue;
 
                 float y = chartScale.GetYByValue(zone.Price);
                 SharpDX.Direct2D1.SolidColorBrush brush = zone.IsAsk ? dxAskWall : dxBidWall;
-                brush.Opacity = live ? baseOpacity : baseOpacity * 0.35f;
+                brush.Opacity = opacity;
                 float width = zone.State == ResidualZoneState.Held ? 2f : 1.5f;
-                StrokeStyle style = zone.State == ResidualZoneState.Held ? null : pullFadeStrokeStyle;
+                StrokeStyle style = zone.State == ResidualZoneState.Held ? null
+                    : (pulled ? pulledZoneStrokeStyle : pullFadeStrokeStyle);
                 RenderTarget.DrawLine(new Vector2(x0, y), new Vector2(x1, y), brush, width, style);
 
                 bool coveredByWall = zone.IsAsk ? drawnAskWallLabels.Contains(zone.Price)
@@ -2079,16 +2106,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     string label;
                     float labelX;
-                    if (live)
+                    if (live || pulled)
                     {
                         label = string.Format("{0} {1} {2}{3}", zone.IsAsk ? "ASK" : "BID",
                             zone.PeakSize, FormatAge(now - zone.Created),
-                            zone.State == ResidualZoneState.Held ? " HELD" : string.Empty);
+                            zone.State == ResidualZoneState.Held ? " HELD" : (pulled ? " PULLED" : string.Empty));
                         labelX = float.NaN;
                     }
                     else
                     {
-                        label = zone.State == ResidualZoneState.Taken ? "TAKEN" : "GONE";
+                        label = "TAKEN";
                         labelX = x1 + 3f;
                     }
 
@@ -2695,6 +2722,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             SafeDispose(ref wallStrokeStyle);
             SafeDispose(ref pullFadeStrokeStyle);
+            SafeDispose(ref pulledZoneStrokeStyle);
             SafeDispose(ref referenceStrokeStyle);
             SafeDispose(ref profileStrokeStyle);
             SafeDispose(ref hudFormat);
@@ -2778,7 +2806,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowResidualZones { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Resolved Zones", Order = 8, GroupName = "2. Visualization")]
+        [Display(Name = "Show Taken Zones", Order = 8, GroupName = "2. Visualization")]
         public bool ShowResolvedResidualZones { get; set; }
 
         [NinjaScriptProperty]
@@ -2790,6 +2818,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(0, 100)]
         [Display(Name = "Residual Zone Opacity", Order = 10, GroupName = "2. Visualization")]
         public int ResidualZoneOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 120)]
+        [Display(Name = "Taken Zone Fade Minutes", Order = 11, GroupName = "2. Visualization")]
+        public int TakenZoneFadeMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Pulled Zones", Order = 12, GroupName = "2. Visualization")]
+        public bool ShowPulledZones { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Show Event Markers", Order = 1, GroupName = "2. Event Detection")]
