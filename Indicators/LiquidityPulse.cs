@@ -1759,6 +1759,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (EnableBiasShading && biasSeries != null)
                 RenderBias(chartControl, firstBar, renderLastBar);
+            if (ShowHeatmap)
+                RenderHeatmap(chartScale);
             RenderReferenceLevels(chartControl, chartScale);
             RenderProfileLevels(chartControl, chartScale, firstBar, renderLastBar);
             if (ShowWalls)
@@ -1766,8 +1768,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderWalls(chartScale);
                 RenderWallFades(chartScale);
             }
-            if (ShowHeatmap)
-                RenderHeatmap(chartScale);
             if (ShowEventMarkers)
                 RenderEvents(chartControl, chartScale);
             if (ShowHud)
@@ -2003,9 +2003,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderTarget.DrawTextLayout(new Vector2(left + 4f, ChartPanel.Y + 3f),
                     layout, dxHeatmapBid);
 
-            float cellWidth = Math.Max(1f, width * 0.25f / historySeconds);
-            float tick = Math.Max(0.0000001f, TickSize);
+            double tick = Math.Max(0.0000001, TickSize);
             long sizeReference = Math.Max(1, threshold * 4);
+            double maxCoverageSeconds = Math.Max(1, FeedStaleSeconds);
+            int minColumn = (int)Math.Ceiling(left);
+            int maxColumn = (int)Math.Floor(right);
+            int groupStart = int.MinValue;
+            int groupEnd = int.MinValue;
+            double groupAge = 0;
+            Dictionary<double, long> groupBids = new Dictionary<double, long>();
+            Dictionary<double, long> groupAsks = new Dictionary<double, long>();
             for (int i = 0; i < snapshots.Count; i++)
             {
                 HeatmapSnapshot snapshot = snapshots[i];
@@ -2013,30 +2020,81 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (age < 0 || age > historySeconds)
                     continue;
 
-                float x = right - (float)(age / historySeconds * width);
-                x = Math.Max(left, x - cellWidth);
-                float ageOpacity = (float)Math.Max(0.25, 1.0 - age / historySeconds);
+                DateTime endTime = i + 1 < snapshots.Count ? snapshots[i + 1].Time : now;
+                if (endTime > now)
+                    endTime = now;
+                double coverage = Math.Max(0, Math.Min(maxCoverageSeconds,
+                    (endTime - snapshot.Time).TotalSeconds));
+                double endAge = Math.Max(0, age - coverage);
+                int colStart = Math.Min(maxColumn - 1, Math.Max(minColumn,
+                    (int)Math.Floor(right - age / historySeconds * width)));
+                int colEnd = Math.Min(maxColumn,
+                    (int)Math.Floor(right - endAge / historySeconds * width));
+                if (colEnd <= colStart)
+                    colEnd = colStart + 1;
+
+                if (colStart != groupStart)
+                {
+                    if (groupStart != int.MinValue)
+                        RenderHeatmapColumn(chartScale, groupBids, groupAsks, groupStart,
+                            Math.Min(groupEnd, colStart), groupAge, historySeconds, tick, sizeReference);
+                    groupStart = colStart;
+                    groupEnd = colEnd;
+                    groupBids.Clear();
+                    groupAsks.Clear();
+                }
+                else
+                    groupEnd = Math.Max(groupEnd, colEnd);
+
+                groupAge = age;
                 for (int j = 0; j < snapshot.Levels.Count; j++)
                 {
                     HeatmapLevel level = snapshot.Levels[j];
-                    float centerY = chartScale.GetYByValue(level.Price);
-                    if (centerY < ChartPanel.Y || centerY > ChartPanel.Y + ChartPanel.H)
-                        continue;
-
-                    float halfTick = (float)Math.Abs(
-                        chartScale.GetYByValue(level.Price + tick / 2.0)
-                        - chartScale.GetYByValue(level.Price - tick / 2.0)) / 2f;
-                    float cellHeight = Math.Max(2f, halfTick * 2f);
-                    float intensity = (float)Math.Min(1.0, level.Size / (double)sizeReference);
-                    float opacity = (HeatmapOpacity / 100f)
-                        * ageOpacity * (0.15f + 0.85f * intensity);
-                    SharpDX.Direct2D1.SolidColorBrush brush = level.IsAsk
-                        ? dxHeatmapAsk : dxHeatmapBid;
-                    brush.Opacity = opacity;
-                    RenderTarget.FillRectangle(new RectangleF(x, centerY - cellHeight / 2f,
-                        cellWidth, cellHeight), brush);
-                    brush.Opacity = 1f;
+                    Dictionary<double, long> sizes = level.IsAsk ? groupAsks : groupBids;
+                    long existing;
+                    if (!sizes.TryGetValue(level.Price, out existing) || level.Size > existing)
+                        sizes[level.Price] = level.Size;
                 }
+            }
+            if (groupStart != int.MinValue)
+                RenderHeatmapColumn(chartScale, groupBids, groupAsks, groupStart, groupEnd,
+                    groupAge, historySeconds, tick, sizeReference);
+        }
+
+        private void RenderHeatmapColumn(ChartScale chartScale, Dictionary<double, long> bids,
+            Dictionary<double, long> asks, int colStart, int colEnd, double age,
+            double historySeconds, double tick, long sizeReference)
+        {
+            float x = colStart;
+            float cellWidth = Math.Max(1, colEnd - colStart);
+            float ageOpacity = (float)Math.Max(0.25, 1.0 - age / historySeconds);
+            RenderHeatmapLevels(chartScale, bids, dxHeatmapBid, x, cellWidth, ageOpacity,
+                tick, sizeReference);
+            RenderHeatmapLevels(chartScale, asks, dxHeatmapAsk, x, cellWidth, ageOpacity,
+                tick, sizeReference);
+        }
+
+        private void RenderHeatmapLevels(ChartScale chartScale, Dictionary<double, long> sizes,
+            SharpDX.Direct2D1.SolidColorBrush brush, float x, float cellWidth, float ageOpacity,
+            double tick, long sizeReference)
+        {
+            foreach (KeyValuePair<double, long> level in sizes)
+            {
+                float centerY = chartScale.GetYByValue(level.Key);
+                if (centerY < ChartPanel.Y || centerY > ChartPanel.Y + ChartPanel.H)
+                    continue;
+
+                float halfTick = (float)Math.Abs(
+                    chartScale.GetYByValue(level.Key + tick / 2.0)
+                    - chartScale.GetYByValue(level.Key - tick / 2.0)) / 2f;
+                float cellHeight = Math.Max(2f, halfTick * 2f);
+                float intensity = (float)Math.Min(1.0, level.Value / (double)sizeReference);
+                float opacity = (HeatmapOpacity / 100f)
+                    * ageOpacity * (0.15f + 0.85f * intensity);
+                brush.Opacity = opacity;
+                RenderTarget.FillRectangle(new RectangleF(x, centerY - cellHeight / 2f,
+                    cellWidth, cellHeight), brush);
+                brush.Opacity = 1f;
             }
         }
 
@@ -2089,6 +2147,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             switch (marker.Type)
             {
                 case LiquidityEventType.Pull:
+                    if (!string.IsNullOrEmpty(marker.Label)
+                        && marker.Label.IndexOf("PULLS", StringComparison.Ordinal) >= 0)
+                        return marker.Label;
                     label = "PULL " + (marker.IsAsk ? "ASK" : "BID");
                     break;
                 case LiquidityEventType.Filled:
