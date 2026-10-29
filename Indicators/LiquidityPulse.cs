@@ -59,6 +59,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int RefillCount;
             public bool HadSizeReduction;
             public bool AbsorptionEmitted;
+            public bool TradedThrough;
             public bool DisappearanceEventEmitted;
             public bool Active;
             public bool LostQualification;
@@ -145,7 +146,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly Dictionary<double, WallState> askWalls = new Dictionary<double, WallState>();
         private readonly Dictionary<double, WallState> bidWalls = new Dictionary<double, WallState>();
         private readonly Queue<SizeSample> sizeSamples = new Queue<SizeSample>();
-        private readonly Queue<TradeSample> recentTrades = new Queue<TradeSample>();
+        private readonly List<WallState> retiredAskWalls = new List<WallState>();
+        private readonly List<WallState> retiredBidWalls = new List<WallState>();
+        private readonly Queue<TradeSample> recentBuyTrades = new Queue<TradeSample>();
+        private readonly Queue<TradeSample> recentSellTrades = new Queue<TradeSample>();
+        private readonly LinkedList<TradeSample> recentBuyMinPrices = new LinkedList<TradeSample>();
+        private readonly LinkedList<TradeSample> recentSellMaxPrices = new LinkedList<TradeSample>();
+        private double recentBuyVolume;
+        private double recentSellVolume;
         private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
         private readonly List<WallFade> wallFades = new List<WallFade>();
         private readonly List<SweepCandidate> sweepCandidates = new List<SweepCandidate>();
@@ -747,6 +755,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (bidWalls.TryGetValue(price, out wall) && wall.Active)
                             wall.TradedSell += e.Volume;
                     }
+                    RecordTradeThroughLocked(price);
                     if (!IsBookStale())
                         ProcessTradeLocked(now, price, e.Volume,
                             aggressiveBuy ? 1 : (aggressiveSell ? -1 : 0));
@@ -838,7 +847,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             bidRows.Clear();
             askWalls.Clear();
             bidWalls.Clear();
-            recentTrades.Clear();
+            retiredAskWalls.Clear();
+            retiredBidWalls.Clear();
+            ClearRecentTradesLocked();
             sweepCandidates.Clear();
             pendingDetection = false;
         }
@@ -869,7 +880,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // is kept so positional updates at reopening still apply, but walls are suppressed.
                 askWalls.Clear();
                 bidWalls.Clear();
+                retiredAskWalls.Clear();
+                retiredBidWalls.Clear();
                 pendingDetection = false;
+                PruneEventHistoryLocked(now);
                 return;
             }
 
@@ -881,13 +895,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 lastDetectionTime = now;
                 pendingDetection = false;
                 UpdateAdaptiveBaselineLocked(now);
-                RefreshWallsLocked(askRows, askWalls, true, now);
-                RefreshWallsLocked(bidRows, bidWalls, false, now);
+                bool bookFresh = !IsBookStale();
+                RefreshWallsLocked(askRows, askWalls, retiredAskWalls, true, now, bookFresh);
+                RefreshWallsLocked(bidRows, bidWalls, retiredBidWalls, false, now, bookFresh);
                 UpdateBookImbalanceLocked(now);
-                if (!IsBookStale())
+                if (bookFresh)
                 {
-                    ProcessPendingWallEventsLocked(askRows, askWalls, true, now);
-                    ProcessPendingWallEventsLocked(bidRows, bidWalls, false, now);
+                    ProcessPendingWallEventsLocked(askRows, askWalls, retiredAskWalls, true, now);
+                    ProcessPendingWallEventsLocked(bidRows, bidWalls, retiredBidWalls, false, now);
                     ProcessSweepCandidatesLocked(now);
                 }
                 PruneEventHistoryLocked(now);
@@ -972,8 +987,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void UpdateAdaptiveBaselineLocked(DateTime now)
         {
-            if (!UseAdaptiveThreshold || (lastSampleTime != DateTime.MinValue
-                && (now - lastSampleTime).TotalSeconds < 2))
+            if (lastSampleTime != DateTime.MinValue
+                && (now - lastSampleTime).TotalSeconds < 2)
                 return;
             lastSampleTime = now;
             double total = 0;
@@ -1016,7 +1031,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         private void RefreshWallsLocked(List<DepthRow> rows, Dictionary<double, WallState> walls,
-            bool isAsk, DateTime now)
+            List<WallState> retiredWalls, bool isAsk, DateTime now, bool bookFresh)
         {
             long threshold = GetWallThresholdLocked();
             HashSet<double> seen = new HashSet<double>();
@@ -1047,6 +1062,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 seen.Add(row.Price);
                 if (!active)
                 {
+                    if (wall != null && wall.LostQualification && !wall.DisappearanceEventEmitted
+                        && wall.DisappearanceStarted != DateTime.MinValue)
+                    {
+                        // Keep the expired lifecycle until its disappearance is classified.
+                        retiredWalls.Add(wall);
+                        while (retiredWalls.Count > 200)
+                            retiredWalls.RemoveAt(0);
+                    }
                     wall = new WallState
                     {
                         Price = row.Price,
@@ -1065,7 +1088,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double tradedAtWall = isAsk ? wall.TradedBuy : wall.TradedSell;
                 bool priceHeld = double.IsNaN(lastTradePrice)
                     || (isAsk ? lastTradePrice <= wall.Price : lastTradePrice >= wall.Price);
-                if (!wall.AbsorptionEmitted && wall.RefillCount > 0 && priceHeld
+                if (bookFresh && !wall.AbsorptionEmitted && wall.RefillCount > 0 && priceHeld
                     && wall.PeakSize > 0
                     && tradedAtWall >= wall.PeakSize * AbsorptionTradeMultiple)
                 {
@@ -1095,7 +1118,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (aggressor != 0)
             {
-                recentTrades.Enqueue(new TradeSample
+                AddRecentTradeLocked(new TradeSample
                 {
                     Time = now,
                     Price = price,
@@ -1112,7 +1135,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         string.Format("LARGE {0} {1:F0}", aggressor > 0 ? "BUY" : "SELL", volume),
                         FindNearestKeyLevelLocked(price, KeyLevelProximityTicks));
                 }
-                DetectSweepLocked(now, aggressor);
+                DetectSweepLocked(now, aggressor, price);
             }
 
             for (int i = sweepCandidates.Count - 1; i >= 0; i--)
@@ -1139,28 +1162,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void DetectSweepLocked(DateTime now, int aggressor)
+        private void DetectSweepLocked(DateTime now, int aggressor, double price)
         {
-            double minPrice = double.MaxValue;
-            double maxPrice = double.MinValue;
-            double volume = 0;
-            double tickSize = Instrument.MasterInstrument.TickSize;
-            foreach (TradeSample sample in recentTrades)
-            {
-                if (sample.IsBuy != (aggressor > 0))
-                    continue;
-                minPrice = Math.Min(minPrice, sample.Price);
-                maxPrice = Math.Max(maxPrice, sample.Price);
-                volume += sample.Volume;
-            }
-            if (minPrice == double.MaxValue || tickSize <= 0
-                || (maxPrice - minPrice) / tickSize < SweepMinimumTicks
-                || volume < SweepMinimumVolume)
-                return;
-
             DateTime lastSweep = aggressor > 0 ? lastSweepBuyTime : lastSweepSellTime;
             if (lastSweep != DateTime.MinValue
                 && (now - lastSweep).TotalSeconds < EventCooldownSeconds)
+                return;
+
+            // Rolling per-side aggregates: progress is measured from the earlier extreme opposite the
+            // aggressor direction to the current print, so only time-ordered movement counts.
+            double tickSize = Instrument.MasterInstrument.TickSize;
+            double volume = aggressor > 0 ? recentBuyVolume : recentSellVolume;
+            LinkedList<TradeSample> extremes = aggressor > 0 ? recentBuyMinPrices : recentSellMaxPrices;
+            if (extremes.Count == 0 || tickSize <= 0 || volume < SweepMinimumVolume)
+                return;
+            double minPrice = aggressor > 0 ? extremes.First.Value.Price : price;
+            double maxPrice = aggressor > 0 ? price : extremes.First.Value.Price;
+            if ((maxPrice - minPrice) / tickSize < SweepMinimumTicks)
                 return;
 
             bool isUp = aggressor > 0;
@@ -1193,9 +1211,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         private void ProcessPendingWallEventsLocked(List<DepthRow> rows,
-            Dictionary<double, WallState> walls, bool isAsk, DateTime now)
+            Dictionary<double, WallState> walls, List<WallState> retiredWalls, bool isAsk, DateTime now)
         {
-            foreach (WallState wall in walls.Values)
+            List<WallState> pending = new List<WallState>(retiredWalls);
+            pending.AddRange(walls.Values);
+            foreach (WallState wall in pending)
             {
                 if (!wall.LostQualification || wall.DisappearanceEventEmitted
                     || wall.DisappearanceStarted == DateTime.MinValue
@@ -1211,10 +1231,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double traded = isAsk ? wall.TradedBuy : wall.TradedSell;
                 bool tradedEnough = wall.PeakSize > 0
                     && traded >= wall.PeakSize * PullTradeRatio;
-                bool tradedThrough = !double.IsNaN(lastTradePrice)
-                    && (isAsk
-                        ? lastTradePrice >= wall.Price + Instrument.MasterInstrument.TickSize
-                        : lastTradePrice <= wall.Price - Instrument.MasterInstrument.TickSize);
+                bool tradedThrough = wall.TradedThrough;
                 if (tradedEnough && tradedThrough)
                 {
                     AddEventLocked(LiquidityEventType.Filled, wall.Price, isAsk, now,
@@ -1241,6 +1258,34 @@ namespace NinjaTrader.NinjaScript.Indicators
                     wall.DisappearanceEventEmitted = true;
                 }
             }
+
+            retiredWalls.RemoveAll(delegate(WallState retired) { return retired.DisappearanceEventEmitted; });
+            List<double> finished = new List<double>();
+            foreach (KeyValuePair<double, WallState> entry in walls)
+                if (!entry.Value.Active && entry.Value.DisappearanceEventEmitted)
+                    finished.Add(entry.Key);
+            for (int i = 0; i < finished.Count; i++)
+                walls.Remove(finished[i]);
+        }
+
+        private void RecordTradeThroughLocked(double price)
+        {
+            double tickSize = Instrument.MasterInstrument.TickSize;
+            MarkTradeThroughLocked(askWalls.Values, price, tickSize, true);
+            MarkTradeThroughLocked(retiredAskWalls, price, tickSize, true);
+            MarkTradeThroughLocked(bidWalls.Values, price, tickSize, false);
+            MarkTradeThroughLocked(retiredBidWalls, price, tickSize, false);
+        }
+
+        private void MarkTradeThroughLocked(IEnumerable<WallState> walls, double price, double tickSize, bool isAsk)
+        {
+            foreach (WallState wall in walls)
+            {
+                if (wall.TradedThrough || wall.DisappearanceEventEmitted)
+                    continue;
+                if (isAsk ? price >= wall.Price + tickSize : price <= wall.Price - tickSize)
+                    wall.TradedThrough = true;
+            }
         }
 
         private bool IsPriceInVisibleWindowLocked(List<DepthRow> rows, double price, bool isAsk)
@@ -1251,7 +1296,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (rows.Count == 0)
                 return false;
             double edge = rows[rows.Count - 1].Price;
-            return isAsk ? price <= edge : price >= edge;
+            if (isAsk ? price > edge : price < edge)
+                return false;
+            // A consumed level may move onto the opposite side, but must stay inside its outer edge.
+            List<DepthRow> opposite = isAsk ? bidRows : askRows;
+            if (opposite.Count == 0)
+                return true;
+            double oppositeEdge = opposite[opposite.Count - 1].Price;
+            return isAsk ? price >= oppositeEdge : price <= oppositeEdge;
         }
 
         private int CountRecentPullsLocked(bool isAsk, DateTime now)
@@ -1322,11 +1374,58 @@ namespace NinjaTrader.NinjaScript.Indicators
             return aheadSize < adaptiveBaseline * Math.Max(1, rows.Count) * 0.5;
         }
 
+        private void AddRecentTradeLocked(TradeSample sample)
+        {
+            if (sample.IsBuy)
+            {
+                recentBuyTrades.Enqueue(sample);
+                recentBuyVolume += sample.Volume;
+                while (recentBuyMinPrices.Count > 0 && recentBuyMinPrices.Last.Value.Price >= sample.Price)
+                    recentBuyMinPrices.RemoveLast();
+                recentBuyMinPrices.AddLast(sample);
+            }
+            else
+            {
+                recentSellTrades.Enqueue(sample);
+                recentSellVolume += sample.Volume;
+                while (recentSellMaxPrices.Count > 0 && recentSellMaxPrices.Last.Value.Price <= sample.Price)
+                    recentSellMaxPrices.RemoveLast();
+                recentSellMaxPrices.AddLast(sample);
+            }
+        }
+
         private void PruneRecentTradesLocked(DateTime now)
         {
-            while (recentTrades.Count > 0
-                && (now - recentTrades.Peek().Time).TotalSeconds > SweepWindowSeconds)
-                recentTrades.Dequeue();
+            while (recentBuyTrades.Count > 0
+                && (now - recentBuyTrades.Peek().Time).TotalSeconds > SweepWindowSeconds)
+            {
+                TradeSample expired = recentBuyTrades.Dequeue();
+                recentBuyVolume -= expired.Volume;
+                if (recentBuyMinPrices.Count > 0 && ReferenceEquals(recentBuyMinPrices.First.Value, expired))
+                    recentBuyMinPrices.RemoveFirst();
+            }
+            while (recentSellTrades.Count > 0
+                && (now - recentSellTrades.Peek().Time).TotalSeconds > SweepWindowSeconds)
+            {
+                TradeSample expired = recentSellTrades.Dequeue();
+                recentSellVolume -= expired.Volume;
+                if (recentSellMaxPrices.Count > 0 && ReferenceEquals(recentSellMaxPrices.First.Value, expired))
+                    recentSellMaxPrices.RemoveFirst();
+            }
+            if (recentBuyTrades.Count == 0)
+                recentBuyVolume = 0;
+            if (recentSellTrades.Count == 0)
+                recentSellVolume = 0;
+        }
+
+        private void ClearRecentTradesLocked()
+        {
+            recentBuyTrades.Clear();
+            recentSellTrades.Clear();
+            recentBuyMinPrices.Clear();
+            recentSellMaxPrices.Clear();
+            recentBuyVolume = 0;
+            recentSellVolume = 0;
         }
 
         private void PruneEventHistoryLocked(DateTime now)
@@ -1410,7 +1509,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string FindCrossedKeyLevelLocked(double minPrice, double maxPrice, bool isUp)
         {
             double midpoint = (minPrice + maxPrice) / 2.0;
-            string nearest = FindNearestKeyLevelLocked(midpoint, SweepMinimumTicks + KeyLevelProximityTicks);
+            double tickSize = Instrument.MasterInstrument.TickSize;
+            int halfSpanTicks = tickSize > 0
+                ? (int)Math.Ceiling((maxPrice - minPrice) / 2.0 / tickSize - 1e-9) : 0;
+            string nearest = FindNearestKeyLevelLocked(midpoint, halfSpanTicks + KeyLevelProximityTicks);
             if (string.IsNullOrEmpty(nearest))
                 return string.Empty;
             double level = GetKeyLevelPriceLocked(nearest);
