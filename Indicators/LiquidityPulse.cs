@@ -400,7 +400,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowHeatmap = true;
                 HeatmapHistorySeconds = 60;
                 HeatmapWidth = 160;
-                HeatmapOpacity = 45;
+                HeatmapOpacity = 70;
                 HeatmapBidColor = System.Windows.Media.Brushes.LimeGreen;
                 HeatmapAskColor = System.Windows.Media.Brushes.Crimson;
                 EventMarkerFontSize = 9;
@@ -1981,12 +1981,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             List<HeatmapSnapshot> snapshots;
-            long threshold;
             DateTime now;
             lock (bookLock)
             {
                 now = DetectionNowLocked(FeedNow());
-                threshold = GetWallThresholdLocked();
                 snapshots = new List<HeatmapSnapshot>(heatmapSnapshots);
             }
 
@@ -2004,7 +2002,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     layout, dxHeatmapBid);
 
             double tick = Math.Max(0.0000001, TickSize);
-            long sizeReference = Math.Max(1, threshold * 4);
+            // Normalize to the largest size in the retained window so thin books still show contrast.
+            long sizeReference = 1;
+            for (int i = 0; i < snapshots.Count; i++)
+                for (int j = 0; j < snapshots[i].Levels.Count; j++)
+                    sizeReference = Math.Max(sizeReference, snapshots[i].Levels[j].Size);
             double maxCoverageSeconds = Math.Max(1, FeedStaleSeconds);
             int minColumn = (int)Math.Ceiling(left);
             int maxColumn = (int)Math.Floor(right);
@@ -2088,9 +2090,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     chartScale.GetYByValue(level.Key + tick / 2.0)
                     - chartScale.GetYByValue(level.Key - tick / 2.0)) / 2f;
                 float cellHeight = Math.Max(2f, halfTick * 2f);
-                float intensity = (float)Math.Min(1.0, level.Value / (double)sizeReference);
+                float intensity = (float)Math.Sqrt(Math.Min(1.0, level.Value / (double)sizeReference));
                 float opacity = (HeatmapOpacity / 100f)
-                    * ageOpacity * (0.15f + 0.85f * intensity);
+                    * ageOpacity * (0.2f + 0.8f * intensity);
                 brush.Opacity = opacity;
                 RenderTarget.FillRectangle(new RectangleF(x, centerY - cellHeight / 2f,
                     cellWidth, cellHeight), brush);
@@ -2135,6 +2137,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
                     GetCompactEventLabel(marker), eventFormat, labelWidth, labelHeight))
                 {
+                    if (dxHeatmapBackground != null)
+                    {
+                        float backgroundOpacity = dxHeatmapBackground.Opacity;
+                        dxHeatmapBackground.Opacity = backgroundOpacity * (EventMarkerOpacity / 100f);
+                        RenderTarget.FillRectangle(new RectangleF(labelX - 2f, labelY,
+                            layout.Metrics.Width + 4f, labelHeight), dxHeatmapBackground);
+                        dxHeatmapBackground.Opacity = backgroundOpacity;
+                    }
                     RenderTarget.DrawTextLayout(new Vector2(labelX, labelY), layout, brush);
                 }
                 drawn++;

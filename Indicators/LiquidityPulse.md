@@ -82,12 +82,12 @@ The book-imbalance readout in the HUD is a smoothed bid-versus-ask size comparis
 | Show Heatmap | On | Displays recent bid/ask depth in a narrow strip at the chart's right edge. |
 | Heatmap History Seconds | 60 | Visible rolling window, configurable from 10 to 60 seconds. |
 | Heatmap Width | 160 px | Width of the strip, configurable from 40 to 400 px. |
-| Heatmap Opacity | 45% | Maximum cell opacity; stronger displayed size is brighter and older samples fade. |
+| Heatmap Opacity | 70% | Maximum cell opacity. Brightness is relative to the largest displayed size in the retained window, so thin books still show contrast; older samples fade. |
 | Heatmap Bid / Ask Color | Lime Green / Crimson | Independently configurable depth colors. |
 
 Depth is sampled at most every 250 ms, retaining at most 240 snapshots and the top 10 rows per side. The heatmap begins only after live/Playback depth arrives and does not backfill historical depth. It uses aggregated displayed size, not individual order identity. The strip occupies chart space at the right edge; a chart right margin can help keep it clear of the latest bars.
 
-Event labels are anchored to their event time and price instead of collecting at the latest bar. Labels outside the visible chart range are skipped, and nearby labels are repositioned to avoid overlap.
+Event labels are anchored to their event time and price instead of collecting at the latest bar. Labels outside the visible chart range are skipped, nearby labels are repositioned to avoid overlap, and each label has a dark backing so it stays readable over volumetric bars.
 
 ### HUD and bias shading
 
