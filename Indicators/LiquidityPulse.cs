@@ -93,6 +93,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Price;
         }
 
+        private class HeatmapLevel
+        {
+            public double Price;
+            public long Size;
+            public bool IsAsk;
+        }
+
+        private class HeatmapSnapshot
+        {
+            public DateTime Time;
+            public List<HeatmapLevel> Levels;
+        }
+
         private class TradeSample
         {
             public DateTime Time;
@@ -158,6 +171,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool sellSweepEpisodeActive;
         private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
         private readonly List<WallFade> wallFades = new List<WallFade>();
+        private readonly Queue<HeatmapSnapshot> heatmapSnapshots = new Queue<HeatmapSnapshot>();
         private readonly List<SweepCandidate> sweepCandidates = new List<SweepCandidate>();
         private readonly Dictionary<string, SharpDX.Direct2D1.SolidColorBrush> levelBrushes =
             new Dictionary<string, SharpDX.Direct2D1.SolidColorBrush>();
@@ -188,8 +202,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime lastSweepBuyTime = DateTime.MinValue;
         private DateTime lastSweepSellTime = DateTime.MinValue;
         private DateTime lastBookImbalanceUpdate = DateTime.MinValue;
+        private DateTime lastHeatmapSampleTime = DateTime.MinValue;
         private double smoothedBookImbalance;
         private TextFormat eventFormat;
+        private TextFormat heatmapFormat;
+        private SharpDX.Direct2D1.SolidColorBrush dxHeatmapBid;
+        private SharpDX.Direct2D1.SolidColorBrush dxHeatmapAsk;
+        private SharpDX.Direct2D1.SolidColorBrush dxHeatmapBackground;
         private SharpDX.Direct2D1.SolidColorBrush dxPullEvent;
         private SharpDX.Direct2D1.SolidColorBrush dxFilledEvent;
         private SharpDX.Direct2D1.SolidColorBrush dxAbsorptionEvent;
@@ -378,6 +397,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowFailedSweepEvents = true;
                 ShowHeldRunEvents = true;
                 ShowLargeTradeEvents = true;
+                ShowHeatmap = true;
+                HeatmapHistorySeconds = 60;
+                HeatmapWidth = 160;
+                HeatmapOpacity = 45;
+                HeatmapBidColor = System.Windows.Media.Brushes.LimeGreen;
+                HeatmapAskColor = System.Windows.Media.Brushes.Crimson;
                 EventMarkerFontSize = 9;
                 EventMarkerOpacity = 90;
                 EventMarkerRetentionMinutes = 60;
@@ -898,6 +923,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 pendingDetection = false;
                 UpdateAdaptiveBaselineLocked(now);
                 bool bookFresh = !IsBookStale();
+                CaptureHeatmapSnapshotLocked(now, bookFresh);
                 RefreshWallsLocked(askRows, askWalls, retiredAskWalls, true, now, bookFresh);
                 RefreshWallsLocked(bidRows, bidWalls, retiredBidWalls, false, now, bookFresh);
                 UpdateBookImbalanceLocked(now);
@@ -918,6 +944,52 @@ namespace NinjaTrader.NinjaScript.Indicators
                     trailingDetectionTimer.Change(delay, Timeout.Infinite);
                 }
             }
+        }
+
+        private void CaptureHeatmapSnapshotLocked(DateTime now, bool bookFresh)
+        {
+            if (lastHeatmapSampleTime != DateTime.MinValue && now < lastHeatmapSampleTime)
+            {
+                heatmapSnapshots.Clear();
+                lastHeatmapSampleTime = DateTime.MinValue;
+            }
+
+            while (heatmapSnapshots.Count > 0
+                && (now - heatmapSnapshots.Peek().Time).TotalSeconds > HeatmapHistorySeconds)
+                heatmapSnapshots.Dequeue();
+
+            if (!ShowHeatmap || !bookFresh
+                || lastHeatmapSampleTime != DateTime.MinValue
+                    && (now - lastHeatmapSampleTime).TotalMilliseconds < 250)
+                return;
+
+            List<HeatmapLevel> levels = new List<HeatmapLevel>();
+            for (int i = 0; i < Math.Min(10, bidRows.Count); i++)
+                if (bidRows[i].Size > 0)
+                    levels.Add(new HeatmapLevel
+                    {
+                        Price = bidRows[i].Price,
+                        Size = bidRows[i].Size,
+                        IsAsk = false
+                    });
+            for (int i = 0; i < Math.Min(10, askRows.Count); i++)
+                if (askRows[i].Size > 0)
+                    levels.Add(new HeatmapLevel
+                    {
+                        Price = askRows[i].Price,
+                        Size = askRows[i].Size,
+                        IsAsk = true
+                    });
+
+            if (levels.Count == 0)
+                return;
+
+            while (heatmapSnapshots.Count >= 240)
+                heatmapSnapshots.Dequeue();
+            heatmapSnapshots.Enqueue(new HeatmapSnapshot { Time = now, Levels = levels });
+            lastHeatmapSampleTime = now;
+            while (heatmapSnapshots.Count > 240)
+                heatmapSnapshots.Dequeue();
         }
 
         private void SetEventTime(DateTime time, bool isDepth)
@@ -1621,6 +1693,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxFailedSweepEvent = CreateDxBrush(FailedSweepEventColor, EventMarkerOpacity);
                 dxHeldRunEvent = CreateDxBrush(HeldRunEventColor, EventMarkerOpacity);
                 dxLargeTradeEvent = CreateDxBrush(LargeTradeEventColor, EventMarkerOpacity);
+                dxHeatmapBid = CreateDxBrush(HeatmapBidColor, 100);
+                dxHeatmapAsk = CreateDxBrush(HeatmapAskColor, 100);
+                dxHeatmapBackground = CreateDxBrush(System.Windows.Media.Brushes.Black, 75);
 
                 AddLevelBrush("pdOpen", PreviousDayOpenColor, ReferenceOpacity);
                 AddLevelBrush("pdHigh", PreviousDayHighColor, ReferenceOpacity);
@@ -1651,6 +1726,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     FontWeight.Normal, FontStyle.Normal, LevelLabelFontSize);
                 eventFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI",
                     FontWeight.Bold, FontStyle.Normal, EventMarkerFontSize);
+                heatmapFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI",
+                    FontWeight.SemiBold, FontStyle.Normal, 9f);
                 wallStrokeStyle = CreateStrokeStyle(WallDashStyle);
                 pullFadeStrokeStyle = CreateStrokeStyle(DashStyleHelper.Dash);
                 referenceStrokeStyle = CreateStrokeStyle(ReferenceLineStyle);
@@ -1682,6 +1759,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (EnableBiasShading && biasSeries != null)
                 RenderBias(chartControl, firstBar, renderLastBar);
+            if (ShowHeatmap)
+                RenderHeatmap(chartScale);
             RenderReferenceLevels(chartControl, chartScale);
             RenderProfileLevels(chartControl, chartScale, firstBar, renderLastBar);
             if (ShowWalls)
@@ -1690,7 +1769,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderWallFades(chartScale);
             }
             if (ShowEventMarkers)
-                RenderEvents(chartScale);
+                RenderEvents(chartControl, chartScale);
             if (ShowHud)
                 RenderHud();
         }
@@ -1895,16 +1974,139 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderEvents(ChartScale chartScale)
+        private void RenderHeatmap(ChartScale chartScale)
         {
-            if (eventFormat == null || chartScale == null)
+            if (chartScale == null || dxHeatmapBid == null || dxHeatmapAsk == null
+                || dxHeatmapBackground == null || heatmapFormat == null)
+                return;
+
+            List<HeatmapSnapshot> snapshots;
+            long threshold;
+            DateTime now;
+            lock (bookLock)
+            {
+                now = DetectionNowLocked(FeedNow());
+                threshold = GetWallThresholdLocked();
+                snapshots = new List<HeatmapSnapshot>(heatmapSnapshots);
+            }
+
+            float right = ChartPanel.X + ChartPanel.W;
+            float width = Math.Min(Math.Max(40, HeatmapWidth), ChartPanel.W);
+            float left = right - width;
+            float historySeconds = Math.Max(1, HeatmapHistorySeconds);
+            RenderTarget.FillRectangle(new RectangleF(left, ChartPanel.Y, width, ChartPanel.H),
+                dxHeatmapBackground);
+
+            string title = "L2 " + HeatmapHistorySeconds + "s";
+            using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
+                title, heatmapFormat, width - 8f, 14f))
+                RenderTarget.DrawTextLayout(new Vector2(left + 4f, ChartPanel.Y + 3f),
+                    layout, dxHeatmapBid);
+
+            double tick = Math.Max(0.0000001, TickSize);
+            long sizeReference = Math.Max(1, threshold * 4);
+            double maxCoverageSeconds = Math.Max(1, FeedStaleSeconds);
+            int minColumn = (int)Math.Ceiling(left);
+            int maxColumn = (int)Math.Floor(right);
+            int groupStart = int.MinValue;
+            int groupEnd = int.MinValue;
+            double groupAge = 0;
+            Dictionary<double, long> groupBids = new Dictionary<double, long>();
+            Dictionary<double, long> groupAsks = new Dictionary<double, long>();
+            for (int i = 0; i < snapshots.Count; i++)
+            {
+                HeatmapSnapshot snapshot = snapshots[i];
+                double age = (now - snapshot.Time).TotalSeconds;
+                if (age < 0 || age > historySeconds)
+                    continue;
+
+                DateTime endTime = i + 1 < snapshots.Count ? snapshots[i + 1].Time : now;
+                if (endTime > now)
+                    endTime = now;
+                double coverage = Math.Max(0, Math.Min(maxCoverageSeconds,
+                    (endTime - snapshot.Time).TotalSeconds));
+                double endAge = Math.Max(0, age - coverage);
+                int colStart = Math.Min(maxColumn - 1, Math.Max(minColumn,
+                    (int)Math.Floor(right - age / historySeconds * width)));
+                int colEnd = Math.Min(maxColumn,
+                    (int)Math.Floor(right - endAge / historySeconds * width));
+                if (colEnd <= colStart)
+                    colEnd = colStart + 1;
+
+                if (colStart != groupStart)
+                {
+                    if (groupStart != int.MinValue)
+                        RenderHeatmapColumn(chartScale, groupBids, groupAsks, groupStart,
+                            Math.Min(groupEnd, colStart), groupAge, historySeconds, tick, sizeReference);
+                    groupStart = colStart;
+                    groupEnd = colEnd;
+                    groupBids.Clear();
+                    groupAsks.Clear();
+                }
+                else
+                    groupEnd = Math.Max(groupEnd, colEnd);
+
+                groupAge = age;
+                for (int j = 0; j < snapshot.Levels.Count; j++)
+                {
+                    HeatmapLevel level = snapshot.Levels[j];
+                    Dictionary<double, long> sizes = level.IsAsk ? groupAsks : groupBids;
+                    long existing;
+                    if (!sizes.TryGetValue(level.Price, out existing) || level.Size > existing)
+                        sizes[level.Price] = level.Size;
+                }
+            }
+            if (groupStart != int.MinValue)
+                RenderHeatmapColumn(chartScale, groupBids, groupAsks, groupStart, groupEnd,
+                    groupAge, historySeconds, tick, sizeReference);
+        }
+
+        private void RenderHeatmapColumn(ChartScale chartScale, Dictionary<double, long> bids,
+            Dictionary<double, long> asks, int colStart, int colEnd, double age,
+            double historySeconds, double tick, long sizeReference)
+        {
+            float x = colStart;
+            float cellWidth = Math.Max(1, colEnd - colStart);
+            float ageOpacity = (float)Math.Max(0.25, 1.0 - age / historySeconds);
+            RenderHeatmapLevels(chartScale, bids, dxHeatmapBid, x, cellWidth, ageOpacity,
+                tick, sizeReference);
+            RenderHeatmapLevels(chartScale, asks, dxHeatmapAsk, x, cellWidth, ageOpacity,
+                tick, sizeReference);
+        }
+
+        private void RenderHeatmapLevels(ChartScale chartScale, Dictionary<double, long> sizes,
+            SharpDX.Direct2D1.SolidColorBrush brush, float x, float cellWidth, float ageOpacity,
+            double tick, long sizeReference)
+        {
+            foreach (KeyValuePair<double, long> level in sizes)
+            {
+                float centerY = chartScale.GetYByValue(level.Key);
+                if (centerY < ChartPanel.Y || centerY > ChartPanel.Y + ChartPanel.H)
+                    continue;
+
+                float halfTick = (float)Math.Abs(
+                    chartScale.GetYByValue(level.Key + tick / 2.0)
+                    - chartScale.GetYByValue(level.Key - tick / 2.0)) / 2f;
+                float cellHeight = Math.Max(2f, halfTick * 2f);
+                float intensity = (float)Math.Min(1.0, level.Value / (double)sizeReference);
+                float opacity = (HeatmapOpacity / 100f)
+                    * ageOpacity * (0.15f + 0.85f * intensity);
+                brush.Opacity = opacity;
+                RenderTarget.FillRectangle(new RectangleF(x, centerY - cellHeight / 2f,
+                    cellWidth, cellHeight), brush);
+                brush.Opacity = 1f;
+            }
+        }
+
+        private void RenderEvents(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (eventFormat == null || chartControl == null || chartScale == null)
                 return;
             List<EventMarker> snapshot;
             lock (bookLock)
                 snapshot = new List<EventMarker>(eventMarkers);
 
-            List<float> usedYs = new List<float>();
-            float right = ChartPanel.X + ChartPanel.W;
+            List<RectangleF> usedLabels = new List<RectangleF>();
             int drawn = 0;
             for (int i = snapshot.Count - 1; i >= 0 && drawn < 12; i--)
             {
@@ -1912,36 +2114,90 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (!IsEventVisible(marker.Type) || marker.Price < chartScale.MinValue
                     || marker.Price > chartScale.MaxValue)
                     continue;
+                float x = chartControl.GetXByTime(marker.Time);
+                if (x < ChartPanel.X || x > ChartPanel.X + ChartPanel.W)
+                    continue;
                 SharpDX.Direct2D1.SolidColorBrush brush = GetEventBrush(marker.Type);
                 if (brush == null)
                     continue;
                 float y = chartScale.GetYByValue(marker.Price);
+                float labelX;
                 float labelY;
-                if (!TryFindEventLabelY(y, usedYs,
-                    Math.Max(MinWallLabelSpacing, EventMarkerFontSize + 2), out labelY))
+                float labelWidth = Math.Min(128f, ChartPanel.W);
+                float labelHeight = EventMarkerFontSize + 5f;
+                if (!TryFindEventLabelPosition(x, y, labelWidth, labelHeight,
+                    usedLabels, out labelX, out labelY))
                     continue;
-                usedYs.Add(labelY);
-                RenderTarget.DrawLine(new Vector2(right - 58f, y), new Vector2(right - 4f, y),
+                RectangleF labelBounds = new RectangleF(labelX, labelY, labelWidth, labelHeight);
+                usedLabels.Add(labelBounds);
+                RenderTarget.DrawLine(new Vector2(x - 4f, y), new Vector2(x + 4f, y),
                     brush, 2f, null);
                 using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
-                    marker.Label, eventFormat, 220f, EventMarkerFontSize + 4f))
+                    GetCompactEventLabel(marker), eventFormat, labelWidth, labelHeight))
                 {
-                    RenderTarget.DrawTextLayout(new Vector2(right - 228f, labelY), layout, brush);
+                    RenderTarget.DrawTextLayout(new Vector2(labelX, labelY), layout, brush);
                 }
                 drawn++;
             }
         }
 
-        private bool TryFindEventLabelY(float y, List<float> usedYs, int spacing, out float labelY)
+        private string GetCompactEventLabel(EventMarker marker)
+        {
+            string label;
+            switch (marker.Type)
+            {
+                case LiquidityEventType.Pull:
+                    if (!string.IsNullOrEmpty(marker.Label)
+                        && marker.Label.IndexOf("PULLS", StringComparison.Ordinal) >= 0)
+                        return marker.Label;
+                    label = "PULL " + (marker.IsAsk ? "ASK" : "BID");
+                    break;
+                case LiquidityEventType.Filled:
+                    label = "BROKEN " + (marker.IsAsk ? "ASK" : "BID");
+                    break;
+                case LiquidityEventType.Absorption:
+                    label = "ABSORB " + (marker.IsAsk ? "ASK" : "BID");
+                    break;
+                case LiquidityEventType.Sweep:
+                    label = "SWEEP " + (marker.IsAsk ? "DOWN" : "UP");
+                    break;
+                case LiquidityEventType.FailedSweep:
+                    label = "FAILED " + (marker.IsAsk ? "UP" : "DOWN");
+                    break;
+                case LiquidityEventType.HeldRun:
+                    label = "HELD " + (marker.IsAsk ? "UP" : "DOWN");
+                    break;
+                case LiquidityEventType.LargeTrade:
+                    label = "LARGE " + (marker.IsAsk ? "SELL" : "BUY");
+                    break;
+                default:
+                    return marker.Label;
+            }
+
+            if (!string.IsNullOrEmpty(marker.KeyLevel))
+                label += " " + marker.KeyLevel;
+            return label;
+        }
+
+        private bool TryFindEventLabelPosition(float markerX, float markerY, float width,
+            float height, List<RectangleF> usedLabels, out float labelX, out float labelY)
         {
             float top = ChartPanel.Y;
-            float bottom = ChartPanel.Y + ChartPanel.H - EventMarkerFontSize - 2f;
-            float initial = y - EventMarkerFontSize - 2f;
-            int maxSteps = Math.Max(1, (int)((bottom - top) / Math.Max(1, spacing)));
+            float bottom = ChartPanel.Y + ChartPanel.H - height;
+            float left = ChartPanel.X;
+            float right = ChartPanel.X + ChartPanel.W;
+            labelX = markerX + 6f;
+            if (labelX + width > right)
+                labelX = markerX - width - 6f;
+            labelX = Math.Max(left, Math.Min(right - width, labelX));
+            float initial = markerY - height - 2f;
+            int spacing = Math.Max(MinWallLabelSpacing, EventMarkerFontSize + 2);
+            int maxSteps = Math.Max(1, (int)((bottom - top) / spacing));
             for (int step = 0; step <= maxSteps; step++)
             {
                 float above = initial - step * spacing;
-                if (IsEventLabelSlotFree(above, top, bottom, usedYs, spacing))
+                if (IsEventLabelPositionFree(labelX, above, width, height,
+                    top, bottom, usedLabels))
                 {
                     labelY = above;
                     return true;
@@ -1949,7 +2205,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (step > 0)
                 {
                     float below = initial + step * spacing;
-                    if (IsEventLabelSlotFree(below, top, bottom, usedYs, spacing))
+                    if (IsEventLabelPositionFree(labelX, below, width, height,
+                        top, bottom, usedLabels))
                     {
                         labelY = below;
                         return true;
@@ -1960,14 +2217,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             return false;
         }
 
-        private bool IsEventLabelSlotFree(float candidate, float top, float bottom,
-            List<float> usedYs, int spacing)
+        private bool IsEventLabelPositionFree(float x, float y, float width, float height,
+            float top, float bottom, List<RectangleF> usedLabels)
         {
-            if (candidate < top || candidate > bottom)
+            if (y < top || y > bottom)
                 return false;
-            for (int i = 0; i < usedYs.Count; i++)
-                if (Math.Abs(candidate - usedYs[i]) < spacing)
+            for (int i = 0; i < usedLabels.Count; i++)
+            {
+                RectangleF used = usedLabels[i];
+                if (x < used.Right && x + width > used.Left
+                    && y < used.Bottom && y + height > used.Top)
                     return false;
+            }
             return true;
         }
 
@@ -2201,6 +2462,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             SafeDispose(ref wallFormat);
             SafeDispose(ref levelLabelFormat);
             SafeDispose(ref eventFormat);
+            SafeDispose(ref heatmapFormat);
             SafeDispose(ref dxAskWall);
             SafeDispose(ref dxBidWall);
             SafeDispose(ref dxStaleWall);
@@ -2215,6 +2477,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             SafeDispose(ref dxFailedSweepEvent);
             SafeDispose(ref dxHeldRunEvent);
             SafeDispose(ref dxLargeTradeEvent);
+            SafeDispose(ref dxHeatmapBid);
+            SafeDispose(ref dxHeatmapAsk);
+            SafeDispose(ref dxHeatmapBackground);
             foreach (SharpDX.Direct2D1.SolidColorBrush brush in levelBrushes.Values)
                 if (brush != null)
                     brush.Dispose();
@@ -2230,6 +2495,45 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         #region Properties
+        [NinjaScriptProperty]
+        [Display(Name = "Show Heatmap", Order = 1, GroupName = "2. Visualization")]
+        public bool ShowHeatmap { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(10, 60)]
+        [Display(Name = "Heatmap History Seconds", Order = 2, GroupName = "2. Visualization")]
+        public int HeatmapHistorySeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(40, 400)]
+        [Display(Name = "Heatmap Width", Order = 3, GroupName = "2. Visualization")]
+        public int HeatmapWidth { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Heatmap Opacity", Order = 4, GroupName = "2. Visualization")]
+        public int HeatmapOpacity { get; set; }
+
+        [XmlIgnore]
+        [Display(Name = "Heatmap Bid Color", Order = 5, GroupName = "2. Visualization")]
+        public System.Windows.Media.Brush HeatmapBidColor { get; set; }
+        [Browsable(false)]
+        public string HeatmapBidColorSerializable
+        {
+            get { return Serialize.BrushToString(HeatmapBidColor); }
+            set { HeatmapBidColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Heatmap Ask Color", Order = 6, GroupName = "2. Visualization")]
+        public System.Windows.Media.Brush HeatmapAskColor { get; set; }
+        [Browsable(false)]
+        public string HeatmapAskColorSerializable
+        {
+            get { return Serialize.BrushToString(HeatmapAskColor); }
+            set { HeatmapAskColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [Display(Name = "Show Event Markers", Order = 1, GroupName = "2. Event Detection")]
         public bool ShowEventMarkers { get; set; }
