@@ -1,6 +1,6 @@
 # LiquidityPulse — Level 2 Liquidity and Reference Levels for NinjaTrader 8
 
-**Version:** v0.1 — Foundation
+**Version:** v0.2 — Event detection
 
 **Type:** On-chart overlay indicator (SharpDX)
 **Related specification:** [Issue #196](https://github.com/Dollars1bySTEVE/NT8-Indicators/issues/196)
@@ -9,9 +9,9 @@
 
 ## Overview
 
-LiquidityPulse combines the standard NinjaTrader Level 2 book and trade feed with session/day/week reference levels. It displays persistent, large resting bid and ask liquidity, tracks aggressive trade volume at those levels, and reports a session delta and adaptive wall threshold in a small HUD.
+LiquidityPulse combines the standard NinjaTrader Level 2 book and trade feed with session/day/week reference levels. It displays persistent, large resting bid and ask liquidity, tracks aggressive trade volume at those levels, and marks heuristic pull, break, absorption, sweep, failed-sweep, held-run, and large-trade events.
 
-This release is the foundation only. It does not label pulls, fills, absorption, sweeps, failed runs, or issue alerts. Wall disappearance is recorded as inactive and left for the v0.2 event classifier.
+Event markers are live/Playback context, not predictions or trade recommendations. This release does not issue alerts or retain event history across indicator reloads.
 
 ## Requirements
 
@@ -55,6 +55,26 @@ This release is the foundation only. It does not label pulls, fills, absorption,
 
 The adaptive baseline samples the average size of available ask and bid rows every two event-time seconds. It keeps the median for the selected window and uses `max(Minimum Lot Floor, ceil(median × Wall Multiplier))`. The baseline and samples reset when the phase changes.
 
+### Event detection
+
+| Setting | Default | Description |
+|---|---:|---|
+| Show Event Markers | On | Master switch for all event annotations. |
+| Show Pull / Filled / Absorption / Sweep / Failed Sweep / Held Run / Large Trade | On | Independent event visibility switches. |
+| Event Marker Font Size / Opacity | 9 / 90% | Marker label styling. |
+| Event Marker Retention Minutes | 60 | Maximum age retained in the current indicator instance. |
+| Wall Fade Duration Seconds | 10 | Pulled walls fade as dashed gray lines; broken walls fade as solid lines. |
+| Event Grace Milliseconds | 300 | Initial event grace; final pull/break classification waits for the greater of this value and Wall Grace. |
+| Pull Trade Ratio | 0.3 | A disappearance with traded volume below this fraction of peak wall size is labeled a likely pull. |
+| Absorption Trade Multiple | 1.5 | Requires aggressive volume above this multiple of peak wall size, a detected refill, and price holding at the wall. |
+| Sweep Window / Minimum Ticks / Minimum Volume | 3 sec / 3 / 20 | Same-side aggressive trade burst needed for a sweep marker. |
+| Failed Run Window Seconds | 10 | Time to return across a crossed key level with sufficient opposite-side aggressive volume. |
+| Large Trade Minimum Contracts | 20 | Minimum print size; the effective cutoff is also at least 2× the current wall threshold. |
+| Key Level Proximity Ticks / Event Cooldown Seconds | 2 / 2 | Level tagging distance and per-direction sweep cooldown. |
+| Event Colors | Per-event | Independently configurable pull, break, absorption, sweep, failed-sweep, held-run, and large-trade colors. |
+
+The book-imbalance readout in the HUD is a smoothed bid-versus-ask size comparison. It is context only and does not trigger a directional signal.
+
 ### HUD and bias shading
 
 | Setting | Default | Description |
@@ -93,10 +113,11 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 
 1. **Book:** market-depth Add/Update/Remove operations modify positional ask and bid row lists using `e.Position`; reset events clear the lists. Book updates are performed under a single lock.
 2. **Tape:** bid and ask quotes are cached. Last trades at or above the ask add aggressive-buy volume; trades at or below the bid add aggressive-sell volume. Trades between the quotes are unclassified. Classified volume is credited to active walls at the matching price.
-3. **Wall lifecycle:** each threshold-qualified price tracks first-seen time, last-qualified time, peak/current size, trade volume, and active state. Existing walls stay qualified at 80% of the current threshold (hysteresis). Below that level or absent from the book, they remain active until **Wall Grace Milliseconds** elapses since last qualification. Returning within grace preserves age, peak size, and traded volumes. Once a detection pass has observed the loss of qualification, a return after grace has elapsed ends the old lifecycle and must meet the full entry threshold again; walls that stay continuously qualified during quiet periods are never reset. Only active walls past their minimum age are rendered. Inactive classification is intentionally deferred to v0.2.
+3. **Wall lifecycle:** each threshold-qualified price tracks first-seen time, last-qualified time, peak/current size, trade volume, refills, and active state. Existing walls stay qualified at 80% of the current threshold (hysteresis). Below that level or absent from the book, they remain active until **Wall Grace Milliseconds** elapses since last qualification. Returning within grace preserves age, peak size, and traded volumes. Once a detection pass has observed the loss of qualification, a return after grace has elapsed ends the old lifecycle and must meet the full entry threshold again; walls that stay continuously qualified during quiet periods are never reset. Only active walls past their minimum age are rendered.
 4. **Clock and phases:** depth/trade event timestamps drive session phase, wall age, and sampling. Before the first event, the local clock is used only as a fallback. Live realtime feed health instead uses UTC wall-clock time since the last depth arrival, so a complete feed drop still becomes stale; Playback retains event-time feed health, including when paused. Eastern time is resolved with the DST-aware `Eastern Standard Time` zone. Phases are ETH Overnight (18:00–03:00), ETH London (03:00–09:30), RTH Open (09:30–10:00), RTH (10:00–16:00), ETH Post-RTH (16:00–17:00, HUD `ETH-POST-RTH`), and Post-Close (17:00–18:00 CME maintenance). The chart's `SessionIterator` supplies its session end when available, including early closes; the book and wall lifecycles are reset once whenever the clock crosses the 17:00 close or an earlier actual session end, even if no event arrived inside the closed interval. Walls stay suppressed until 18:00, but depth received during maintenance is retained so positional updates at reopening still apply. In live realtime, the timer advances the event clock by elapsed wall-clock time since the last event so grace expiry and close boundaries are processed without new data; Playback stays on event time.
 5. **Levels:** previous/current day, week, and trading session OH/L are updated from primary bars. Session and weekly profile/VWAP calculations replace the current developing-bar contribution before adding the updated value, preventing cumulative-volume overcounting with `Calculate.OnEachTick`.
 6. **Rendering:** both depth and trade/quote events run shared wall refresh/baseline work throttled to approximately 150 ms; book changes skipped by the throttle schedule a trailing detection pass so the final change in a burst is always reconciled. Chart invalidation is limited to at most about 13 times per second. A realtime timer also requests a repaint about once per second without new data so stale status and grey walls remain visible; it is disposed at termination. Rendering snapshots active wall state under the book lock, filters to the visible price scale, selects the largest walls, and avoids nearby labels. SharpDX brushes, text formats, and stroke styles are reused and disposed on render-target changes and termination.
+7. **Events:** trades are kept in a short rolling window for sweep detection. Wall disappearance is classified only after the grace window and only while its price remains inside the visible book window: low traded volume yields a likely-pull marker; sufficient traded volume plus a trade through the price yields a broken-wall marker. Absorption requires a size reduction/refill, aggressive traded volume above the configured multiple of peak size, and price holding at the wall. Sweeps require same-side aggressive volume and price span; a key-level sweep becomes a failed sweep only after price returns across the level with opposite aggressive volume, or a held run when price remains beyond the level and depth ahead is thin. Large-trade and book-imbalance measures are contextual heuristics. Event markers are retained in memory only, expire by age, and are rendered at their price with separate colors and switches.
 
 ## Recommended charts
 
@@ -109,9 +130,12 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 
 - Only the provider's visible top ~10 depth levels are available; this is aggregated MBP data, not per-order MBO.
 - There is no historical depth replay on ordinary chart history. Walls and tape start on load; Market Replay works only when depth data is present.
-- Wall size, traded volume, and delta are heuristics/context, not event classifications or trading recommendations.
+- Pull/break, absorption, sweep, failed-run, held-run, and large-trade markers are heuristics, not proof of spoofing, iceberg orders, stop hunts, or future price direction.
+- A disappearing level that falls outside the currently visible depth window is not classified as a pull or break. Aggregated Level 2 cannot identify individual order cancellations or fills.
+- Failed sweeps require a level crossing, return across it, and enough opposite aggressive volume; held-run detection uses visible depth as a rough liquidity-vacuum proxy.
+- Event markers exist only in memory and disappear when the indicator is reloaded. Alerts and CSV/outcome tracking are not part of this release.
 - Session/day/week bar-derived references depend on the chart's data and trading-hours template.
-- v0.2–v0.5 items—event markers, alerts, CSV/outcome tracking, and the heatmap—are not part of this release.
+- v0.3–v0.5 items—alerts, CSV/outcome tracking, and the heatmap—are not part of this release.
 
 ## Troubleshooting
 

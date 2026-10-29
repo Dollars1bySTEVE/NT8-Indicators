@@ -50,12 +50,66 @@ namespace NinjaTrader.NinjaScript.Indicators
             public bool IsAsk;
             public DateTime FirstSeen;
             public DateTime LastSeenAboveThreshold;
+            public DateTime DisappearanceStarted;
             public long PeakSize;
             public long LastSize;
+            public long LastObservedSize;
             public double TradedBuy;
             public double TradedSell;
+            public int RefillCount;
+            public bool HadSizeReduction;
+            public bool AbsorptionEmitted;
+            public bool DisappearanceEventEmitted;
             public bool Active;
             public bool LostQualification;
+        }
+
+        private enum LiquidityEventType
+        {
+            Pull,
+            Filled,
+            Absorption,
+            Sweep,
+            FailedSweep,
+            HeldRun,
+            LargeTrade
+        }
+
+        private class EventMarker
+        {
+            public LiquidityEventType Type;
+            public DateTime Time;
+            public double Price;
+            public string Label;
+            public string KeyLevel;
+            public bool IsAsk;
+        }
+
+        private class WallFade
+        {
+            public LiquidityEventType Type;
+            public DateTime Time;
+            public double Price;
+        }
+
+        private class TradeSample
+        {
+            public DateTime Time;
+            public double Price;
+            public double Volume;
+            public bool IsBuy;
+        }
+
+        private class SweepCandidate
+        {
+            public DateTime Time;
+            public DateTime LastUpdated;
+            public double LevelPrice;
+            public string LevelName;
+            public bool IsUp;
+            public double Volume;
+            public double OpposingVolume;
+            public bool Failed;
         }
 
         private class WallSnapshot
@@ -91,6 +145,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly Dictionary<double, WallState> askWalls = new Dictionary<double, WallState>();
         private readonly Dictionary<double, WallState> bidWalls = new Dictionary<double, WallState>();
         private readonly Queue<SizeSample> sizeSamples = new Queue<SizeSample>();
+        private readonly Queue<TradeSample> recentTrades = new Queue<TradeSample>();
+        private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
+        private readonly List<WallFade> wallFades = new List<WallFade>();
+        private readonly List<SweepCandidate> sweepCandidates = new List<SweepCandidate>();
         private readonly Dictionary<string, SharpDX.Direct2D1.SolidColorBrush> levelBrushes =
             new Dictionary<string, SharpDX.Direct2D1.SolidColorBrush>();
         private static readonly TimeZoneInfo EasternTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
@@ -116,6 +174,19 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double lastAsk = double.NaN;
         private double sessionAggBuy;
         private double sessionAggSell;
+        private double lastTradePrice = double.NaN;
+        private DateTime lastSweepBuyTime = DateTime.MinValue;
+        private DateTime lastSweepSellTime = DateTime.MinValue;
+        private DateTime lastBookImbalanceUpdate = DateTime.MinValue;
+        private double smoothedBookImbalance;
+        private TextFormat eventFormat;
+        private SharpDX.Direct2D1.SolidColorBrush dxPullEvent;
+        private SharpDX.Direct2D1.SolidColorBrush dxFilledEvent;
+        private SharpDX.Direct2D1.SolidColorBrush dxAbsorptionEvent;
+        private SharpDX.Direct2D1.SolidColorBrush dxSweepEvent;
+        private SharpDX.Direct2D1.SolidColorBrush dxFailedSweepEvent;
+        private SharpDX.Direct2D1.SolidColorBrush dxHeldRunEvent;
+        private SharpDX.Direct2D1.SolidColorBrush dxLargeTradeEvent;
         private int lastSessionBarIndex = -1;
         private int lastSessionIteratorBarIndex = -1;
         private long eventTimeBinary;
@@ -172,6 +243,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private TextFormat wallFormat;
         private TextFormat levelLabelFormat;
         private StrokeStyle wallStrokeStyle;
+        private StrokeStyle pullFadeStrokeStyle;
         private StrokeStyle referenceStrokeStyle;
         private StrokeStyle profileStrokeStyle;
 
@@ -287,6 +359,36 @@ namespace NinjaTrader.NinjaScript.Indicators
                 WeeklyVahColor = System.Windows.Media.Brushes.GreenYellow;
                 WeeklyValColor = System.Windows.Media.Brushes.IndianRed;
                 WeeklyVwapColor = System.Windows.Media.Brushes.DeepSkyBlue;
+
+                ShowEventMarkers = true;
+                ShowPullEvents = true;
+                ShowFilledEvents = true;
+                ShowAbsorptionEvents = true;
+                ShowSweepEvents = true;
+                ShowFailedSweepEvents = true;
+                ShowHeldRunEvents = true;
+                ShowLargeTradeEvents = true;
+                EventMarkerFontSize = 9;
+                EventMarkerOpacity = 90;
+                EventMarkerRetentionMinutes = 60;
+                WallFadeDurationSeconds = 10;
+                EventGraceMilliseconds = 300;
+                PullTradeRatio = 0.3;
+                AbsorptionTradeMultiple = 1.5;
+                SweepWindowSeconds = 3;
+                SweepMinimumTicks = 3;
+                SweepMinimumVolume = 20;
+                FailedRunWindowSeconds = 10;
+                LargeTradeMinimumContracts = 20;
+                KeyLevelProximityTicks = 2;
+                EventCooldownSeconds = 2;
+                PullEventColor = System.Windows.Media.Brushes.Crimson;
+                FilledEventColor = System.Windows.Media.Brushes.Orange;
+                AbsorptionEventColor = System.Windows.Media.Brushes.Gold;
+                SweepEventColor = System.Windows.Media.Brushes.DodgerBlue;
+                FailedSweepEventColor = System.Windows.Media.Brushes.Magenta;
+                HeldRunEventColor = System.Windows.Media.Brushes.DeepSkyBlue;
+                LargeTradeEventColor = System.Windows.Media.Brushes.Orchid;
             }
             else if (State == State.Configure)
             {
@@ -626,6 +728,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (e.MarketDataType == MarketDataType.Last && e.Volume > 0)
                 {
                     double price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
+                    lastTradePrice = price;
                     double bid = e.Bid > 0 ? e.Bid : lastBid;
                     double ask = e.Ask > 0 ? e.Ask : lastAsk;
                     bool aggressiveBuy = !double.IsNaN(ask) && price >= ask;
@@ -644,6 +747,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (bidWalls.TryGetValue(price, out wall) && wall.Active)
                             wall.TradedSell += e.Volume;
                     }
+                    if (!IsBookStale())
+                        ProcessTradeLocked(now, price, e.Volume,
+                            aggressiveBuy ? 1 : (aggressiveSell ? -1 : 0));
                 }
 
                 RunDetectionLocked(now, false);
@@ -732,6 +838,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             bidRows.Clear();
             askWalls.Clear();
             bidWalls.Clear();
+            recentTrades.Clear();
+            sweepCandidates.Clear();
             pendingDetection = false;
         }
 
@@ -746,6 +854,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 adaptiveBaseline = double.NaN;
                 lastSampleTime = DateTime.MinValue;
                 lastDetectionTime = DateTime.MinValue;
+                smoothedBookImbalance = 0;
+                lastBookImbalanceUpdate = DateTime.MinValue;
                 if (phase == SessionPhase.EthOvernight)
                 {
                     sessionAggBuy = 0;
@@ -773,6 +883,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 UpdateAdaptiveBaselineLocked(now);
                 RefreshWallsLocked(askRows, askWalls, true, now);
                 RefreshWallsLocked(bidRows, bidWalls, false, now);
+                UpdateBookImbalanceLocked(now);
+                if (!IsBookStale())
+                {
+                    ProcessPendingWallEventsLocked(askRows, askWalls, true, now);
+                    ProcessPendingWallEventsLocked(bidRows, bidWalls, false, now);
+                    ProcessSweepCandidatesLocked(now);
+                }
+                PruneEventHistoryLocked(now);
             }
             else if (!pendingDetection)
             {
@@ -914,8 +1032,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                     wall.Active = false;
                     active = false;
                 }
+                long previousSize = active ? wall.LastObservedSize : 0;
+                if (active && row.Size < previousSize)
+                    wall.HadSizeReduction = true;
+                else if (active && wall.HadSizeReduction && row.Size > previousSize)
+                {
+                    wall.RefillCount++;
+                    wall.HadSizeReduction = false;
+                }
                 if (active)
-                    wall.LastSize = row.Size;
+                    wall.LastObservedSize = row.Size;
                 if (row.Size < (active ? 0.8 * threshold : threshold))
                     continue;
                 seen.Add(row.Price);
@@ -926,14 +1052,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Price = row.Price,
                         IsAsk = isAsk,
                         FirstSeen = now,
+                        LastObservedSize = row.Size,
                         Active = true
                     };
                     walls[row.Price] = wall;
                 }
                 wall.LostQualification = false;
+                wall.DisappearanceStarted = DateTime.MinValue;
                 wall.LastSeenAboveThreshold = now;
                 wall.LastSize = row.Size;
                 wall.PeakSize = Math.Max(wall.PeakSize, row.Size);
+                double tradedAtWall = isAsk ? wall.TradedBuy : wall.TradedSell;
+                bool priceHeld = double.IsNaN(lastTradePrice)
+                    || (isAsk ? lastTradePrice <= wall.Price : lastTradePrice >= wall.Price);
+                if (!wall.AbsorptionEmitted && wall.RefillCount > 0 && priceHeld
+                    && wall.PeakSize > 0
+                    && tradedAtWall >= wall.PeakSize * AbsorptionTradeMultiple)
+                {
+                    wall.AbsorptionEmitted = true;
+                    AddEventLocked(LiquidityEventType.Absorption, wall.Price, isAsk, now,
+                        string.Format("ABSORB {0} {1:F0}", isAsk ? "ASK" : "BID", tradedAtWall),
+                        FindNearestKeyLevelLocked(wall.Price, KeyLevelProximityTicks));
+                }
             }
 
             foreach (WallState wall in walls.Values)
@@ -941,12 +1081,366 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (wall.Active && !seen.Contains(wall.Price))
                 {
                     wall.LostQualification = true;
+                    if (wall.DisappearanceStarted == DateTime.MinValue)
+                        wall.DisappearanceStarted = now;
                     if ((now - wall.LastSeenAboveThreshold).TotalMilliseconds >= WallGraceMilliseconds)
                     {
                         wall.Active = false;
-                        // v0.2 hook: classify inactive walls as pulled or filled after the grace window.
                     }
                 }
+            }
+        }
+
+        private void ProcessTradeLocked(DateTime now, double price, double volume, int aggressor)
+        {
+            if (aggressor != 0)
+            {
+                recentTrades.Enqueue(new TradeSample
+                {
+                    Time = now,
+                    Price = price,
+                    Volume = volume,
+                    IsBuy = aggressor > 0
+                });
+                PruneRecentTradesLocked(now);
+
+                double largeTradeThreshold = Math.Max(LargeTradeMinimumContracts,
+                    GetWallThresholdLocked() * 2.0);
+                if (volume >= largeTradeThreshold)
+                {
+                    AddEventLocked(LiquidityEventType.LargeTrade, price, aggressor < 0, now,
+                        string.Format("LARGE {0} {1:F0}", aggressor > 0 ? "BUY" : "SELL", volume),
+                        FindNearestKeyLevelLocked(price, KeyLevelProximityTicks));
+                }
+                DetectSweepLocked(now, aggressor);
+            }
+
+            for (int i = sweepCandidates.Count - 1; i >= 0; i--)
+            {
+                SweepCandidate candidate = sweepCandidates[i];
+                candidate.LastUpdated = now;
+                if (aggressor != 0 && ((candidate.IsUp && aggressor < 0)
+                    || (!candidate.IsUp && aggressor > 0)))
+                    candidate.OpposingVolume += volume;
+
+                bool returnedInside = candidate.IsUp
+                    ? price < candidate.LevelPrice
+                    : price > candidate.LevelPrice;
+                double requiredOpposingVolume = Math.Max(1, candidate.Volume * 0.2);
+                if (!candidate.Failed && (now - candidate.Time).TotalSeconds <= FailedRunWindowSeconds
+                    && returnedInside && candidate.OpposingVolume >= requiredOpposingVolume)
+                {
+                    candidate.Failed = true;
+                    AddEventLocked(LiquidityEventType.FailedSweep, candidate.LevelPrice,
+                        candidate.IsUp, now,
+                        "FAILED SWEEP " + candidate.LevelName,
+                        candidate.LevelName);
+                }
+            }
+        }
+
+        private void DetectSweepLocked(DateTime now, int aggressor)
+        {
+            double minPrice = double.MaxValue;
+            double maxPrice = double.MinValue;
+            double volume = 0;
+            double tickSize = Instrument.MasterInstrument.TickSize;
+            foreach (TradeSample sample in recentTrades)
+            {
+                if (sample.IsBuy != (aggressor > 0))
+                    continue;
+                minPrice = Math.Min(minPrice, sample.Price);
+                maxPrice = Math.Max(maxPrice, sample.Price);
+                volume += sample.Volume;
+            }
+            if (minPrice == double.MaxValue || tickSize <= 0
+                || (maxPrice - minPrice) / tickSize < SweepMinimumTicks
+                || volume < SweepMinimumVolume)
+                return;
+
+            DateTime lastSweep = aggressor > 0 ? lastSweepBuyTime : lastSweepSellTime;
+            if (lastSweep != DateTime.MinValue
+                && (now - lastSweep).TotalSeconds < EventCooldownSeconds)
+                return;
+
+            bool isUp = aggressor > 0;
+            string keyLevel = FindCrossedKeyLevelLocked(minPrice, maxPrice, isUp);
+            string label = string.Format("SWEEP {0} {1:F0}", isUp ? "UP" : "DOWN", volume);
+            if (!string.IsNullOrEmpty(keyLevel))
+                label += " " + keyLevel;
+            AddEventLocked(LiquidityEventType.Sweep, lastTradePrice, !isUp, now, label, keyLevel);
+            if (aggressor > 0)
+                lastSweepBuyTime = now;
+            else
+                lastSweepSellTime = now;
+
+            if (!string.IsNullOrEmpty(keyLevel))
+            {
+                double levelPrice = GetKeyLevelPriceLocked(keyLevel);
+                if (!double.IsNaN(levelPrice))
+                {
+                    sweepCandidates.Add(new SweepCandidate
+                    {
+                        Time = now,
+                        LastUpdated = now,
+                        LevelPrice = levelPrice,
+                        LevelName = keyLevel,
+                        IsUp = isUp,
+                        Volume = volume
+                    });
+                }
+            }
+        }
+
+        private void ProcessPendingWallEventsLocked(List<DepthRow> rows,
+            Dictionary<double, WallState> walls, bool isAsk, DateTime now)
+        {
+            foreach (WallState wall in walls.Values)
+            {
+                if (!wall.LostQualification || wall.DisappearanceEventEmitted
+                    || wall.DisappearanceStarted == DateTime.MinValue
+                    || (now - wall.DisappearanceStarted).TotalMilliseconds
+                        < Math.Max(EventGraceMilliseconds, WallGraceMilliseconds))
+                    continue;
+                if (!IsPriceInVisibleWindowLocked(rows, wall.Price, isAsk))
+                {
+                    wall.DisappearanceEventEmitted = true;
+                    continue;
+                }
+
+                double traded = isAsk ? wall.TradedBuy : wall.TradedSell;
+                bool tradedEnough = wall.PeakSize > 0
+                    && traded >= wall.PeakSize * PullTradeRatio;
+                bool tradedThrough = !double.IsNaN(lastTradePrice)
+                    && (isAsk
+                        ? lastTradePrice >= wall.Price + Instrument.MasterInstrument.TickSize
+                        : lastTradePrice <= wall.Price - Instrument.MasterInstrument.TickSize);
+                if (tradedEnough && tradedThrough)
+                {
+                    AddEventLocked(LiquidityEventType.Filled, wall.Price, isAsk, now,
+                        string.Format("BROKEN {0} {1:F0}", isAsk ? "ASK" : "BID", traded),
+                        FindNearestKeyLevelLocked(wall.Price, KeyLevelProximityTicks));
+                    AddWallFadeLocked(LiquidityEventType.Filled, wall.Price, now);
+                    wall.DisappearanceEventEmitted = true;
+                }
+                else if (!tradedEnough)
+                {
+                    string keyLevel = FindNearestKeyLevelLocked(wall.Price, KeyLevelProximityTicks);
+                    AddEventLocked(LiquidityEventType.Pull, wall.Price, isAsk, now,
+                        "PULL " + (isAsk ? "ASK" : "BID"), keyLevel);
+                    AddWallFadeLocked(LiquidityEventType.Pull, wall.Price, now);
+                    wall.DisappearanceEventEmitted = true;
+                    int recentPullCount = CountRecentPullsLocked(isAsk, now);
+                    if (recentPullCount >= 3)
+                        AddEventLocked(LiquidityEventType.Pull, wall.Price, isAsk, now,
+                            string.Format("{0}× {1} PULLS", recentPullCount, isAsk ? "ASK" : "BID"),
+                            keyLevel);
+                }
+                else
+                {
+                    wall.DisappearanceEventEmitted = true;
+                }
+            }
+        }
+
+        private bool IsPriceInVisibleWindowLocked(List<DepthRow> rows, double price, bool isAsk)
+        {
+            for (int i = 0; i < rows.Count; i++)
+                if (rows[i].Price.ApproxCompare(price) == 0)
+                    return true;
+            if (rows.Count == 0)
+                return false;
+            double edge = rows[rows.Count - 1].Price;
+            return isAsk ? price <= edge : price >= edge;
+        }
+
+        private int CountRecentPullsLocked(bool isAsk, DateTime now)
+        {
+            int count = 0;
+            for (int i = 0; i < eventMarkers.Count; i++)
+                if (eventMarkers[i].Type == LiquidityEventType.Pull
+                    && eventMarkers[i].IsAsk == isAsk
+                    && eventMarkers[i].Label.StartsWith("PULL ", StringComparison.OrdinalIgnoreCase)
+                    && (now - eventMarkers[i].Time).TotalSeconds <= 10)
+                    count++;
+            return count;
+        }
+
+        private void UpdateBookImbalanceLocked(DateTime now)
+        {
+            if (lastBookImbalanceUpdate != DateTime.MinValue
+                && (now - lastBookImbalanceUpdate).TotalMilliseconds < 500)
+                return;
+            lastBookImbalanceUpdate = now;
+            double bidSize = 0;
+            double askSize = 0;
+            for (int i = 0; i < bidRows.Count; i++)
+                bidSize += bidRows[i].Size;
+            for (int i = 0; i < askRows.Count; i++)
+                askSize += askRows[i].Size;
+            double total = bidSize + askSize;
+            if (total <= 0)
+                return;
+            double current = (bidSize - askSize) / total * 100.0;
+            smoothedBookImbalance = smoothedBookImbalance == 0
+                ? current
+                : smoothedBookImbalance * 0.75 + current * 0.25;
+        }
+
+        private void ProcessSweepCandidatesLocked(DateTime now)
+        {
+            for (int i = sweepCandidates.Count - 1; i >= 0; i--)
+            {
+                SweepCandidate candidate = sweepCandidates[i];
+                if ((now - candidate.Time).TotalSeconds <= FailedRunWindowSeconds)
+                    continue;
+                if (!candidate.Failed && IsBeyondLevel(candidate) && IsLiquidityVacuumLocked(candidate))
+                    AddEventLocked(LiquidityEventType.HeldRun, candidate.LevelPrice,
+                        candidate.IsUp, now, "HELD RUN " + candidate.LevelName,
+                        candidate.LevelName);
+                sweepCandidates.RemoveAt(i);
+            }
+        }
+
+        private bool IsBeyondLevel(SweepCandidate candidate)
+        {
+            return !double.IsNaN(lastTradePrice)
+                && (candidate.IsUp ? lastTradePrice >= candidate.LevelPrice
+                    : lastTradePrice <= candidate.LevelPrice);
+        }
+
+        private bool IsLiquidityVacuumLocked(SweepCandidate candidate)
+        {
+            List<DepthRow> rows = candidate.IsUp ? askRows : bidRows;
+            if (rows.Count == 0 || double.IsNaN(adaptiveBaseline))
+                return false;
+            double aheadSize = 0;
+            double current = lastTradePrice;
+            for (int i = 0; i < rows.Count; i++)
+                if (candidate.IsUp ? rows[i].Price > current : rows[i].Price < current)
+                    aheadSize += rows[i].Size;
+            return aheadSize < adaptiveBaseline * Math.Max(1, rows.Count) * 0.5;
+        }
+
+        private void PruneRecentTradesLocked(DateTime now)
+        {
+            while (recentTrades.Count > 0
+                && (now - recentTrades.Peek().Time).TotalSeconds > SweepWindowSeconds)
+                recentTrades.Dequeue();
+        }
+
+        private void PruneEventHistoryLocked(DateTime now)
+        {
+            double retention = Math.Max(1, EventMarkerRetentionMinutes);
+            eventMarkers.RemoveAll(delegate(EventMarker marker)
+            {
+                return (now - marker.Time).TotalMinutes > retention;
+            });
+            while (eventMarkers.Count > 500)
+                eventMarkers.RemoveAt(0);
+            wallFades.RemoveAll(delegate(WallFade fade)
+            {
+                return (now - fade.Time).TotalSeconds > WallFadeDurationSeconds;
+            });
+        }
+
+        private void AddWallFadeLocked(LiquidityEventType type, double price, DateTime time)
+        {
+            wallFades.Add(new WallFade { Type = type, Price = price, Time = time });
+            while (wallFades.Count > 100)
+                wallFades.RemoveAt(0);
+        }
+
+        private void AddEventLocked(LiquidityEventType type, double price, bool isAsk,
+            DateTime time, string label, string keyLevel)
+        {
+            if (!string.IsNullOrEmpty(keyLevel)
+                && label.IndexOf(keyLevel, StringComparison.OrdinalIgnoreCase) < 0)
+                label += " @" + keyLevel;
+            eventMarkers.Add(new EventMarker
+            {
+                Type = type,
+                Time = time,
+                Price = Instrument.MasterInstrument.RoundToTickSize(price),
+                IsAsk = isAsk,
+                Label = label,
+                KeyLevel = keyLevel
+            });
+        }
+
+        private string FindNearestKeyLevelLocked(double price, int maxTicks)
+        {
+            string bestName = string.Empty;
+            double bestDistance = double.MaxValue;
+            double maxDistance = Math.Max(0, maxTicks) * Instrument.MasterInstrument.TickSize;
+            AddKeyLevelCandidate(price, priorDayHigh, "PDH", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, priorDayLow, "PDL", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, priorWeekHigh, "PWH", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, priorWeekLow, "PWL", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, priorSessionHigh, "PSH", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, priorSessionLow, "PSL", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, currentSessionHigh, "CSH", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, currentSessionLow, "CSL", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, sessionPoc, "S-POC", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, sessionVah, "S-VAH", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, sessionVal, "S-VAL", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, weeklyPoc, "W-POC", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, weeklyVah, "W-VAH", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, weeklyVal, "W-VAL", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, sessionCumVol > 0 ? sessionCumPv / sessionCumVol : double.NaN,
+                "S-VWAP", maxDistance, ref bestName, ref bestDistance);
+            AddKeyLevelCandidate(price, weeklyCumVol > 0 ? weeklyCumPv / weeklyCumVol : double.NaN,
+                "W-VWAP", maxDistance, ref bestName, ref bestDistance);
+            return bestName;
+        }
+
+        private void AddKeyLevelCandidate(double price, double candidate, string name, double maxDistance,
+            ref string bestName, ref double bestDistance)
+        {
+            if (double.IsNaN(candidate) || candidate <= 0)
+                return;
+            double distance = Math.Abs(price - candidate);
+            if (distance <= maxDistance && distance < bestDistance)
+            {
+                bestDistance = distance;
+                bestName = name;
+            }
+        }
+
+        private string FindCrossedKeyLevelLocked(double minPrice, double maxPrice, bool isUp)
+        {
+            double midpoint = (minPrice + maxPrice) / 2.0;
+            string nearest = FindNearestKeyLevelLocked(midpoint, SweepMinimumTicks + KeyLevelProximityTicks);
+            if (string.IsNullOrEmpty(nearest))
+                return string.Empty;
+            double level = GetKeyLevelPriceLocked(nearest);
+            bool endedBeyond = !double.IsNaN(lastTradePrice)
+                && (isUp ? lastTradePrice >= level : lastTradePrice <= level);
+            return !double.IsNaN(level) && level >= minPrice && level <= maxPrice && endedBeyond
+                ? nearest : string.Empty;
+        }
+
+        private double GetKeyLevelPriceLocked(string name)
+        {
+            switch (name)
+            {
+                case "PDH": return priorDayHigh;
+                case "PDL": return priorDayLow;
+                case "PWH": return priorWeekHigh;
+                case "PWL": return priorWeekLow;
+                case "PSH": return priorSessionHigh;
+                case "PSL": return priorSessionLow;
+                case "CSH": return currentSessionHigh;
+                case "CSL": return currentSessionLow;
+                case "S-POC": return sessionPoc;
+                case "S-VAH": return sessionVah;
+                case "S-VAL": return sessionVal;
+                case "W-POC": return weeklyPoc;
+                case "W-VAH": return weeklyVah;
+                case "W-VAL": return weeklyVal;
+                case "S-VWAP": return sessionCumVol > 0 ? sessionCumPv / sessionCumVol : double.NaN;
+                case "W-VWAP": return weeklyCumVol > 0 ? weeklyCumPv / weeklyCumVol : double.NaN;
+                default: return double.NaN;
             }
         }
 
@@ -974,6 +1468,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dxHudBackground = CreateDxBrush(HudBackgroundColor, HudBackgroundOpacity);
                 dxBullShade = CreateDxBrush(BullShadeColor, ShadeOpacity);
                 dxBearShade = CreateDxBrush(BearShadeColor, ShadeOpacity);
+                dxPullEvent = CreateDxBrush(PullEventColor, EventMarkerOpacity);
+                dxFilledEvent = CreateDxBrush(FilledEventColor, EventMarkerOpacity);
+                dxAbsorptionEvent = CreateDxBrush(AbsorptionEventColor, EventMarkerOpacity);
+                dxSweepEvent = CreateDxBrush(SweepEventColor, EventMarkerOpacity);
+                dxFailedSweepEvent = CreateDxBrush(FailedSweepEventColor, EventMarkerOpacity);
+                dxHeldRunEvent = CreateDxBrush(HeldRunEventColor, EventMarkerOpacity);
+                dxLargeTradeEvent = CreateDxBrush(LargeTradeEventColor, EventMarkerOpacity);
 
                 AddLevelBrush("pdOpen", PreviousDayOpenColor, ReferenceOpacity);
                 AddLevelBrush("pdHigh", PreviousDayHighColor, ReferenceOpacity);
@@ -1002,7 +1503,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     FontWeight.Bold, FontStyle.Normal, WallLabelFontSize);
                 levelLabelFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI",
                     FontWeight.Normal, FontStyle.Normal, LevelLabelFontSize);
+                eventFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Segoe UI",
+                    FontWeight.Bold, FontStyle.Normal, EventMarkerFontSize);
                 wallStrokeStyle = CreateStrokeStyle(WallDashStyle);
+                pullFadeStrokeStyle = CreateStrokeStyle(DashStyleHelper.Dash);
                 referenceStrokeStyle = CreateStrokeStyle(ReferenceLineStyle);
                 profileStrokeStyle = CreateStrokeStyle(ProfileLineStyle);
             }
@@ -1035,7 +1539,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             RenderReferenceLevels(chartControl, chartScale);
             RenderProfileLevels(chartControl, chartScale, firstBar, renderLastBar);
             if (ShowWalls)
+            {
                 RenderWalls(chartScale);
+                RenderWallFades(chartScale);
+            }
+            if (ShowEventMarkers)
+                RenderEvents(chartScale);
             if (ShowHud)
                 RenderHud();
         }
@@ -1206,6 +1715,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             double baseline;
             long threshold;
             double delta;
+            double imbalance;
             bool stale;
             lock (bookLock)
             {
@@ -1213,12 +1723,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 baseline = adaptiveBaseline;
                 threshold = GetWallThresholdLocked();
                 delta = sessionAggBuy - sessionAggSell;
+                imbalance = smoothedBookImbalance;
                 stale = IsBookStale();
             }
             SessionPhase phase = GetSessionPhase(now);
             string hud = PhaseLabel(phase) + " | baseline "
                 + (double.IsNaN(baseline) ? "--" : baseline.ToString("F1"))
                 + " | wall ≥ " + threshold
+                + " | book " + (imbalance >= 0 ? "+" : string.Empty) + imbalance.ToString("F0") + "%"
                 + " | Δ " + (delta >= 0 ? "+" : string.Empty) + delta.ToString("F0")
                 + (stale ? " | BOOK STALE" : " | FEED OK");
             float width = Math.Min(ChartPanel.W - 12f, Math.Max(250f, hud.Length * HudFontSize * 0.58f));
@@ -1234,6 +1746,106 @@ namespace NinjaTrader.NinjaScript.Indicators
                 hud, hudFormat, width - 8f, height))
             {
                 RenderTarget.DrawTextLayout(new Vector2(x + 4f, y + 3f), layout, dxHudText);
+            }
+        }
+
+        private void RenderEvents(ChartScale chartScale)
+        {
+            if (eventFormat == null || chartScale == null)
+                return;
+            List<EventMarker> snapshot;
+            lock (bookLock)
+                snapshot = new List<EventMarker>(eventMarkers);
+
+            List<float> usedYs = new List<float>();
+            float right = ChartPanel.X + ChartPanel.W;
+            int drawn = 0;
+            for (int i = snapshot.Count - 1; i >= 0 && drawn < 100; i--)
+            {
+                EventMarker marker = snapshot[i];
+                if (!IsEventVisible(marker.Type) || marker.Price < chartScale.MinValue
+                    || marker.Price > chartScale.MaxValue)
+                    continue;
+                SharpDX.Direct2D1.SolidColorBrush brush = GetEventBrush(marker.Type);
+                if (brush == null)
+                    continue;
+                float y = chartScale.GetYByValue(marker.Price);
+                float labelY = FindWallLabelY(y, usedYs, Math.Max(MinWallLabelSpacing, EventMarkerFontSize + 2));
+                usedYs.Add(labelY);
+                RenderTarget.DrawLine(new Vector2(right - 58f, y), new Vector2(right - 4f, y),
+                    brush, 2f, null);
+                using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
+                    marker.Label, eventFormat, 220f, EventMarkerFontSize + 4f))
+                {
+                    RenderTarget.DrawTextLayout(new Vector2(right - 228f, labelY), layout, brush);
+                }
+                drawn++;
+            }
+        }
+
+        private void RenderWallFades(ChartScale chartScale)
+        {
+            if (dxStaleWall == null || dxFilledEvent == null || chartScale == null)
+                return;
+            DateTime now = FeedNow();
+            List<WallFade> snapshot;
+            lock (bookLock)
+            {
+                now = DetectionNowLocked(now);
+                snapshot = new List<WallFade>(wallFades);
+            }
+
+            float right = ChartPanel.X + ChartPanel.W;
+            float start = WallsFromLastBar && ChartBars.ToIndex >= 0
+                ? chartControlXByLastBar(right)
+                : ChartPanel.X;
+            if (right - start < 16f)
+                start = ChartPanel.X;
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                WallFade fade = snapshot[i];
+                double age = (now - fade.Time).TotalSeconds;
+                if (age < 0 || age > WallFadeDurationSeconds
+                    || fade.Price < chartScale.MinValue || fade.Price > chartScale.MaxValue)
+                    continue;
+                float fadeOpacity = (float)Math.Max(0, 1.0 - age / WallFadeDurationSeconds);
+                SharpDX.Direct2D1.SolidColorBrush brush = fade.Type == LiquidityEventType.Pull
+                    ? dxStaleWall : dxFilledEvent;
+                brush.Opacity = fadeOpacity;
+                RenderTarget.DrawLine(new Vector2(start, chartScale.GetYByValue(fade.Price)),
+                    new Vector2(right, chartScale.GetYByValue(fade.Price)), brush, WallMinWidth,
+                    fade.Type == LiquidityEventType.Pull ? pullFadeStrokeStyle : null);
+                brush.Opacity = 1f;
+            }
+        }
+
+        private bool IsEventVisible(LiquidityEventType type)
+        {
+            switch (type)
+            {
+                case LiquidityEventType.Pull: return ShowPullEvents;
+                case LiquidityEventType.Filled: return ShowFilledEvents;
+                case LiquidityEventType.Absorption: return ShowAbsorptionEvents;
+                case LiquidityEventType.Sweep: return ShowSweepEvents;
+                case LiquidityEventType.FailedSweep: return ShowFailedSweepEvents;
+                case LiquidityEventType.HeldRun: return ShowHeldRunEvents;
+                case LiquidityEventType.LargeTrade: return ShowLargeTradeEvents;
+                default: return false;
+            }
+        }
+
+        private SharpDX.Direct2D1.SolidColorBrush GetEventBrush(LiquidityEventType type)
+        {
+            switch (type)
+            {
+                case LiquidityEventType.Pull: return dxPullEvent;
+                case LiquidityEventType.Filled: return dxFilledEvent;
+                case LiquidityEventType.Absorption: return dxAbsorptionEvent;
+                case LiquidityEventType.Sweep: return dxSweepEvent;
+                case LiquidityEventType.FailedSweep: return dxFailedSweepEvent;
+                case LiquidityEventType.HeldRun: return dxHeldRunEvent;
+                case LiquidityEventType.LargeTrade: return dxLargeTradeEvent;
+                default: return null;
             }
         }
 
@@ -1394,11 +2006,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void DisposeDxResources()
         {
             SafeDispose(ref wallStrokeStyle);
+            SafeDispose(ref pullFadeStrokeStyle);
             SafeDispose(ref referenceStrokeStyle);
             SafeDispose(ref profileStrokeStyle);
             SafeDispose(ref hudFormat);
             SafeDispose(ref wallFormat);
             SafeDispose(ref levelLabelFormat);
+            SafeDispose(ref eventFormat);
             SafeDispose(ref dxAskWall);
             SafeDispose(ref dxBidWall);
             SafeDispose(ref dxStaleWall);
@@ -1406,6 +2020,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             SafeDispose(ref dxHudBackground);
             SafeDispose(ref dxBullShade);
             SafeDispose(ref dxBearShade);
+            SafeDispose(ref dxPullEvent);
+            SafeDispose(ref dxFilledEvent);
+            SafeDispose(ref dxAbsorptionEvent);
+            SafeDispose(ref dxSweepEvent);
+            SafeDispose(ref dxFailedSweepEvent);
+            SafeDispose(ref dxHeldRunEvent);
+            SafeDispose(ref dxLargeTradeEvent);
             foreach (SharpDX.Direct2D1.SolidColorBrush brush in levelBrushes.Values)
                 if (brush != null)
                     brush.Dispose();
@@ -1421,6 +2042,178 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         #region Properties
+        [NinjaScriptProperty]
+        [Display(Name = "Show Event Markers", Order = 1, GroupName = "2. Event Detection")]
+        public bool ShowEventMarkers { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Pull Events", Order = 2, GroupName = "2. Event Detection")]
+        public bool ShowPullEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Filled / Broken Events", Order = 3, GroupName = "2. Event Detection")]
+        public bool ShowFilledEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Absorption Events", Order = 4, GroupName = "2. Event Detection")]
+        public bool ShowAbsorptionEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Sweep Events", Order = 5, GroupName = "2. Event Detection")]
+        public bool ShowSweepEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Failed Sweep Events", Order = 6, GroupName = "2. Event Detection")]
+        public bool ShowFailedSweepEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Held Run Events", Order = 7, GroupName = "2. Event Detection")]
+        public bool ShowHeldRunEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Large Trade Events", Order = 8, GroupName = "2. Event Detection")]
+        public bool ShowLargeTradeEvents { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(6, 20)]
+        [Display(Name = "Event Marker Font Size", Order = 9, GroupName = "2. Event Detection")]
+        public int EventMarkerFontSize { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Event Marker Opacity", Order = 10, GroupName = "2. Event Detection")]
+        public int EventMarkerOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 1440)]
+        [Display(Name = "Event Marker Retention Minutes", Order = 11, GroupName = "2. Event Detection")]
+        public int EventMarkerRetentionMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 60)]
+        [Display(Name = "Wall Fade Duration Seconds", Order = 12, GroupName = "2. Event Detection")]
+        public int WallFadeDurationSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 10000)]
+        [Display(Name = "Event Grace Milliseconds", Order = 13, GroupName = "2. Event Detection")]
+        public int EventGraceMilliseconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.01, 1.0)]
+        [Display(Name = "Pull Trade Ratio", Order = 14, GroupName = "2. Event Detection")]
+        public double PullTradeRatio { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.1, 100.0)]
+        [Display(Name = "Absorption Trade Multiple", Order = 15, GroupName = "2. Event Detection")]
+        public double AbsorptionTradeMultiple { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 30)]
+        [Display(Name = "Sweep Window Seconds", Order = 16, GroupName = "2. Event Detection")]
+        public int SweepWindowSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Sweep Minimum Ticks", Order = 17, GroupName = "2. Event Detection")]
+        public int SweepMinimumTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, int.MaxValue)]
+        [Display(Name = "Sweep Minimum Volume", Order = 18, GroupName = "2. Event Detection")]
+        public int SweepMinimumVolume { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 120)]
+        [Display(Name = "Failed Run Window Seconds", Order = 19, GroupName = "2. Event Detection")]
+        public int FailedRunWindowSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, int.MaxValue)]
+        [Display(Name = "Large Trade Minimum Contracts", Order = 20, GroupName = "2. Event Detection")]
+        public int LargeTradeMinimumContracts { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Key Level Proximity Ticks", Order = 21, GroupName = "2. Event Detection")]
+        public int KeyLevelProximityTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 3600)]
+        [Display(Name = "Event Cooldown Seconds", Order = 22, GroupName = "2. Event Detection")]
+        public int EventCooldownSeconds { get; set; }
+
+        [XmlIgnore]
+        [Display(Name = "Pull Event Color", Order = 23, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush PullEventColor { get; set; }
+        [Browsable(false)]
+        public string PullEventColorSerializable
+        {
+            get { return Serialize.BrushToString(PullEventColor); }
+            set { PullEventColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Filled Event Color", Order = 24, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush FilledEventColor { get; set; }
+        [Browsable(false)]
+        public string FilledEventColorSerializable
+        {
+            get { return Serialize.BrushToString(FilledEventColor); }
+            set { FilledEventColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Absorption Event Color", Order = 25, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush AbsorptionEventColor { get; set; }
+        [Browsable(false)]
+        public string AbsorptionEventColorSerializable
+        {
+            get { return Serialize.BrushToString(AbsorptionEventColor); }
+            set { AbsorptionEventColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Sweep Event Color", Order = 26, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush SweepEventColor { get; set; }
+        [Browsable(false)]
+        public string SweepEventColorSerializable
+        {
+            get { return Serialize.BrushToString(SweepEventColor); }
+            set { SweepEventColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Failed Sweep Event Color", Order = 27, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush FailedSweepEventColor { get; set; }
+        [Browsable(false)]
+        public string FailedSweepEventColorSerializable
+        {
+            get { return Serialize.BrushToString(FailedSweepEventColor); }
+            set { FailedSweepEventColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Held Run Event Color", Order = 28, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush HeldRunEventColor { get; set; }
+        [Browsable(false)]
+        public string HeldRunEventColorSerializable
+        {
+            get { return Serialize.BrushToString(HeldRunEventColor); }
+            set { HeldRunEventColor = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Large Trade Event Color", Order = 29, GroupName = "2. Event Detection")]
+        public System.Windows.Media.Brush LargeTradeEventColor { get; set; }
+        [Browsable(false)]
+        public string LargeTradeEventColorSerializable
+        {
+            get { return Serialize.BrushToString(LargeTradeEventColor); }
+            set { LargeTradeEventColor = Serialize.StringToBrush(value); }
+        }
+
         [NinjaScriptProperty]
         [Display(Name = "Use Adaptive Threshold", Order = 1, GroupName = "1. Liquidity Walls")]
         public bool UseAdaptiveThreshold { get; set; }
