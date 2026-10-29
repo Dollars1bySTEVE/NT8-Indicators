@@ -2138,8 +2138,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                     GetCompactEventLabel(marker), eventFormat, labelWidth, labelHeight))
                 {
                     if (dxHeatmapBackground != null)
+                    {
+                        float backgroundOpacity = dxHeatmapBackground.Opacity;
+                        dxHeatmapBackground.Opacity = backgroundOpacity * (EventMarkerOpacity / 100f);
                         RenderTarget.FillRectangle(new RectangleF(labelX - 2f, labelY,
                             layout.Metrics.Width + 4f, labelHeight), dxHeatmapBackground);
+                        dxHeatmapBackground.Opacity = backgroundOpacity;
+                    }
                     RenderTarget.DrawTextLayout(new Vector2(labelX, labelY), layout, brush);
                 }
                 drawn++;
