@@ -1,9 +1,11 @@
 #region Using declarations
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Diagnostics;
+using System.Globalization;
 using System.Threading;
 using System.Xml.Serialization;
 using NinjaTrader.Cbi;
@@ -111,6 +113,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             public long PeakSize;
             public double Traded;
             public ResidualZoneState State;
+        }
+
+        private class SessionLogLine
+        {
+            public DateTime Time;
+            public string Text;
+        }
+
+        // One writer per log file shared by all instances, so charts on the same instrument append safely.
+        private class SharedSessionLogWriter
+        {
+            public System.IO.StreamWriter Writer;
+            public int RefCount;
         }
 
         private class HeatmapLevel
@@ -247,6 +262,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         private long lastEventArrivalUtcBinary;
         private long lastForceRefreshTimestamp;
         private System.Threading.Timer feedRefreshTimer;
+        private System.Threading.Timer sessionLogTimer;
+        private readonly ConcurrentQueue<SessionLogLine> sessionLogQueue = new ConcurrentQueue<SessionLogLine>();
+        private static readonly object sessionLogWriteLock = new object();
+        private static readonly Dictionary<string, SharedSessionLogWriter> sharedSessionLogWriters =
+            new Dictionary<string, SharedSessionLogWriter>(StringComparer.OrdinalIgnoreCase);
+        private SharedSessionLogWriter sessionLogWriter;
+        private string sessionLogPath;
+        private DateTime lastSessionLogSnapshot = DateTime.MinValue;
+        private bool sessionLogFailed;
         private System.Threading.Timer trailingDetectionTimer;
 
         private double currentDayOpen;
@@ -428,6 +452,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ResidualZoneOpacity = 70;
                 TakenZoneFadeMinutes = 5;
                 ShowPulledZones = true;
+                EnableSessionLog = false;
+                SessionLogSnapshotSeconds = 5;
                 HeatmapHistorySeconds = 60;
                 HeatmapWidth = 160;
                 HeatmapOpacity = 70;
@@ -474,6 +500,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 trailingDetectionTimer = new System.Threading.Timer(OnTrailingDetection, null,
                     Timeout.Infinite, Timeout.Infinite);
                 feedRefreshTimer = new System.Threading.Timer(OnFeedRefreshTimer, null, 1000, 1000);
+                if (EnableSessionLog)
+                    sessionLogTimer = new System.Threading.Timer(OnSessionLogTimer, null, 1000, 1000);
             }
             else if (State == State.Terminated)
             {
@@ -490,6 +518,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                         trailingDetectionTimer = null;
                     }
                 }
+                if (sessionLogTimer != null)
+                {
+                    sessionLogTimer.Dispose();
+                    sessionLogTimer = null;
+                }
+                FlushSessionLog(true);
                 DisposeDxResources();
             }
         }
@@ -741,7 +775,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 DateTime now = AdvanceClockLocked(FeedNow());
                 if (e.IsReset)
+                {
                     ResetBookLocked();
+                    LogSessionLocked(now, "BOOK_RESET", string.Empty, double.NaN, 0, "depth reset");
+                }
 
                 bool isAsk = e.MarketDataType == MarketDataType.Ask;
                 if (!e.IsReset && (isAsk || e.MarketDataType == MarketDataType.Bid))
@@ -967,6 +1004,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     UpdateResidualZonesLocked(now);
                 }
                 PruneEventHistoryLocked(now);
+                LogSnapshotLocked(now, bookFresh);
             }
             else if (!pendingDetection)
             {
@@ -1187,6 +1225,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     };
                     walls[row.Price] = wall;
                     RemovePulledZonesLocked(row.Price, isAsk);
+                    LogSessionLocked(now, "WALL_NEW", isAsk ? "ASK" : "BID", row.Price, row.Size,
+                        string.Format(CultureInfo.InvariantCulture, "threshold={0}", threshold));
                 }
                 wall.LostQualification = false;
                 wall.DisappearanceStarted = DateTime.MinValue;
@@ -1374,7 +1414,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 if (!IsPriceInVisibleWindowLocked(rows, wall.Price, isAsk))
                 {
-                    AddResidualZoneLocked(wall);
+                    AddResidualZoneLocked(wall, now);
                     wall.DisappearanceEventEmitted = true;
                     continue;
                 }
@@ -1618,7 +1658,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             });
         }
 
-        private void AddResidualZoneLocked(WallState wall)
+        private void AddResidualZoneLocked(WallState wall, DateTime now)
         {
             // Only walls that left visible depth without being traded through or mostly filled.
             double traded = wall.IsAsk ? wall.TradedBuy : wall.TradedSell;
@@ -1647,6 +1687,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PeakSize = wall.PeakSize,
                 State = ResidualZoneState.Untested
             });
+            LogSessionLocked(now, "ZONE_NEW", wall.IsAsk ? "ASK" : "BID",
+                wall.Price, wall.PeakSize, string.Format(CultureInfo.InvariantCulture,
+                    "first_seen={0:HH:mm:ss} last_seen={1:HH:mm:ss} traded={2:F0}",
+                    wall.FirstSeen, wall.LastSeenAboveThreshold, traded));
         }
 
         private void UpdateResidualZonesLocked(DateTime now)
@@ -1673,6 +1717,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (size >= Math.Max(1, (zone.PeakSize + 1) / 2))
                 {
+                    if (zone.State != ResidualZoneState.Held)
+                        LogZoneLocked(now, zone, "ZONE_HELD", size);
                     zone.State = ResidualZoneState.Held;
                     zone.LowSince = DateTime.MinValue;
                     continue;
@@ -1689,6 +1735,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 zone.State = zone.Traded >= zone.PeakSize * PullTradeRatio
                     ? ResidualZoneState.Taken : ResidualZoneState.Gone;
                 zone.Resolved = now;
+                LogZoneLocked(now, zone, zone.State == ResidualZoneState.Taken ? "ZONE_TAKEN" : "ZONE_PULLED", size);
             }
         }
 
@@ -1708,6 +1755,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     zone.State = ResidualZoneState.Taken;
                     zone.Resolved = now;
+                    LogZoneLocked(now, zone, "ZONE_TAKEN", -1);
                 }
             }
         }
@@ -1734,6 +1782,174 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Label = label,
                 KeyLevel = keyLevel
             });
+            LogSessionLocked(time, "EVENT_" + type.ToString().ToUpperInvariant(), isAsk ? "ASK" : "BID",
+                Instrument.MasterInstrument.RoundToTickSize(price), 0, label);
+        }
+
+        private void LogZoneLocked(DateTime now, ResidualZone zone, string kind, long currentSize)
+        {
+            LogSessionLocked(now, kind, zone.IsAsk ? "ASK" : "BID", zone.Price, zone.PeakSize,
+                string.Format(CultureInfo.InvariantCulture, "age={0:F0}s traded={1:F0}{2}",
+                    (now - zone.Created).TotalSeconds, zone.Traded,
+                    currentSize >= 0 ? " size_now=" + currentSize.ToString(CultureInfo.InvariantCulture) : " traded_through"));
+        }
+
+        private void LogSnapshotLocked(DateTime now, bool bookFresh)
+        {
+            if (!EnableSessionLog || SessionLogSnapshotSeconds <= 0 || State != State.Realtime)
+                return;
+            if (lastSessionLogSnapshot != DateTime.MinValue
+                && (now - lastSessionLogSnapshot).TotalSeconds < SessionLogSnapshotSeconds)
+                return;
+            lastSessionLogSnapshot = now;
+            int untested = 0, held = 0, pulled = 0;
+            for (int i = 0; i < residualZones.Count; i++)
+            {
+                ResidualZoneState st = residualZones[i].State;
+                if (st == ResidualZoneState.Untested) untested++;
+                else if (st == ResidualZoneState.Held) held++;
+                else if (st == ResidualZoneState.Gone) pulled++;
+            }
+            string detail = string.Format(CultureInfo.InvariantCulture,
+                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5}",
+                TopWallsText(askWalls), TopWallsText(bidWalls), untested, held, pulled,
+                bookFresh ? string.Empty : " BOOK_STALE");
+            LogSessionLocked(now, "SNAPSHOT", string.Empty, double.NaN, 0, detail);
+        }
+
+        private static string TopWallsText(Dictionary<double, WallState> walls)
+        {
+            List<WallState> active = new List<WallState>();
+            foreach (WallState wall in walls.Values)
+                if (wall.Active)
+                    active.Add(wall);
+            active.Sort(delegate(WallState a, WallState b) { return b.LastSize.CompareTo(a.LastSize); });
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            for (int i = 0; i < active.Count && i < 3; i++)
+            {
+                if (i > 0)
+                    sb.Append(' ');
+                sb.Append(active[i].Price.ToString(CultureInfo.InvariantCulture))
+                    .Append(':').Append(active[i].LastSize.ToString(CultureInfo.InvariantCulture));
+            }
+            return sb.ToString();
+        }
+
+        // Queues one CSV row; the file is written on a background timer so detection never blocks on disk.
+        private void LogSessionLocked(DateTime time, string kind, string side, double price, long size, string detail)
+        {
+            if (!EnableSessionLog || sessionLogFailed || State != State.Realtime)
+                return;
+            CultureInfo inv = CultureInfo.InvariantCulture;
+            string text = string.Join(",", new string[]
+            {
+                time.ToString("yyyy-MM-dd HH:mm:ss.fff", inv),
+                kind,
+                side,
+                double.IsNaN(price) ? string.Empty : price.ToString(inv),
+                size > 0 ? size.ToString(inv) : string.Empty,
+                double.IsNaN(lastTradePrice) ? string.Empty : lastTradePrice.ToString(inv),
+                double.IsNaN(lastBid) ? string.Empty : lastBid.ToString(inv),
+                double.IsNaN(lastAsk) ? string.Empty : lastAsk.ToString(inv),
+                smoothedBookImbalance.ToString("F1", inv),
+                (sessionAggBuy - sessionAggSell).ToString("F0", inv),
+                double.IsNaN(adaptiveBaseline) ? string.Empty : adaptiveBaseline.ToString("F2", inv),
+                GetWallThresholdLocked().ToString(inv),
+                "\"" + (detail ?? string.Empty).Replace("\"", "\"\"") + "\""
+            });
+            sessionLogQueue.Enqueue(new SessionLogLine { Time = time, Text = text });
+        }
+
+        private void OnSessionLogTimer(object state)
+        {
+            FlushSessionLog(false);
+        }
+
+        private void FlushSessionLog(bool close)
+        {
+            lock (sessionLogWriteLock)
+            {
+                try
+                {
+                    SessionLogLine line;
+                    while (!sessionLogFailed && sessionLogQueue.TryDequeue(out line))
+                    {
+                        string path = GetSessionLogPath(line.Time);
+                        if (sessionLogWriter == null || path != sessionLogPath)
+                        {
+                            ReleaseSessionLogWriterLocked();
+                            sessionLogWriter = AcquireSessionLogWriterLocked(path);
+                            sessionLogPath = path;
+                        }
+                        sessionLogWriter.Writer.WriteLine(line.Text);
+                    }
+                    if (!sessionLogFailed && sessionLogWriter != null)
+                        sessionLogWriter.Writer.Flush();
+                }
+                catch (Exception ex)
+                {
+                    // Stop logging rather than failing repeatedly; the indicator keeps running.
+                    sessionLogFailed = true;
+                    ReleaseSessionLogWriterLocked();
+                    Print("LiquidityPulse session log disabled: " + ex.Message);
+                }
+                if (close)
+                    ReleaseSessionLogWriterLocked();
+            }
+        }
+
+        private static SharedSessionLogWriter AcquireSessionLogWriterLocked(string path)
+        {
+            SharedSessionLogWriter shared;
+            if (!sharedSessionLogWriters.TryGetValue(path, out shared))
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+                bool isNew = !System.IO.File.Exists(path);
+                shared = new SharedSessionLogWriter
+                {
+                    Writer = new System.IO.StreamWriter(path, true, new System.Text.UTF8Encoding(false))
+                };
+                try
+                {
+                    if (isNew)
+                        shared.Writer.WriteLine("time,kind,side,price,size,last,bid,ask,book_imbalance_pct,session_delta,baseline,wall_threshold,detail");
+                }
+                catch
+                {
+                    try { shared.Writer.Dispose(); } catch { }
+                    throw;
+                }
+                sharedSessionLogWriters[path] = shared;
+            }
+            shared.RefCount++;
+            return shared;
+        }
+
+        private void ReleaseSessionLogWriterLocked()
+        {
+            SharedSessionLogWriter shared = sessionLogWriter;
+            string path = sessionLogPath;
+            sessionLogWriter = null;
+            sessionLogPath = null;
+            if (shared == null)
+                return;
+            shared.RefCount--;
+            if (shared.RefCount <= 0)
+            {
+                SharedSessionLogWriter current;
+                if (path != null && sharedSessionLogWriters.TryGetValue(path, out current) && current == shared)
+                    sharedSessionLogWriters.Remove(path);
+                try { shared.Writer.Dispose(); } catch { }
+            }
+        }
+
+        private string GetSessionLogPath(DateTime time)
+        {
+            string name = Instrument != null ? Instrument.FullName : "Instrument";
+            foreach (char c in System.IO.Path.GetInvalidFileNameChars())
+                name = name.Replace(c, '_');
+            return System.IO.Path.Combine(NinjaTrader.Core.Globals.UserDataDir, "LiquidityPulse", "logs",
+                name + "_" + time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ".csv");
         }
 
         private string FindNearestKeyLevelLocked(double price, int maxTicks)
@@ -3461,6 +3677,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         public System.Windows.Media.Brush WeeklyVwapColor { get; set; }
         [Browsable(false)]
         public string WeeklyVwapColorSerializable { get { return Serialize.BrushToString(WeeklyVwapColor); } set { WeeklyVwapColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Session Log", Order = 1, GroupName = "6. Session Log",
+            Description = "Writes events, wall/zone changes and periodic book snapshots to Documents\\NinjaTrader 8\\LiquidityPulse\\logs as CSV (realtime only).")]
+        public bool EnableSessionLog { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 300)]
+        [Display(Name = "Snapshot Seconds", Order = 2, GroupName = "6. Session Log",
+            Description = "Seconds between book snapshot rows. 0 logs only events and zone changes.")]
+        public int SessionLogSnapshotSeconds { get; set; }
         #endregion
     }
 }

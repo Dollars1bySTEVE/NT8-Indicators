@@ -143,6 +143,25 @@ Day, week, previous-session, and current-session levels preserve individual show
 
 Every brush color is stored using NinjaTrader's brush serialization properties. All distances and sizes used by future event logic are in instrument ticks.
 
+### Session log
+
+| Setting | Default | Description |
+|---|---:|---|
+| Enable Session Log | Off | Writes a CSV log while the indicator runs in realtime. Historical bars are never logged. |
+| Snapshot Seconds | 5 | Seconds between `SNAPSHOT` rows. 0 logs only events, walls, and zone changes. |
+
+Files are written to `Documents\NinjaTrader 8\LiquidityPulse\logs\<instrument>_<yyyy-MM-dd>.csv`, one file per instrument per day, appended if the indicator is reloaded. Multiple charts on the same instrument share one writer and append to the same file. Times are feed times in NinjaTrader's local timezone. Writing happens on a background timer about once per second, so the chart is not slowed by disk access. If the file cannot be written, logging stops and a message is printed to the NinjaScript Output window.
+
+Columns: `time, kind, side, price, size, last, bid, ask, book_imbalance_pct, session_delta, baseline, wall_threshold, detail`.
+
+| Kind | Meaning |
+|---|---|
+| `WALL_NEW` | A new wall qualified (size = current size). |
+| `ZONE_NEW` / `ZONE_HELD` / `ZONE_TAKEN` / `ZONE_PULLED` | Residual zone created or changed state (size = peak size; detail has age, traded volume, size now). |
+| `EVENT_*` | Every detected event, logged even when event markers are hidden. |
+| `SNAPSHOT` | Top three active walls per side as `price:size`, live zone counts, and `BOOK_STALE` when the book is stale. |
+| `BOOK_RESET` | The depth feed reset the book. |
+
 ## How it works
 
 1. **Book:** market-depth Add/Update/Remove operations modify positional ask and bid row lists using `e.Position`; reset events clear the lists. Book updates are performed under a single lock.
