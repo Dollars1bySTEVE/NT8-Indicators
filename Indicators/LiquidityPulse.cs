@@ -93,6 +93,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Price;
         }
 
+        private enum ResidualZoneState
+        {
+            Untested,
+            Held,
+            Taken,
+            Gone
+        }
+
+        private class ResidualZone
+        {
+            public double Price;
+            public bool IsAsk;
+            public DateTime Created;
+            public DateTime Resolved;
+            public DateTime LowSince;
+            public long PeakSize;
+            public double Traded;
+            public ResidualZoneState State;
+        }
+
         private class HeatmapLevel
         {
             public double Price;
@@ -171,6 +191,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool sellSweepEpisodeActive;
         private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
         private readonly List<WallFade> wallFades = new List<WallFade>();
+        private readonly List<ResidualZone> residualZones = new List<ResidualZone>();
         private readonly Queue<HeatmapSnapshot> heatmapSnapshots = new Queue<HeatmapSnapshot>();
         private readonly List<SweepCandidate> sweepCandidates = new List<SweepCandidate>();
         private readonly Dictionary<string, SharpDX.Direct2D1.SolidColorBrush> levelBrushes =
@@ -398,6 +419,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowHeldRunEvents = true;
                 ShowLargeTradeEvents = true;
                 ShowHeatmap = true;
+                ShowResidualZones = true;
+                ShowResolvedResidualZones = true;
+                ResidualZoneMaxMinutes = 120;
+                ResidualZoneOpacity = 70;
                 HeatmapHistorySeconds = 60;
                 HeatmapWidth = 160;
                 HeatmapOpacity = 70;
@@ -783,6 +808,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                             wall.TradedSell += e.Volume;
                     }
                     RecordTradeThroughLocked(price);
+                    UpdateResidualZoneTradesLocked(now, price, e.Volume,
+                        aggressiveBuy ? 1 : (aggressiveSell ? -1 : 0));
                     if (!IsBookStale())
                         ProcessTradeLocked(now, price, e.Volume,
                             aggressiveBuy ? 1 : (aggressiveSell ? -1 : 0));
@@ -932,6 +959,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     ProcessPendingWallEventsLocked(askRows, askWalls, retiredAskWalls, true, now);
                     ProcessPendingWallEventsLocked(bidRows, bidWalls, retiredBidWalls, false, now);
                     ProcessSweepCandidatesLocked(now);
+                    UpdateResidualZonesLocked(now);
                 }
                 PruneEventHistoryLocked(now);
             }
@@ -1340,6 +1368,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     continue;
                 if (!IsPriceInVisibleWindowLocked(rows, wall.Price, isAsk))
                 {
+                    AddResidualZoneLocked(wall);
                     wall.DisappearanceEventEmitted = true;
                     continue;
                 }
@@ -1557,6 +1586,113 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 return (now - fade.Time).TotalSeconds > WallFadeDurationSeconds;
             });
+            double zoneRetention = Math.Max(1, ResidualZoneMaxMinutes);
+            residualZones.RemoveAll(delegate(ResidualZone zone)
+            {
+                return (now - zone.Created).TotalMinutes > zoneRetention;
+            });
+            while (residualZones.Count > 150)
+                residualZones.RemoveAt(0);
+        }
+
+        private static bool IsResidualZoneLive(ResidualZone zone)
+        {
+            return zone.State == ResidualZoneState.Untested || zone.State == ResidualZoneState.Held;
+        }
+
+        private void AddResidualZoneLocked(WallState wall)
+        {
+            // Only walls that left visible depth without being traded through or mostly filled.
+            double traded = wall.IsAsk ? wall.TradedBuy : wall.TradedSell;
+            if (wall.TradedThrough || wall.PeakSize <= 0 || traded >= wall.PeakSize
+                || (wall.LastSeenAboveThreshold - wall.FirstSeen).TotalSeconds < WallMinAgeSeconds)
+                return;
+
+            for (int i = 0; i < residualZones.Count; i++)
+            {
+                ResidualZone existing = residualZones[i];
+                if (IsResidualZoneLive(existing) && existing.IsAsk == wall.IsAsk
+                    && existing.Price.ApproxCompare(wall.Price) == 0)
+                {
+                    existing.PeakSize = Math.Max(existing.PeakSize, wall.PeakSize);
+                    existing.LowSince = DateTime.MinValue;
+                    return;
+                }
+            }
+
+            residualZones.Add(new ResidualZone
+            {
+                Price = wall.Price,
+                IsAsk = wall.IsAsk,
+                Created = wall.FirstSeen,
+                Resolved = DateTime.MinValue,
+                LowSince = DateTime.MinValue,
+                PeakSize = wall.PeakSize,
+                State = ResidualZoneState.Untested
+            });
+        }
+
+        private void UpdateResidualZonesLocked(DateTime now)
+        {
+            for (int i = 0; i < residualZones.Count; i++)
+            {
+                ResidualZone zone = residualZones[i];
+                if (!IsResidualZoneLive(zone))
+                    continue;
+                List<DepthRow> rows = zone.IsAsk ? askRows : bidRows;
+                if (!IsPriceInVisibleWindowLocked(rows, zone.Price, zone.IsAsk))
+                {
+                    zone.LowSince = DateTime.MinValue;
+                    continue;
+                }
+
+                long size = 0;
+                for (int j = 0; j < rows.Count; j++)
+                    if (rows[j].Price.ApproxCompare(zone.Price) == 0)
+                    {
+                        size = rows[j].Size;
+                        break;
+                    }
+
+                if (size >= Math.Max(1, zone.PeakSize / 2))
+                {
+                    zone.State = ResidualZoneState.Held;
+                    zone.LowSince = DateTime.MinValue;
+                    continue;
+                }
+
+                if (zone.LowSince == DateTime.MinValue)
+                {
+                    zone.LowSince = now;
+                    continue;
+                }
+                if ((now - zone.LowSince).TotalMilliseconds < WallGraceMilliseconds)
+                    continue;
+
+                zone.State = zone.Traded >= zone.PeakSize * PullTradeRatio
+                    ? ResidualZoneState.Taken : ResidualZoneState.Gone;
+                zone.Resolved = now;
+            }
+        }
+
+        private void UpdateResidualZoneTradesLocked(DateTime now, double price, double volume,
+            int aggressor)
+        {
+            double tickSize = Instrument.MasterInstrument.TickSize;
+            for (int i = 0; i < residualZones.Count; i++)
+            {
+                ResidualZone zone = residualZones[i];
+                if (!IsResidualZoneLive(zone))
+                    continue;
+                if (price.ApproxCompare(zone.Price) == 0
+                    && (zone.IsAsk ? aggressor > 0 : aggressor < 0))
+                    zone.Traded += volume;
+                if (zone.IsAsk ? price >= zone.Price + tickSize : price <= zone.Price - tickSize)
+                {
+                    zone.State = ResidualZoneState.Taken;
+                    zone.Resolved = now;
+                }
+            }
         }
 
         private void AddWallFadeLocked(LiquidityEventType type, double price, DateTime time)
@@ -1768,6 +1904,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RenderWalls(chartScale);
                 RenderWallFades(chartScale);
             }
+            if (ShowResidualZones)
+                RenderResidualZones(chartControl, chartScale);
             if (ShowEventMarkers)
                 RenderEvents(chartControl, chartScale);
             if (ShowHud)
@@ -1874,6 +2012,100 @@ namespace NinjaTrader.NinjaScript.Indicators
                         label, wallFormat, Math.Max(150f, right - start), WallLabelFontSize + 4f))
                     {
                         RenderTarget.DrawTextLayout(new Vector2(start + 3f, labelY), layout, brush);
+                    }
+                }
+                brush.Opacity = 1f;
+            }
+        }
+
+        private void RenderResidualZones(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (chartControl == null || chartScale == null || dxAskWall == null || dxBidWall == null)
+                return;
+            DateTime now = FeedNow();
+            List<ResidualZone> zones = new List<ResidualZone>();
+            HashSet<double> activeAsk = new HashSet<double>();
+            HashSet<double> activeBid = new HashSet<double>();
+            lock (bookLock)
+            {
+                now = DetectionNowLocked(now);
+                for (int i = 0; i < residualZones.Count; i++)
+                {
+                    ResidualZone z = residualZones[i];
+                    zones.Add(new ResidualZone
+                    {
+                        Price = z.Price,
+                        IsAsk = z.IsAsk,
+                        Created = z.Created,
+                        Resolved = z.Resolved,
+                        PeakSize = z.PeakSize,
+                        State = z.State
+                    });
+                }
+                foreach (WallState wall in askWalls.Values)
+                    if (wall.Active)
+                        activeAsk.Add(wall.Price);
+                foreach (WallState wall in bidWalls.Values)
+                    if (wall.Active)
+                        activeBid.Add(wall.Price);
+            }
+
+            float left = ChartPanel.X;
+            float right = ChartPanel.X + ChartPanel.W;
+            float labelRight = ShowHeatmap
+                ? right - Math.Min(Math.Max(40, HeatmapWidth), ChartPanel.W) - 4f
+                : right - 4f;
+            float baseOpacity = Math.Max(0, Math.Min(100, ResidualZoneOpacity)) / 100f;
+            List<float> labelYs = new List<float>();
+            for (int i = zones.Count - 1; i >= 0; i--)
+            {
+                ResidualZone zone = zones[i];
+                bool live = IsResidualZoneLive(zone);
+                if ((!live && !ShowResolvedResidualZones)
+                    || zone.Price < chartScale.MinValue || zone.Price > chartScale.MaxValue)
+                    continue;
+
+                float x0 = Math.Max(left, chartControl.GetXByTime(zone.Created));
+                float x1 = live ? right : Math.Min(right, chartControl.GetXByTime(zone.Resolved));
+                if (x1 <= left || x0 >= right || x1 - x0 < 1f)
+                    continue;
+
+                float y = chartScale.GetYByValue(zone.Price);
+                SharpDX.Direct2D1.SolidColorBrush brush = zone.IsAsk ? dxAskWall : dxBidWall;
+                brush.Opacity = live ? baseOpacity : baseOpacity * 0.35f;
+                float width = zone.State == ResidualZoneState.Held ? 2f : 1.5f;
+                StrokeStyle style = zone.State == ResidualZoneState.Held ? null : pullFadeStrokeStyle;
+                RenderTarget.DrawLine(new Vector2(x0, y), new Vector2(x1, y), brush, width, style);
+
+                bool coveredByWall = zone.IsAsk ? activeAsk.Contains(zone.Price) : activeBid.Contains(zone.Price);
+                if (wallFormat != null && !coveredByWall)
+                {
+                    string label;
+                    float labelX;
+                    if (live)
+                    {
+                        label = string.Format("{0} {1} {2}{3}", zone.IsAsk ? "ASK" : "BID",
+                            zone.PeakSize, FormatAge(now - zone.Created),
+                            zone.State == ResidualZoneState.Held ? " HELD" : string.Empty);
+                        labelX = float.NaN;
+                    }
+                    else
+                    {
+                        label = zone.State == ResidualZoneState.Taken ? "TAKEN" : "GONE";
+                        labelX = x1 + 3f;
+                    }
+
+                    using (TextLayout layout = new TextLayout(Core.Globals.DirectWriteFactory,
+                        label, wallFormat, 200f, WallLabelFontSize + 4f))
+                    {
+                        if (float.IsNaN(labelX))
+                            labelX = labelRight - layout.Metrics.Width;
+                        if (labelX >= left && labelX + layout.Metrics.Width <= right)
+                        {
+                            float labelY = FindWallLabelY(y, labelYs, MinWallLabelSpacing);
+                            labelYs.Add(labelY);
+                            RenderTarget.DrawTextLayout(new Vector2(labelX, labelY), layout, brush);
+                        }
                     }
                 }
                 brush.Opacity = 1f;
@@ -2543,6 +2775,24 @@ namespace NinjaTrader.NinjaScript.Indicators
             get { return Serialize.BrushToString(HeatmapAskColor); }
             set { HeatmapAskColor = Serialize.StringToBrush(value); }
         }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Residual Liquidity Zones", Order = 7, GroupName = "2. Visualization")]
+        public bool ShowResidualZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Resolved Zones", Order = 8, GroupName = "2. Visualization")]
+        public bool ShowResolvedResidualZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 1440)]
+        [Display(Name = "Residual Zone Max Minutes", Order = 9, GroupName = "2. Visualization")]
+        public int ResidualZoneMaxMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Residual Zone Opacity", Order = 10, GroupName = "2. Visualization")]
+        public int ResidualZoneOpacity { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Show Event Markers", Order = 1, GroupName = "2. Event Detection")]
