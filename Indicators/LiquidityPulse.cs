@@ -1120,6 +1120,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (aggressor != 0)
             {
+                PruneRecentTradesLocked(now);
+                RearmSweepEpisodesLocked();
                 AddRecentTradeLocked(new TradeSample
                 {
                     Time = now,
@@ -1127,7 +1129,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Volume = volume,
                     IsBuy = aggressor > 0
                 });
-                PruneRecentTradesLocked(now);
 
                 double largeTradeThreshold = Math.Max(LargeTradeMinimumContracts,
                     GetWallThresholdLocked() * 2.0);
@@ -1164,19 +1165,44 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        private bool SweepWindowQualifiesLocked(bool isBuy, double currentPrice,
+            out double minPrice, out double maxPrice)
+        {
+            double tickSize = Instrument.MasterInstrument.TickSize;
+            double volume = isBuy ? recentBuyVolume : recentSellVolume;
+            LinkedList<TradeSample> extremes = isBuy ? recentBuyMinPrices : recentSellMaxPrices;
+            minPrice = currentPrice;
+            maxPrice = currentPrice;
+            if (extremes.Count == 0 || tickSize <= 0 || volume < SweepMinimumVolume)
+                return false;
+            if (isBuy)
+                minPrice = extremes.First.Value.Price;
+            else
+                maxPrice = extremes.First.Value.Price;
+            return (maxPrice - minPrice) / tickSize >= SweepMinimumTicks;
+        }
+
+        private void RearmSweepEpisodesLocked()
+        {
+            // The newest same-side print is always the tail of its monotonic extreme deque.
+            double minPrice, maxPrice;
+            if (buySweepEpisodeActive && (recentBuyMinPrices.Count == 0
+                || !SweepWindowQualifiesLocked(true, recentBuyMinPrices.Last.Value.Price,
+                    out minPrice, out maxPrice)))
+                buySweepEpisodeActive = false;
+            if (sellSweepEpisodeActive && (recentSellMaxPrices.Count == 0
+                || !SweepWindowQualifiesLocked(false, recentSellMaxPrices.Last.Value.Price,
+                    out minPrice, out maxPrice)))
+                sellSweepEpisodeActive = false;
+        }
+
         private void DetectSweepLocked(DateTime now, int aggressor, double price)
         {
             // Rolling per-side aggregates: progress is measured from the earlier extreme opposite the
             // aggressor direction to the current print, so only time-ordered movement counts.
-            double tickSize = Instrument.MasterInstrument.TickSize;
             double volume = aggressor > 0 ? recentBuyVolume : recentSellVolume;
-            LinkedList<TradeSample> extremes = aggressor > 0 ? recentBuyMinPrices : recentSellMaxPrices;
-            bool qualifies = extremes.Count > 0 && tickSize > 0 && volume >= SweepMinimumVolume;
-            double minPrice = aggressor > 0 && qualifies ? extremes.First.Value.Price : price;
-            double maxPrice = aggressor > 0 ? price
-                : (qualifies ? extremes.First.Value.Price : price);
-            qualifies = qualifies && (maxPrice - minPrice) / tickSize >= SweepMinimumTicks;
-            if (!qualifies)
+            double minPrice, maxPrice;
+            if (!SweepWindowQualifiesLocked(aggressor > 0, price, out minPrice, out maxPrice))
             {
                 if (aggressor > 0)
                     buySweepEpisodeActive = false;
