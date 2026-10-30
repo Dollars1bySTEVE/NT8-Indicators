@@ -22,7 +22,8 @@ var names = new HashSet<string>
     "DiscoverInteractionLevelsLocked", "RegisterInteractionLevelLocked", "UpdateInteractionClockLocked",
     "ProcessInteractionTradeLocked", "UpdateInteractionDepthLocked", "GetInteractionSizeLocked",
     "EndInteractionObservationLocked", "CompleteInteractionHorizonsLocked", "LogInteractionLocked",
-    "ResetBookLocked", "AdvanceClockLocked"
+    "ResetBookLocked", "AdvanceClockLocked", "SessionLogAcceptsLocked", "InterruptInteractionsForTerminationLocked",
+    "ExpireInteractionDeparturesLocked"
 };
 var members = indicator.Members.Where(m => names.Contains(m switch
 {
@@ -40,7 +41,7 @@ using System.Threading;
 using System.Linq;
 enum MarketDataType { Bid, Ask, Last }
 enum Operation { Add, Update, Remove }
-enum State { Realtime, Historical }
+enum State { Realtime, Historical, Terminated }
 enum SessionPhase { Rth, PostClose }
 class MarketDataEventArgs
 {
@@ -81,7 +82,7 @@ class LiquidityPulse : IndicatorStub
     bool tradeQuotesInvalid, stale;
     State State = State.Realtime;
     SessionPhase phase = SessionPhase.Rth;
-    bool EnableSessionLog, EnableInteractionLog = true, sessionLogFailed;
+    bool EnableSessionLog, EnableInteractionLog = true, sessionLogFailed, loggingTerminationInterruptions;
     string interactionRunId = Guid.NewGuid().ToString("N");
     Dictionary<string, InteractionWatch> interactionWatches = new Dictionary<string, InteractionWatch>();
     List<LevelInteraction> interactions = new List<LevelInteraction>();
@@ -123,7 +124,11 @@ class LiquidityPulse : IndicatorStub
     void ProcessTradeLocked(DateTime time, double price, double volume, int side)
     { processCalls++; if (side == 0) neutralCalls++; }
     void LogSessionLocked(DateTime time, string kind, string side, double price, long size, string detail)
-    { logs.Add(kind); details.Add(detail); logTimes.Add(time); }
+    {
+        // With the session log enabled, honor the indicator's real enqueue guard.
+        if (EnableSessionLog && !SessionLogAcceptsLocked()) return;
+        logs.Add(kind); details.Add(detail); logTimes.Add(time);
+    }
     static int assertions;
     static void Check(bool value, string message)
     { assertions++; if (!value) throw new Exception(message); }
@@ -330,11 +335,13 @@ class LiquidityPulse : IndicatorStub
         var first = lp.interactions[0];
         for (int seconds = 5; seconds <= 30; seconds += 5)
             lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), seconds == 30 ? 102 : 100, 1, 0, false);
+        Check(!lp.logs.Contains("INTERACTION_OUTCOME"),
+            "Outcome emission is deferred until feed time advances past the cutoff");
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(31), 110, 1, 0, false);
         int outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
         Check(outcomeIndex >= 0 && lp.details[outcomeIndex].Contains("horizon_seconds=30")
             && lp.details[outcomeIndex].Contains("mfe_ticks=8.0") && lp.logTimes[outcomeIndex] == now.AddSeconds(30),
             "Exact-boundary print is included in its horizon");
-        lp.ProcessInteractionTradeLocked(now.AddSeconds(31), 110, 1, 0, false);
         Check(!lp.details[outcomeIndex].Contains("mfe_ticks=40.0"),
             "Later price progress cannot alter an earlier horizon");
         Check(lp.logs.Count(k => k == "INTERACTION_BARRIER") == 3,
@@ -342,6 +349,8 @@ class LiquidityPulse : IndicatorStub
         for (int seconds = 36; seconds < 3600; seconds += 5)
             lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 110, 1, 0, false);
         lp.ProcessInteractionTradeLocked(now.AddSeconds(3600), 110, 1, 0, false);
+        Check(lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 3, "The hourly horizon waits for later feed time");
+        lp.UpdateInteractionClockLocked(now.AddSeconds(3601));
         Check(lp.interactions.Count == 0 && lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 4,
             "All four horizons finish once, including the hourly observation");
         Check(first.BuyVolume == 0 && !first.Observing, "Flow recording ends independently of hourly price tracking");
@@ -368,6 +377,55 @@ class LiquidityPulse : IndicatorStub
             && lp.interactions[0].AddedSize == 20,
             "Post-cutoff depth changes must not leak into earlier horizon features");
 
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 5; seconds < 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(29));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(30), 100, 1, 0, false);
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(30), 102, 1, 0, false);
+        lp.bidRows[0].Size = 45;
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(30));
+        Check(!lp.logs.Contains("INTERACTION_OUTCOME"), "Callbacks sharing the cutoff time do not finalize it");
+        lp.UpdateInteractionClockLocked(now.AddSeconds(30.5));
+        outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 1 && lp.logTimes[outcomeIndex] == now.AddSeconds(30)
+            && lp.details[outcomeIndex].Contains("mfe_ticks=8.0") && lp.details[outcomeIndex].Contains("displayed_added=15 "),
+            "Every trade and depth callback at the cutoff is included once time advances");
+
+        foreach (bool viaDepth in new[] { false, true })
+        {
+            lp = InteractionFixture(now, false);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            var departed = lp.interactions[0];
+            lp.UpdateInteractionDepthLocked(now.AddSeconds(0.5));
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 103, 1, 0, false);
+            lp.bidRows[0].Size = 20;
+            lp.UpdateInteractionDepthLocked(now.AddSeconds(2.5));
+            Check(departed.Observing && departed.RemovedSize == 10, "Depth is observed within the departure window");
+            lp.bidRows[0].Size = 5;
+            if (viaDepth) lp.UpdateInteractionDepthLocked(now.AddSeconds(4));
+            else lp.UpdateInteractionClockLocked(now.AddSeconds(4));
+            Check(!departed.Observing && departed.RemovedSize == 10
+                && lp.details.Any(d => d.Contains("reason=departed")),
+                "Departures expire on " + (viaDepth ? "depth" : "clock") + " updates before consuming more flow");
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(5), 100, 4, 0, false);
+            Check(!lp.logs.Contains("INTERACTION_RETURN") && departed.NeutralVolume == 1
+                && lp.interactionWatches["B:100"].Visits == 2 && lp.interactions.Count == 2,
+                "Returning after an expired departure is a new visit");
+        }
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        var away = lp.interactions[0];
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(1));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 103, 1, 0, false);
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(2.5));
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(4.5));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(5), 100, 4, 0, false);
+        Check(!away.Observing && away.NeutralVolume == 1 && !lp.logs.Contains("INTERACTION_RETURN")
+            && lp.interactionWatches["B:100"].Visits == 2,
+            "A return trade after three seconds away cannot resume the old interaction");
+
         foreach (string issue in new[] { "quotes", "depth", "gap", "reset", "rewind", "close", "termination", "invalidated" })
         {
             lp = InteractionFixture(now, false);
@@ -378,7 +436,7 @@ class LiquidityPulse : IndicatorStub
             if (issue == "reset") lp.ResetBookLocked();
             if (issue == "rewind") { lp.lastClockTime = now; lp.AdvanceClockLocked(now.AddSeconds(-3)); }
             if (issue == "close") { lp.phase = SessionPhase.PostClose; lp.UpdateInteractionClockLocked(now); }
-            if (issue == "termination") lp.InterruptInteractionsLocked(now, "indicator_terminated");
+            if (issue == "termination") { lp.State = State.Terminated; lp.InterruptInteractionsForTerminationLocked(now); }
             if (issue == "invalidated")
             {
                 lp.lastBid = 104; lp.lastAsk = 104.25; lp.lastTradePrice = 104;
@@ -388,6 +446,18 @@ class LiquidityPulse : IndicatorStub
             Check(lp.interactions.Count == 0 && lp.logs.Contains("INTERACTION_INTERRUPTED")
                 && !lp.logs.Contains("INTERACTION_OUTCOME"), "Unreliable observations are censored: " + issue);
         }
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.State = State.Terminated;
+        lp.LogSessionLocked(now, "SNAPSHOT", "", double.NaN, 0, "");
+        lp.InterruptInteractionsForTerminationLocked(now);
+        Check(!lp.logs.Contains("SNAPSHOT") && lp.logs.Contains("INTERACTION_INTERRUPTED")
+            && lp.details.Any(d => d.Contains("reason=indicator_terminated")) && lp.interactions.Count == 0,
+            "Termination queues only its interruption rows before pending interactions are cleared");
+        Check(!lp.SessionLogAcceptsLocked(), "Terminated logging closes after the interruption rows");
+        lp.State = State.Historical; lp.loggingTerminationInterruptions = true;
+        Check(!lp.SessionLogAcceptsLocked(), "Historical rows remain excluded");
 
         lp = InteractionFixture(now, false);
         lp.EnableSessionLog = false;

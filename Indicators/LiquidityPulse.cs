@@ -267,6 +267,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private long interactionLevelSequence;
         private DateTime lastInteractionTrade;
         private DateTime lastInteractionDepth;
+        private bool loggingTerminationInterruptions;
         private readonly HashSet<double> drawnAskWallLabels = new HashSet<double>();
         private readonly HashSet<double> drawnBidWallLabels = new HashSet<double>();
         private readonly Queue<HeatmapSnapshot> heatmapSnapshots = new Queue<HeatmapSnapshot>();
@@ -581,7 +582,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 lock (bookLock)
                 {
-                    InterruptInteractionsLocked(lastClockTime, "indicator_terminated");
+                    InterruptInteractionsForTerminationLocked(lastClockTime);
                     if (trailingDetectionTimer != null)
                     {
                         trailingDetectionTimer.Dispose();
@@ -2029,6 +2030,31 @@ namespace NinjaTrader.NinjaScript.Indicators
             lastInteractionTrade = DateTime.MinValue;
         }
 
+        // State is already Terminated here; only these interruption rows may still be queued before the final flush.
+        private void InterruptInteractionsForTerminationLocked(DateTime now)
+        {
+            loggingTerminationInterruptions = true;
+            try
+            {
+                InterruptInteractionsLocked(now, "indicator_terminated");
+            }
+            finally
+            {
+                loggingTerminationInterruptions = false;
+            }
+        }
+
+        private void ExpireInteractionDeparturesLocked(DateTime now)
+        {
+            foreach (LevelInteraction interaction in interactions)
+            {
+                InteractionWatch watch = interaction.Watch;
+                if (interaction.Observing && interaction.Left && watch.AwaySince != DateTime.MinValue
+                    && (now - watch.AwaySince).TotalSeconds >= 3)
+                    EndInteractionObservationLocked(now, interaction, "departed");
+            }
+        }
+
         private void DiscoverInteractionLevelsLocked(DateTime now)
         {
             if (!InteractionLoggingEnabled())
@@ -2090,10 +2116,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 InterruptInteractionsLocked(now, issue);
                 return;
             }
-            CompleteInteractionHorizonsLocked(now, false);
+            CompleteInteractionHorizonsLocked(now);
             foreach (LevelInteraction interaction in interactions)
                 if (interaction.Observing && (now - interaction.Started).TotalSeconds >= 120)
                     EndInteractionObservationLocked(now, interaction, "observation_limit");
+            ExpireInteractionDeparturesLocked(now);
         }
 
         private void ProcessInteractionTradeLocked(DateTime now, double price, double volume,
@@ -2110,10 +2137,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return;
             }
             lastInteractionTrade = now;
-            CompleteInteractionHorizonsLocked(now, false);
+            CompleteInteractionHorizonsLocked(now);
             foreach (LevelInteraction existing in interactions)
                 if (existing.Observing && (now - existing.Started).TotalSeconds > 120)
                     EndInteractionObservationLocked(now, existing, "observation_limit");
+            ExpireInteractionDeparturesLocked(now);
             double tick = Instrument.MasterInstrument.TickSize;
             foreach (InteractionWatch watch in interactionWatches.Values)
             {
@@ -2229,7 +2257,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                         && (now - watch.AwaySince).TotalSeconds >= 3))
                     EndInteractionObservationLocked(now, interaction, interaction.Left ? "departed" : "observation_limit");
             }
-            CompleteInteractionHorizonsLocked(now, true);
         }
 
         private void UpdateInteractionDepthLocked(DateTime now)
@@ -2245,7 +2272,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 InterruptInteractionsLocked(now, issue);
                 return;
             }
-            CompleteInteractionHorizonsLocked(now, false);
+            CompleteInteractionHorizonsLocked(now);
+            ExpireInteractionDeparturesLocked(now);
             foreach (LevelInteraction interaction in interactions)
             {
                 if (!interaction.Observing)
@@ -2300,7 +2328,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             LogInteractionLocked(now, interaction, "END", "reason=" + reason);
         }
 
-        private void CompleteInteractionHorizonsLocked(DateTime now, bool includeBoundary)
+        // Horizons finalize only once feed time is strictly past the cutoff, so every callback at the cutoff is included.
+        private void CompleteInteractionHorizonsLocked(DateTime now)
         {
             for (int i = interactions.Count - 1; i >= 0; i--)
             {
@@ -2309,7 +2338,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     int seconds = interactionHorizons[interaction.Horizon];
                     DateTime due = interaction.Started.AddSeconds(seconds);
-                    if (includeBoundary ? now < due : now <= due)
+                    if (now <= due)
                         break;
                     LogInteractionLocked(due, interaction, "OUTCOME",
                         "horizon_seconds=" + seconds.ToString(CultureInfo.InvariantCulture));
@@ -2384,7 +2413,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Queues one CSV row; the file is written on a background timer so detection never blocks on disk.
         private void LogSessionLocked(DateTime time, string kind, string side, double price, long size, string detail)
         {
-            if (!EnableSessionLog || sessionLogFailed || State != State.Realtime)
+            if (!SessionLogAcceptsLocked())
                 return;
             CultureInfo inv = CultureInfo.InvariantCulture;
             string text = string.Join(",", new string[]
@@ -2404,6 +2433,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 "\"" + (detail ?? string.Empty).Replace("\"", "\"\"") + "\""
             });
             sessionLogQueue.Enqueue(new SessionLogLine { Time = time, Text = text });
+        }
+
+        private bool SessionLogAcceptsLocked()
+        {
+            return EnableSessionLog && !sessionLogFailed
+                && (State == State.Realtime || (State == State.Terminated && loggingTerminationInterruptions));
         }
 
         private void OnSessionLogTimer(object state)
