@@ -125,6 +125,52 @@ namespace NinjaTrader.NinjaScript.Indicators
             public string Text;
         }
 
+        private class InteractionWatch
+        {
+            public string Id;
+            public double Price;
+            public bool IsAsk;
+            public bool Available;
+            public string Source;
+            public DateTime FirstSeen;
+            public long PeakSize;
+            public long Threshold;
+            public int Visits;
+            public bool Armed = true;
+            public DateTime AwaySince;
+            public LevelInteraction Current;
+        }
+
+        private class LevelInteraction
+        {
+            public InteractionWatch Watch;
+            public string Id;
+            public DateTime Started;
+            public DateTime LastTrade;
+            public DateTime LastSample;
+            public DateTime LastBookObservation;
+            public DateTime ObservationEnded;
+            public double StartPrice;
+            public double LastPrice;
+            public double FavorableTicks;
+            public double AdverseTicks;
+            public double BuyVolume;
+            public double SellVolume;
+            public double NeutralVolume;
+            public long AddedSize;
+            public long RemovedSize;
+            public long? LastSize;
+            public bool Reduced;
+            public int Refills;
+            public int Tests;
+            public bool InContact;
+            public bool Beyond;
+            public bool Left;
+            public bool Observing = true;
+            public int Horizon;
+            public int Barriers;
+        }
+
         // One writer per log file shared by all instances, so charts on the same instrument append safely.
         private class SharedSessionLogWriter
         {
@@ -211,6 +257,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly List<EventMarker> eventMarkers = new List<EventMarker>();
         private readonly List<WallFade> wallFades = new List<WallFade>();
         private readonly List<ResidualZone> residualZones = new List<ResidualZone>();
+        private readonly Dictionary<string, InteractionWatch> interactionWatches =
+            new Dictionary<string, InteractionWatch>();
+        private readonly List<LevelInteraction> interactions = new List<LevelInteraction>();
+        private readonly string interactionRunId = Guid.NewGuid().ToString("N");
+        private static readonly int[] interactionHorizons = { 30, 120, 600, 3600 };
+        private static readonly int[] interactionBarriers = { 8, 16, 32 };
+        private long interactionSequence;
+        private long interactionLevelSequence;
+        private DateTime lastInteractionTrade;
+        private DateTime lastInteractionDepth;
+        private bool loggingTerminationInterruptions;
         private readonly HashSet<double> drawnAskWallLabels = new HashSet<double>();
         private readonly HashSet<double> drawnBidWallLabels = new HashSet<double>();
         private readonly Queue<HeatmapSnapshot> heatmapSnapshots = new Queue<HeatmapSnapshot>();
@@ -466,6 +523,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LargePulledZoneFadeMinutes = 45;
                 EnableSessionLog = false;
                 SessionLogSnapshotSeconds = 5;
+                EnableInteractionLog = true;
                 HeatmapHistorySeconds = 60;
                 HeatmapWidth = 160;
                 HeatmapOpacity = 70;
@@ -524,6 +582,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 lock (bookLock)
                 {
+                    InterruptInteractionsForTerminationLocked(lastClockTime);
                     if (trailingDetectionTimer != null)
                     {
                         trailingDetectionTimer.Dispose();
@@ -824,6 +883,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         rows.RemoveAt(position);
                     }
                 }
+                UpdateInteractionDepthLocked(now);
                 RunDetectionLocked(now, false);
             }
             ThrottledForceRefresh();
@@ -888,6 +948,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (bidWalls.TryGetValue(price, out wall) && wall.Active)
                             wall.TradedSell += e.Volume;
                     }
+                    ProcessInteractionTradeLocked(now, price, e.Volume,
+                        aggressiveBuy ? 1 : (aggressiveSell ? -1 : 0), invalidQuotes);
                     RecordTradeThroughLocked(price);
                     UpdateResidualZoneTradesLocked(now, price, e.Volume,
                         aggressiveBuy ? 1 : (aggressiveSell ? -1 : 0));
@@ -947,6 +1009,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Absorb small jitter between extrapolated timer time and event timestamps.
                     if ((lastClockTime - now).TotalSeconds <= 2)
                         now = lastClockTime;
+                    else
+                        InterruptInteractionsLocked(lastClockTime, "clock_rewind");
                 }
                 else if (CrossedSessionCloseLocked(lastClockTime, now))
                 {
@@ -978,6 +1042,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void ResetBookLocked()
         {
+            InterruptInteractionsLocked(lastClockTime, "book_reset");
+            interactionWatches.Clear();
             askRows.Clear();
             bidRows.Clear();
             askWalls.Clear();
@@ -1036,6 +1102,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Preserve MBP positions: deleting the row would shift subsequent positional updates.
                 row.Size = 0;
                 row.Invalidated = true;
+                InterruptInteractionsLocked(now, "depth_invalidated");
                 walls.Remove(row.Price);
                 retiredWalls.RemoveAll(delegate(WallState wall) { return wall.Price == row.Price; });
                 LogSessionLocked(now, "DEPTH_INVALIDATED", isAsk ? "ASK" : "BID", row.Price, size,
@@ -1073,6 +1140,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 retiredBidWalls.Clear();
                 pendingDetection = false;
                 PruneEventHistoryLocked(now);
+                UpdateInteractionClockLocked(now);
                 return;
             }
 
@@ -1098,6 +1166,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     UpdateResidualZonesLocked(now);
                 }
                 PruneEventHistoryLocked(now);
+                UpdateInteractionClockLocked(now);
+                DiscoverInteractionLevelsLocked(now);
                 LogSnapshotLocked(now, bookFresh);
             }
             else if (!pendingDetection)
@@ -1928,6 +1998,376 @@ namespace NinjaTrader.NinjaScript.Indicators
                     zone.QualifyingThreshold));
         }
 
+        private bool InteractionLoggingEnabled()
+        {
+            return EnableSessionLog && EnableInteractionLog && !sessionLogFailed && State == State.Realtime;
+        }
+
+        private string InteractionFeedIssueLocked(DateTime now)
+        {
+            if (GetSessionPhase(now) == SessionPhase.PostClose)
+                return "session_closed";
+            if (IsBookStale() || IsDepthOlderThan(2))
+                return "depth_stale";
+            if (!HasValidQuotes(lastBid, lastAsk))
+                return "quotes_invalid";
+            if (lastInteractionTrade != DateTime.MinValue && (now - lastInteractionTrade).TotalSeconds > 10)
+                return "trade_gap";
+            return null;
+        }
+
+        private void InterruptInteractionsLocked(DateTime now, string reason)
+        {
+            foreach (LevelInteraction interaction in interactions)
+                LogInteractionLocked(now, interaction, "INTERRUPTED", "reason=" + reason);
+            interactions.Clear();
+            foreach (InteractionWatch watch in interactionWatches.Values)
+            {
+                watch.Current = null;
+                watch.Armed = true;
+                watch.AwaySince = DateTime.MinValue;
+            }
+            lastInteractionTrade = DateTime.MinValue;
+        }
+
+        // State is already Terminated here; only these interruption rows may still be queued before the final flush.
+        private void InterruptInteractionsForTerminationLocked(DateTime now)
+        {
+            loggingTerminationInterruptions = true;
+            try
+            {
+                InterruptInteractionsLocked(now, "indicator_terminated");
+            }
+            finally
+            {
+                loggingTerminationInterruptions = false;
+            }
+        }
+
+        private void ExpireInteractionDeparturesLocked(DateTime now)
+        {
+            foreach (LevelInteraction interaction in interactions)
+            {
+                InteractionWatch watch = interaction.Watch;
+                if (interaction.Observing && interaction.Left && watch.AwaySince != DateTime.MinValue
+                    && (now - watch.AwaySince).TotalSeconds >= 3)
+                    EndInteractionObservationLocked(now, interaction, "departed");
+            }
+        }
+
+        private void DiscoverInteractionLevelsLocked(DateTime now)
+        {
+            if (!InteractionLoggingEnabled())
+                return;
+            foreach (InteractionWatch watch in interactionWatches.Values)
+                watch.Available = false;
+            foreach (WallState wall in askWalls.Values)
+                if (wall.Active && (now - wall.FirstSeen).TotalSeconds >= WallMinAgeSeconds)
+                    RegisterInteractionLevelLocked(wall.Price, true, wall.FirstSeen, wall.PeakSize,
+                        wall.QualifyingThreshold, "WALL");
+            foreach (WallState wall in bidWalls.Values)
+                if (wall.Active && (now - wall.FirstSeen).TotalSeconds >= WallMinAgeSeconds)
+                    RegisterInteractionLevelLocked(wall.Price, false, wall.FirstSeen, wall.PeakSize,
+                        wall.QualifyingThreshold, "WALL");
+            foreach (ResidualZone zone in residualZones)
+                RegisterInteractionLevelLocked(zone.Price, zone.IsAsk, zone.Created, zone.PeakSize,
+                    zone.QualifyingThreshold, zone.State.ToString().ToUpperInvariant());
+
+            List<string> expired = new List<string>();
+            foreach (KeyValuePair<string, InteractionWatch> entry in interactionWatches)
+                if (!entry.Value.Available && entry.Value.Current == null)
+                    expired.Add(entry.Key);
+            foreach (string key in expired)
+                interactionWatches.Remove(key);
+        }
+
+        private void RegisterInteractionLevelLocked(double price, bool isAsk, DateTime firstSeen,
+            long peakSize, long threshold, string source)
+        {
+            string key = (isAsk ? "A:" : "B:") + price.ToString(CultureInfo.InvariantCulture);
+            InteractionWatch watch;
+            if (!interactionWatches.TryGetValue(key, out watch))
+            {
+                watch = new InteractionWatch
+                {
+                    Id = interactionRunId + "-L" + (++interactionLevelSequence).ToString(CultureInfo.InvariantCulture),
+                    Price = price,
+                    IsAsk = isAsk
+                };
+                interactionWatches.Add(key, watch);
+            }
+            // A currently displayed wall takes precedence over an older zone at the same price.
+            if (watch.Available)
+                return;
+            watch.Available = true;
+            watch.Source = source;
+            watch.FirstSeen = firstSeen;
+            watch.PeakSize = peakSize;
+            watch.Threshold = threshold;
+        }
+
+        private void UpdateInteractionClockLocked(DateTime now)
+        {
+            if (!InteractionLoggingEnabled())
+                return;
+            string issue = InteractionFeedIssueLocked(now);
+            if (issue != null)
+            {
+                InterruptInteractionsLocked(now, issue);
+                return;
+            }
+            CompleteInteractionHorizonsLocked(now);
+            foreach (LevelInteraction interaction in interactions)
+                if (interaction.Observing && (now - interaction.Started).TotalSeconds >= 120)
+                    EndInteractionObservationLocked(now, interaction, "observation_limit");
+            ExpireInteractionDeparturesLocked(now);
+        }
+
+        private void ProcessInteractionTradeLocked(DateTime now, double price, double volume,
+            int aggressor, bool invalidQuotes)
+        {
+            if (!InteractionLoggingEnabled())
+                return;
+            string issue = invalidQuotes ? "trade_quotes_invalid" : InteractionFeedIssueLocked(now);
+            if (issue != null)
+            {
+                InterruptInteractionsLocked(now, issue);
+                // A fresh valid print after a gap may start a new, independent observation.
+                if (issue != "trade_gap")
+                    return;
+            }
+            lastInteractionTrade = now;
+            CompleteInteractionHorizonsLocked(now);
+            foreach (LevelInteraction existing in interactions)
+                if (existing.Observing && (now - existing.Started).TotalSeconds > 120)
+                    EndInteractionObservationLocked(now, existing, "observation_limit");
+            ExpireInteractionDeparturesLocked(now);
+            double tick = Instrument.MasterInstrument.TickSize;
+            foreach (InteractionWatch watch in interactionWatches.Values)
+            {
+                double distance = Math.Abs(price - watch.Price) / tick;
+                if (distance >= 12)
+                {
+                    if (watch.AwaySince == DateTime.MinValue)
+                        watch.AwaySince = now;
+                    if (watch.Current == null && (now - watch.AwaySince).TotalSeconds >= 3)
+                        watch.Armed = true;
+                }
+                else
+                {
+                    if (watch.Current == null && watch.AwaySince != DateTime.MinValue
+                        && (now - watch.AwaySince).TotalSeconds >= 3)
+                        watch.Armed = true;
+                    watch.AwaySince = DateTime.MinValue;
+                }
+                if (!watch.Available || !watch.Armed || watch.Current != null || distance > 8)
+                    continue;
+                if (interactions.Count >= 512)
+                {
+                    LevelInteraction oldest = interactions[0];
+                    LogInteractionLocked(now, oldest, "INTERRUPTED", "reason=capacity");
+                    if (oldest.Watch.Current == oldest)
+                        oldest.Watch.Current = null;
+                    interactions.RemoveAt(0);
+                }
+                LevelInteraction interaction = new LevelInteraction
+                {
+                    Watch = watch,
+                    Id = interactionRunId + "-I" + (++interactionSequence).ToString(CultureInfo.InvariantCulture),
+                    Started = now,
+                    LastTrade = now,
+                    LastBookObservation = now,
+                    StartPrice = price,
+                    LastPrice = price,
+                    LastSize = GetInteractionSizeLocked(watch),
+                    Beyond = watch.IsAsk ? price > watch.Price : price < watch.Price
+                };
+                watch.Current = interaction;
+                watch.Armed = false;
+                watch.Visits++;
+                interactions.Add(interaction);
+                LogInteractionLocked(now, interaction, "START", string.Format(CultureInfo.InvariantCulture,
+                    "visit={0} source={1} source_first_seen={2:yyyy-MM-ddTHH:mm:ss.fff} peak={3} qualifying_threshold={4} phase={5} key_level={6}",
+                    watch.Visits, watch.Source, watch.FirstSeen, watch.PeakSize, watch.Threshold,
+                    GetSessionPhase(now), FindNearestKeyLevelLocked(watch.Price, KeyLevelProximityTicks)));
+            }
+
+            foreach (LevelInteraction interaction in interactions)
+            {
+                InteractionWatch watch = interaction.Watch;
+                interaction.LastTrade = now;
+                interaction.LastPrice = price;
+                double progress = (price - interaction.StartPrice) / tick * (watch.IsAsk ? -1 : 1);
+                interaction.FavorableTicks = Math.Max(interaction.FavorableTicks, progress);
+                interaction.AdverseTicks = Math.Max(interaction.AdverseTicks, -progress);
+                for (int i = 0; i < interactionBarriers.Length; i++)
+                {
+                    int favorable = 1 << (i * 2);
+                    int adverse = 1 << (i * 2 + 1);
+                    if (progress >= interactionBarriers[i] && (interaction.Barriers & favorable) == 0)
+                    {
+                        interaction.Barriers |= favorable;
+                        LogInteractionLocked(now, interaction, "BARRIER", "direction=defense ticks="
+                            + interactionBarriers[i].ToString(CultureInfo.InvariantCulture));
+                    }
+                    if (-progress >= interactionBarriers[i] && (interaction.Barriers & adverse) == 0)
+                    {
+                        interaction.Barriers |= adverse;
+                        LogInteractionLocked(now, interaction, "BARRIER", "direction=through ticks="
+                            + interactionBarriers[i].ToString(CultureInfo.InvariantCulture));
+                    }
+                }
+                if (!interaction.Observing)
+                    continue;
+                double distance = Math.Abs(price - watch.Price) / tick;
+                bool contact = distance <= 1;
+                bool beyond = watch.IsAsk ? price > watch.Price : price < watch.Price;
+                if (price.ApproxCompare(watch.Price) == 0)
+                {
+                    if (aggressor > 0) interaction.BuyVolume += volume;
+                    else if (aggressor < 0) interaction.SellVolume += volume;
+                    else interaction.NeutralVolume += volume;
+                }
+                if (contact && !interaction.InContact)
+                {
+                    interaction.Tests++;
+                    LogInteractionLocked(now, interaction, "TEST", string.Empty);
+                }
+                if (beyond != interaction.Beyond)
+                    LogInteractionLocked(now, interaction, beyond ? "CROSS" : "RECROSS", string.Empty);
+                interaction.InContact = contact;
+                interaction.Beyond = beyond;
+                if (distance >= 12 && !interaction.Left)
+                {
+                    interaction.Left = true;
+                    LogInteractionLocked(now, interaction, "LEAVE", string.Empty);
+                }
+                else if (distance <= 8 && interaction.Left)
+                {
+                    interaction.Left = false;
+                    LogInteractionLocked(now, interaction, "RETURN", string.Empty);
+                }
+                if (distance <= 12 && (now - interaction.LastSample).TotalMilliseconds >= 250)
+                {
+                    interaction.LastSample = now;
+                    LogInteractionLocked(now, interaction, "SAMPLE", string.Empty);
+                }
+                if ((now - interaction.Started).TotalSeconds >= 120
+                    || (interaction.Left && watch.AwaySince != DateTime.MinValue
+                        && (now - watch.AwaySince).TotalSeconds >= 3))
+                    EndInteractionObservationLocked(now, interaction, interaction.Left ? "departed" : "observation_limit");
+            }
+        }
+
+        private void UpdateInteractionDepthLocked(DateTime now)
+        {
+            if (!InteractionLoggingEnabled())
+                return;
+            if (lastInteractionDepth != DateTime.MinValue && (now - lastInteractionDepth).TotalSeconds > 2)
+                InterruptInteractionsLocked(now, "depth_gap");
+            lastInteractionDepth = now;
+            string issue = InteractionFeedIssueLocked(now);
+            if (issue != null)
+            {
+                InterruptInteractionsLocked(now, issue);
+                return;
+            }
+            CompleteInteractionHorizonsLocked(now);
+            ExpireInteractionDeparturesLocked(now);
+            foreach (LevelInteraction interaction in interactions)
+            {
+                if (!interaction.Observing)
+                    continue;
+                if ((now - interaction.Started).TotalSeconds > 120)
+                {
+                    EndInteractionObservationLocked(now, interaction, "observation_limit");
+                    continue;
+                }
+                long? size = GetInteractionSizeLocked(interaction.Watch);
+                if (size.HasValue && interaction.LastSize.HasValue)
+                {
+                    long change = size.Value - interaction.LastSize.Value;
+                    if (change < 0)
+                    {
+                        interaction.RemovedSize -= change;
+                        interaction.Reduced = true;
+                    }
+                    else if (change > 0)
+                    {
+                        interaction.AddedSize += change;
+                        if (interaction.Reduced)
+                            interaction.Refills++;
+                        interaction.Reduced = false;
+                    }
+                }
+                else
+                    interaction.Reduced = false;
+                interaction.LastSize = size;
+                interaction.LastBookObservation = now;
+            }
+        }
+
+        private long? GetInteractionSizeLocked(InteractionWatch watch)
+        {
+            List<DepthRow> rows = watch.IsAsk ? askRows : bidRows;
+            if (!IsPriceInVisibleWindowLocked(rows, watch.Price, watch.IsAsk))
+                return null;
+            long size = 0;
+            foreach (DepthRow row in rows)
+                if (!row.Invalidated && row.Price.ApproxCompare(watch.Price) == 0)
+                    size += row.Size;
+            return size;
+        }
+
+        private void EndInteractionObservationLocked(DateTime now, LevelInteraction interaction, string reason)
+        {
+            interaction.Observing = false;
+            interaction.ObservationEnded = now;
+            if (interaction.Watch.Current == interaction)
+                interaction.Watch.Current = null;
+            LogInteractionLocked(now, interaction, "END", "reason=" + reason);
+        }
+
+        // Horizons finalize only once feed time is strictly past the cutoff, so every callback at the cutoff is included.
+        private void CompleteInteractionHorizonsLocked(DateTime now)
+        {
+            for (int i = interactions.Count - 1; i >= 0; i--)
+            {
+                LevelInteraction interaction = interactions[i];
+                while (interaction.Horizon < interactionHorizons.Length)
+                {
+                    int seconds = interactionHorizons[interaction.Horizon];
+                    DateTime due = interaction.Started.AddSeconds(seconds);
+                    if (now <= due)
+                        break;
+                    LogInteractionLocked(due, interaction, "OUTCOME",
+                        "horizon_seconds=" + seconds.ToString(CultureInfo.InvariantCulture));
+                    interaction.Horizon++;
+                }
+                if (interaction.Horizon == interactionHorizons.Length)
+                    interactions.RemoveAt(i);
+            }
+        }
+
+        private void LogInteractionLocked(DateTime now, LevelInteraction interaction, string kind, string extra)
+        {
+            InteractionWatch watch = interaction.Watch;
+            double net = (interaction.LastPrice - interaction.StartPrice)
+                / Instrument.MasterInstrument.TickSize * (watch.IsAsk ? -1 : 1);
+            LogSessionLocked(now, "INTERACTION_" + kind, watch.IsAsk ? "ASK" : "BID", watch.Price,
+                interaction.LastSize.GetValueOrDefault(), string.Format(CultureInfo.InvariantCulture,
+                    "schema=1 run={0} level={1} interaction={2} started={3:yyyy-MM-ddTHH:mm:ss.fff} last_observation={4:yyyy-MM-ddTHH:mm:ss.fff} start_price={5} observed_price={6} net_ticks={7:F1} mfe_ticks={8:F1} mae_ticks={9:F1} tests={10} buy_at_level={11:F0} sell_at_level={12:F0} neutral_at_level={13:F0} visible={14} size_now={15} displayed_added={16} displayed_removed={17} refills={18} observing={19} book_observation={20:yyyy-MM-ddTHH:mm:ss.fff} observation_end={21} {22}",
+                    interactionRunId, watch.Id, interaction.Id, interaction.Started, interaction.LastTrade,
+                    interaction.StartPrice, interaction.LastPrice, net, interaction.FavorableTicks,
+                    interaction.AdverseTicks, interaction.Tests, interaction.BuyVolume, interaction.SellVolume,
+                    interaction.NeutralVolume, interaction.LastSize.HasValue ? 1 : 0,
+                    interaction.LastSize.HasValue ? interaction.LastSize.Value.ToString(CultureInfo.InvariantCulture) : "unknown",
+                    interaction.AddedSize, interaction.RemovedSize, interaction.Refills,
+                    interaction.Observing ? 1 : 0, interaction.LastBookObservation,
+                    interaction.Observing ? "pending" : interaction.ObservationEnded.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture),
+                    extra));
+        }
+
         private void LogSnapshotLocked(DateTime now, bool bookFresh)
         {
             if (!EnableSessionLog || SessionLogSnapshotSeconds <= 0 || State != State.Realtime)
@@ -1973,7 +2413,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Queues one CSV row; the file is written on a background timer so detection never blocks on disk.
         private void LogSessionLocked(DateTime time, string kind, string side, double price, long size, string detail)
         {
-            if (!EnableSessionLog || sessionLogFailed || State != State.Realtime)
+            if (!SessionLogAcceptsLocked())
                 return;
             CultureInfo inv = CultureInfo.InvariantCulture;
             string text = string.Join(",", new string[]
@@ -1993,6 +2433,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 "\"" + (detail ?? string.Empty).Replace("\"", "\"\"") + "\""
             });
             sessionLogQueue.Enqueue(new SessionLogLine { Time = time, Text = text });
+        }
+
+        private bool SessionLogAcceptsLocked()
+        {
+            return EnableSessionLog && !sessionLogFailed
+                && (State == State.Realtime || (State == State.Terminated && loggingTerminationInterruptions));
         }
 
         private void OnSessionLogTimer(object state)
@@ -3839,8 +4285,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Range(0, 300)]
         [Display(Name = "Snapshot Seconds", Order = 2, GroupName = "6. Session Log",
-            Description = "Seconds between book snapshot rows. 0 logs only events and zone changes.")]
+            Description = "Seconds between book snapshot rows. 0 disables periodic book snapshots.")]
         public int SessionLogSnapshotSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Interaction Log", Order = 3, GroupName = "6. Session Log",
+            Description = "With session logging enabled, records level approaches and observed price outcomes. No chart signals.")]
+        public bool EnableInteractionLog { get; set; }
         #endregion
     }
 }

@@ -17,7 +17,13 @@ var names = new HashSet<string>
     "DepthRow", "WallState", "ResidualZone", "ResidualZoneState", "OnMarketData", "OnMarketDepth",
     "HasValidQuotes", "SanitizeDepthLocked", "SanitizeDepthSideLocked", "GetPulledZoneFadeFactor",
     "IsPriceInVisibleWindowLocked", "AddResidualZoneLocked", "IsResidualZoneLive", "PruneEventHistoryLocked",
-    "EventMarker", "WallFade", "LiquidityEventType"
+    "EventMarker", "WallFade", "LiquidityEventType", "InteractionWatch", "LevelInteraction",
+    "InteractionLoggingEnabled", "InteractionFeedIssueLocked", "InterruptInteractionsLocked",
+    "DiscoverInteractionLevelsLocked", "RegisterInteractionLevelLocked", "UpdateInteractionClockLocked",
+    "ProcessInteractionTradeLocked", "UpdateInteractionDepthLocked", "GetInteractionSizeLocked",
+    "EndInteractionObservationLocked", "CompleteInteractionHorizonsLocked", "LogInteractionLocked",
+    "ResetBookLocked", "AdvanceClockLocked", "SessionLogAcceptsLocked", "InterruptInteractionsForTerminationLocked",
+    "ExpireInteractionDeparturesLocked"
 };
 var members = indicator.Members.Where(m => names.Contains(m switch
 {
@@ -32,8 +38,11 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
+using System.Linq;
 enum MarketDataType { Bid, Ask, Last }
 enum Operation { Add, Update, Remove }
+enum State { Realtime, Historical, Terminated }
+enum SessionPhase { Rth, PostClose }
 class MarketDataEventArgs
 {
     public MarketDataType MarketDataType;
@@ -71,6 +80,19 @@ class LiquidityPulse : IndicatorStub
     double sessionAggBuy, sessionAggSell;
     long processedTradeUpdates, ignoredSecondaryTradeUpdates;
     bool tradeQuotesInvalid, stale;
+    State State = State.Realtime;
+    SessionPhase phase = SessionPhase.Rth;
+    bool EnableSessionLog, EnableInteractionLog = true, sessionLogFailed, loggingTerminationInterruptions;
+    string interactionRunId = Guid.NewGuid().ToString("N");
+    Dictionary<string, InteractionWatch> interactionWatches = new Dictionary<string, InteractionWatch>();
+    List<LevelInteraction> interactions = new List<LevelInteraction>();
+    static int[] interactionHorizons = { 30, 120, 600, 3600 };
+    static int[] interactionBarriers = { 8, 16, 32 };
+    long interactionSequence, interactionLevelSequence;
+    DateTime lastInteractionTrade, lastInteractionDepth, lastClockTime;
+    bool pendingDetection, crossClose;
+    List<int> sweepCandidates = new List<int>();
+    int KeyLevelProximityTicks = 2;
     double depthAgeSeconds;
     DateTime lastBidUpdate, lastAskUpdate, lastTradeUpdate, clock;
     List<DepthRow> askRows = new List<DepthRow>(), bidRows = new List<DepthRow>();
@@ -85,9 +107,14 @@ class LiquidityPulse : IndicatorStub
     List<WallFade> wallFades = new List<WallFade>();
     int detectionCalls, processCalls, throughCalls, neutralCalls;
     List<string> logs = new List<string>();
+    List<string> details = new List<string>();
+    List<DateTime> logTimes = new List<DateTime>();
     void SetEventTime(DateTime time, bool depth) { clock = time; }
     DateTime FeedNow() { return clock; }
-    DateTime AdvanceClockLocked(DateTime time) { return time; }
+    bool CrossedSessionCloseLocked(DateTime previous, DateTime time) { return crossClose; }
+    void ClearRecentTradesLocked() {}
+    SessionPhase GetSessionPhase(DateTime time) { return phase; }
+    string FindNearestKeyLevelLocked(double price, int ticks) { return "S-POC"; }
     bool IsBookStale() { return stale; }
     bool IsDepthOlderThan(double seconds) { return depthAgeSeconds > seconds; }
     void RunDetectionLocked(DateTime time, bool force) { detectionCalls++; }
@@ -96,14 +123,26 @@ class LiquidityPulse : IndicatorStub
     void UpdateResidualZoneTradesLocked(DateTime time, double price, double volume, int side) {}
     void ProcessTradeLocked(DateTime time, double price, double volume, int side)
     { processCalls++; if (side == 0) neutralCalls++; }
-    void ResetBookLocked() { askRows.Clear(); bidRows.Clear(); askWalls.Clear(); bidWalls.Clear(); }
     void LogSessionLocked(DateTime time, string kind, string side, double price, long size, string detail)
-    { logs.Add(kind); }
+    {
+        // With the session log enabled, honor the indicator's real enqueue guard.
+        if (EnableSessionLog && !SessionLogAcceptsLocked()) return;
+        logs.Add(kind); details.Add(detail); logTimes.Add(time);
+    }
     static int assertions;
     static void Check(bool value, string message)
     { assertions++; if (!value) throw new Exception(message); }
     void Fresh(DateTime time)
     { lastBidUpdate = lastAskUpdate = lastTradeUpdate = time; }
+    static LiquidityPulse InteractionFixture(DateTime now, bool isAsk)
+    {
+        var lp = new LiquidityPulse { EnableSessionLog = true, lastBid = 100, lastAsk = 100.25 };
+        var rows = isAsk ? lp.askRows : lp.bidRows;
+        rows.Add(new DepthRow { Price = 100, Size = 30 });
+        rows.Add(new DepthRow { Price = isAsk ? 102 : 98, Size = 10 });
+        lp.RegisterInteractionLevelLocked(100, isAsk, now.AddMinutes(-1), 30, 10, "WALL");
+        return lp;
+    }
     public static void Run()
     {
         DateTime now = new DateTime(2026, 10, 29, 22, 0, 0);
@@ -242,6 +281,242 @@ class LiquidityPulse : IndicatorStub
             PeakSize = 20, QualifyingThreshold = 10, State = ResidualZoneState.Taken });
         lp.PruneEventHistoryLocked(now);
         Check(lp.residualZones.Count == 0, "Prune expires each fade tier and caps exceptional zones by original age");
+
+        foreach (bool isAsk in new[] { false, true })
+        {
+            double direction = isAsk ? -1 : 1;
+            lp = InteractionFixture(now, isAsk);
+            lp.ProcessInteractionTradeLocked(now, 100 + direction, 5, 0, false);
+            var interaction = lp.interactions[0];
+            Check(lp.logs.Contains("INTERACTION_START") && interaction.LastSize == 30,
+                "Approach starts with the currently visible size");
+            Check(!lp.logs.Contains("INTERACTION_CROSS"), "Starting beyond a level must not invent a crossing");
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(10), 100, 7, isAsk ? 1 : -1, false);
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(20), 100, 7, isAsk ? 1 : -1, false);
+            Check(interaction.Tests == 1 && (isAsk ? interaction.BuyVolume : interaction.SellVolume) == 14,
+                "Continuous contact is one test; genuine identical prints both count");
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(30), 100, 3, 0, false);
+            Check(interaction.NeutralVolume == 3, "Unclassified executions remain explicitly separate");
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(40), 100 - direction * 0.25, 1, 0, false);
+            Check(lp.logs.Contains("INTERACTION_CROSS"), "Crossing through either side must be symmetric");
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(50), 100 + direction * 3, 1, 0, false);
+            Check(lp.logs.Contains("INTERACTION_LEAVE") && lp.logs.Contains("INTERACTION_RECROSS"),
+                "Departure and recross are recorded independently");
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(100), 100 + direction, 1, 0, false);
+            Check(lp.logs.Contains("INTERACTION_RETURN") && lp.interactions.Count == 1,
+                "Brief departure and return retain the same approach episode");
+            Check(lp.logs.Count(k => k == "INTERACTION_SAMPLE") == 1,
+                "Samples are throttled without suppressing contact and crossing events");
+
+            var rows = isAsk ? lp.askRows : lp.bidRows;
+            rows[0].Size = 10; lp.UpdateInteractionDepthLocked(now.AddMilliseconds(110));
+            rows[0].Size = 25; lp.UpdateInteractionDepthLocked(now.AddMilliseconds(120));
+            Check(interaction.RemovedSize == 20 && interaction.AddedSize == 15 && interaction.Refills == 1,
+                "All observed depth decreases and subsequent increases are accumulated");
+            rows.Clear(); lp.UpdateInteractionDepthLocked(now.AddMilliseconds(130));
+            Check(!interaction.LastSize.HasValue && interaction.RemovedSize == 20,
+                "A level outside visible depth is unknown, not zero or a withdrawal");
+            rows.Add(new DepthRow { Price = 100, Size = 50 });
+            lp.UpdateInteractionDepthLocked(now.AddMilliseconds(140));
+            Check(interaction.AddedSize == 15 && interaction.Refills == 1,
+                "Returning visibility must not manufacture replenishment");
+
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 100 + direction * 3, 1, 0, false);
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(4), 100 + direction * 3, 1, 0, false);
+            Check(!interaction.Observing && lp.logs.Contains("INTERACTION_END"),
+                "Three seconds away ends observation but not price outcome tracking");
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(5), 100, 1, 0, false);
+            Check(lp.interactions.Count == 2 && lp.interactionWatches[isAsk ? "A:100" : "B:100"].Visits == 2,
+                "A subsequent approach gets its own ID and visit number");
+        }
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        var first = lp.interactions[0];
+        for (int seconds = 5; seconds <= 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), seconds == 30 ? 102 : 100, 1, 0, false);
+        Check(!lp.logs.Contains("INTERACTION_OUTCOME"),
+            "Outcome emission is deferred until feed time advances past the cutoff");
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(31), 110, 1, 0, false);
+        int outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(outcomeIndex >= 0 && lp.details[outcomeIndex].Contains("horizon_seconds=30")
+            && lp.details[outcomeIndex].Contains("mfe_ticks=8.0") && lp.logTimes[outcomeIndex] == now.AddSeconds(30),
+            "Exact-boundary print is included in its horizon");
+        Check(!lp.details[outcomeIndex].Contains("mfe_ticks=40.0"),
+            "Later price progress cannot alter an earlier horizon");
+        Check(lp.logs.Count(k => k == "INTERACTION_BARRIER") == 3,
+            "Each favorable 8/16/32 tick barrier is emitted once");
+        for (int seconds = 36; seconds < 3600; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 110, 1, 0, false);
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(3600), 110, 1, 0, false);
+        Check(lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 3, "The hourly horizon waits for later feed time");
+        lp.UpdateInteractionClockLocked(now.AddSeconds(3601));
+        Check(lp.interactions.Count == 0 && lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 4,
+            "All four horizons finish once, including the hourly observation");
+        Check(first.BuyVolume == 0 && !first.Observing, "Flow recording ends independently of hourly price tracking");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 5; seconds < 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(31), 110, 1, 0, false);
+        outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(lp.details[outcomeIndex].Contains("mfe_ticks=0.0")
+            && lp.details[outcomeIndex].Contains("observed_price=100 "),
+            "First print after a horizon must not leak into its outcome");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 5; seconds < 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(29));
+        lp.bidRows[0].Size = 50;
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(30.1));
+        outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(lp.details[outcomeIndex].Contains("displayed_added=0 ")
+            && lp.interactions[0].AddedSize == 20,
+            "Post-cutoff depth changes must not leak into earlier horizon features");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 5; seconds < 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(29));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(30), 100, 1, 0, false);
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(30), 102, 1, 0, false);
+        lp.bidRows[0].Size = 45;
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(30));
+        Check(!lp.logs.Contains("INTERACTION_OUTCOME"), "Callbacks sharing the cutoff time do not finalize it");
+        lp.UpdateInteractionClockLocked(now.AddSeconds(30.5));
+        outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 1 && lp.logTimes[outcomeIndex] == now.AddSeconds(30)
+            && lp.details[outcomeIndex].Contains("mfe_ticks=8.0") && lp.details[outcomeIndex].Contains("displayed_added=15 "),
+            "Every trade and depth callback at the cutoff is included once time advances");
+
+        foreach (bool viaDepth in new[] { false, true })
+        {
+            lp = InteractionFixture(now, false);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            var departed = lp.interactions[0];
+            lp.UpdateInteractionDepthLocked(now.AddSeconds(0.5));
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 103, 1, 0, false);
+            lp.bidRows[0].Size = 20;
+            lp.UpdateInteractionDepthLocked(now.AddSeconds(2.5));
+            Check(departed.Observing && departed.RemovedSize == 10, "Depth is observed within the departure window");
+            lp.bidRows[0].Size = 5;
+            if (viaDepth) lp.UpdateInteractionDepthLocked(now.AddSeconds(4));
+            else lp.UpdateInteractionClockLocked(now.AddSeconds(4));
+            Check(!departed.Observing && departed.RemovedSize == 10
+                && lp.details.Any(d => d.Contains("reason=departed")),
+                "Departures expire on " + (viaDepth ? "depth" : "clock") + " updates before consuming more flow");
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(5), 100, 4, 0, false);
+            Check(!lp.logs.Contains("INTERACTION_RETURN") && departed.NeutralVolume == 1
+                && lp.interactionWatches["B:100"].Visits == 2 && lp.interactions.Count == 2,
+                "Returning after an expired departure is a new visit");
+        }
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        var away = lp.interactions[0];
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(1));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 103, 1, 0, false);
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(2.5));
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(4.5));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(5), 100, 4, 0, false);
+        Check(!away.Observing && away.NeutralVolume == 1 && !lp.logs.Contains("INTERACTION_RETURN")
+            && lp.interactionWatches["B:100"].Visits == 2,
+            "A return trade after three seconds away cannot resume the old interaction");
+
+        foreach (string issue in new[] { "quotes", "depth", "gap", "reset", "rewind", "close", "termination", "invalidated" })
+        {
+            lp = InteractionFixture(now, false);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            if (issue == "quotes") lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 100, 1, 0, true);
+            if (issue == "depth") { lp.depthAgeSeconds = 3; lp.UpdateInteractionClockLocked(now.AddSeconds(1)); }
+            if (issue == "gap") lp.UpdateInteractionClockLocked(now.AddSeconds(11));
+            if (issue == "reset") lp.ResetBookLocked();
+            if (issue == "rewind") { lp.lastClockTime = now; lp.AdvanceClockLocked(now.AddSeconds(-3)); }
+            if (issue == "close") { lp.phase = SessionPhase.PostClose; lp.UpdateInteractionClockLocked(now); }
+            if (issue == "termination") { lp.State = State.Terminated; lp.InterruptInteractionsForTerminationLocked(now); }
+            if (issue == "invalidated")
+            {
+                lp.lastBid = 104; lp.lastAsk = 104.25; lp.lastTradePrice = 104;
+                lp.bidRows[0].Price = 108; lp.bidRows[0].CrossedSince = now.AddSeconds(-2);
+                lp.Fresh(now); lp.SanitizeDepthLocked(now);
+            }
+            Check(lp.interactions.Count == 0 && lp.logs.Contains("INTERACTION_INTERRUPTED")
+                && !lp.logs.Contains("INTERACTION_OUTCOME"), "Unreliable observations are censored: " + issue);
+        }
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.State = State.Terminated;
+        lp.LogSessionLocked(now, "SNAPSHOT", "", double.NaN, 0, "");
+        lp.InterruptInteractionsForTerminationLocked(now);
+        Check(!lp.logs.Contains("SNAPSHOT") && lp.logs.Contains("INTERACTION_INTERRUPTED")
+            && lp.details.Any(d => d.Contains("reason=indicator_terminated")) && lp.interactions.Count == 0,
+            "Termination queues only its interruption rows before pending interactions are cleared");
+        Check(!lp.SessionLogAcceptsLocked(), "Terminated logging closes after the interruption rows");
+        lp.State = State.Historical; lp.loggingTerminationInterruptions = true;
+        Check(!lp.SessionLogAcceptsLocked(), "Historical rows remain excluded");
+
+        lp = InteractionFixture(now, false);
+        lp.EnableSessionLog = false;
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.EnableSessionLog = true; lp.EnableInteractionLog = false;
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.EnableInteractionLog = true; lp.State = State.Historical;
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.State = State.Realtime; lp.sessionLogFailed = true;
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        Check(lp.logs.Count == 0 && lp.interactions.Count == 0,
+            "Disabled, historical and failed logging must not collect interaction state");
+
+        lp = InteractionFixture(now, false);
+        for (int i = 0; i < 512; i++)
+        {
+            var watch = new InteractionWatch { Id = "capacity" + i, Price = 100, Available = true };
+            lp.interactions.Add(new LevelInteraction { Watch = watch, Id = "old" + i,
+                Started = now, LastTrade = now, StartPrice = 100, LastPrice = 100, Observing = false });
+        }
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        Check(lp.interactions.Count == 512 && lp.details.Any(d => d.Contains("reason=capacity")),
+            "Capacity limits explicitly interrupt the oldest outcome instead of silently dropping it");
+
+        lp = InteractionFixture(now, false);
+        lp.interactionWatches.Clear();
+        lp.bidWalls[100] = new WallState { Price = 100, FirstSeen = now.AddSeconds(-3),
+            PeakSize = 30, QualifyingThreshold = 10, Active = true };
+        lp.askWalls[101] = new WallState { Price = 101, FirstSeen = now.AddSeconds(-2),
+            PeakSize = 30, QualifyingThreshold = 10, Active = true };
+        lp.residualZones.Add(new ResidualZone { Price = 100, Created = now.AddMinutes(-1),
+            PeakSize = 50, QualifyingThreshold = 12, State = ResidualZoneState.Gone });
+        lp.DiscoverInteractionLevelsLocked(now);
+        Check(lp.interactionWatches.Count == 1 && lp.interactionWatches["B:100"].Source == "WALL",
+            "Discovery respects minimum wall age and coalesces a wall and zone at the same side/price");
+        lp.bidWalls.Clear();
+        lp.DiscoverInteractionLevelsLocked(now);
+        Check(lp.interactionWatches["B:100"].Source == "GONE",
+            "Pulled historical areas remain eligible while they remain in retained zones");
+        lp.residualZones.Clear(); lp.DiscoverInteractionLevelsLocked(now);
+        Check(lp.interactionWatches.Count == 0, "Expired sources do not retain idle watches");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.UpdateInteractionDepthLocked(now);
+        lp.UpdateInteractionDepthLocked(now.AddSeconds(3));
+        Check(lp.interactions.Count == 0 && lp.details.Any(d => d.Contains("reason=depth_gap")),
+            "A returning depth update must not conceal the preceding feed gap");
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(4), 100, 1, 0, false);
+        Check(lp.interactions.Count == 1 && lp.interactionSequence == 2,
+            "Recovery starts an independent interaction rather than resuming censored data");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.BarsInProgress = 1;
+        lp.OnMarketData(new MarketDataEventArgs { Time = now, MarketDataType = MarketDataType.Last,
+            Price = 100, Bid = 99.75, Ask = 100, Volume = 25 });
+        Check(lp.interactions[0].BuyVolume == 0 && lp.interactionSequence == 1,
+            "Secondary callbacks cannot add interaction trades or new episodes");
         Console.WriteLine(assertions + " behavioral assertions passed.");
     }
 }

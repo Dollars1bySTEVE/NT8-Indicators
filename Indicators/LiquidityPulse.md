@@ -152,7 +152,8 @@ Every brush color is stored using NinjaTrader's brush serialization properties. 
 | Setting | Default | Description |
 |---|---:|---|
 | Enable Session Log | Off | Writes a CSV log while the indicator runs in realtime. Historical bars are never logged. |
-| Snapshot Seconds | 5 | Seconds between `SNAPSHOT` rows. 0 logs only events, walls, and zone changes. |
+| Snapshot Seconds | 5 | Seconds between `SNAPSHOT` rows. 0 disables periodic book snapshots, not events or interaction logging. |
+| Enable Interaction Log | On | Adds targeted level-interaction research rows when **Enable Session Log** is on. Does not add chart signals. Independent of Snapshot Seconds and display switches. |
 
 Files are written to `Documents\NinjaTrader 8\LiquidityPulse\logs\<instrument>_<yyyy-MM-dd>.csv`, one file per instrument per day, appended if the indicator is reloaded. Multiple charts on the same instrument share one writer and append to the same file. Times are feed times in NinjaTrader's local timezone. Writing happens on a background timer about once per second, so the chart is not slowed by disk access. If the file cannot be written, logging stops and a message is printed to the NinjaScript Output window.
 
@@ -171,6 +172,37 @@ Columns: `time, kind, side, price, size, last, bid, ask, book_imbalance_pct, ses
 Snapshots also include `trades_processed` and `secondary_ignored`, cumulative callback counts since this indicator instance started. Market data and depth are processed only on the primary series; secondary-series trade callbacks are counted but do not alter delta or detection. This avoids counting a print again for the two same-instrument bias series without suppressing genuine primary prints that share a timestamp, price and size. After updating, check the counters and large-trade rows in a fresh live log; historical CSVs are not corrected.
 
 The stale-depth check requires depth, valid uncrossed L1 quotes and a last trade, each updated within two seconds (independent of `FeedStaleSeconds`). Trade aggression is classified only from the trade callback's own bid/ask; missing quotes leave the print unclassified. A four-tick buffer and one-second persistence avoid discarding normal transient crossings. Invalidated rows have zero analytical size but stay at their original MBP position until the feed updates/removes them, preventing a cascade of shifted positional updates. They are excluded from walls, heatmap samples, baseline, imbalance and visible-depth/vacuum checks. This is a conservative consistency check, not a reconstruction of missing feed data.
+
+#### Level-interaction research logging
+
+This collection step measures what happens around liquidity areas before introducing any reaction score or predictive chart labels. Existing walls, zones, event detection, fading, and rendering are unchanged. Turn on **Enable Session Log** and leave **Enable Interaction Log** on; the extra rows append to the same daily CSV. Set Enable Interaction Log off to retain the previous logging volume.
+
+Eligible areas are active walls past Wall Minimum Age Seconds and all retained residual zones, including TAKEN and PULLED areas. Discovery uses the existing approximately 150 ms detection pass; an area that forms and disappears between passes may be missed. One watch per side/price prevents an overlapping wall and residual zone from creating duplicate observations; the active wall takes precedence. Nearby prices remain separate, correlated observations, not independent trading setups.
+
+The fixed initial research definitions are in instrument ticks, not NQ points:
+
+- An approach begins on a primary trade within **8 ticks** of the level, from either side. `START` records the source state, original qualifying threshold, peak, source first-seen time, session phase, and nearest reference level. It does not imply the wall was actually touched.
+- A `TEST` is entry into the **1-tick** contact band. Leaving that band and returning counts another contact, not necessarily another setup.
+- `CROSS` / `RECROSS` report trades moving beyond / back inside the original defense side. A single crossing is not confirmed acceptance or a successful break/retest. Starting beyond a level does not fabricate a prior crossing.
+- `LEAVE` occurs at least **12 ticks** away; `RETURN` is back within 8 ticks during the same observation. Observation ends after departure lasting at least **3 seconds** (enforced on the next trade, depth update, or clock tick, before further flow is recorded), or **120 seconds** from approach. A new approach requires the 12-tick/3-second rearm. Its visit number increments while that watch is retained.
+- While observing, exact-level primary executions accumulate as buy, sell, or unclassified volume. Every received primary depth update contributes observed displayed-size increases/decreases and reduction-then-increase counts. These are aggregate book changes, **not identified cancellations, individual orders, or proven iceberg replenishment**. Outside visible depth, size is `unknown`; returning visibility does not count as added size.
+- `SAMPLE` rows are limited to one per **250 ms per interaction**, only while within 12 ticks. Contact/crossing events and accumulated depth changes are not downsampled to that rate. This is not a full tick tape.
+
+| Kind (prefixed `INTERACTION_`) | Meaning |
+|---|---|
+| `START`, `TEST`, `CROSS`, `RECROSS`, `LEAVE`, `RETURN`, `SAMPLE` | Observed approach and interaction sequence. |
+| `END` | Local book/tape observation ended; price outcome tracking continues. |
+| `BARRIER` | First observed move of 8, 16, or 32 ticks in each direction from the **approach's initial trade price**. Row order preserves which barrier was observed first; price jumps may cross several thresholds in one print. |
+| `OUTCOME` | Observed price result at 30, 120, 600, and 3600 seconds from approach, not from first contact or a hypothetical entry. |
+| `INTERRUPTED` | Remaining observation/outcome windows are censored with a reason, not counted as clean successes or failures. Earlier completed windows remain valid observations. |
+
+Every interaction row has `schema=1`, a unique per-instance `run`, `level` and `interaction` ID, start and last-observed timestamps, initial/observed price, net movement, maximum favorable/adverse excursion (`mfe_ticks` / `mae_ticks`), contact count, exact-level classified/unclassified volume, visible size or `unknown`, displayed changes, and refill count. Defense direction is **up for BID / down for ASK**; "favorable" is only that research convention, not a trade recommendation. Changes to wall identity at the same price are not individual-order tracking. IDs change on reload, and separate chart instances remain distinguishable even though they share a CSV.
+
+Outcome rows use the horizon cutoff as their timestamp. All prints and depth updates exactly at the cutoff are included; the row is written once feed time advances past the cutoff (next trade, depth update, or about one-second clock tick), and that later data is excluded. Read `observed_price` and `last_observation` in detail for the actual last print used, rather than assuming the common CSV `last` column is the cutoff price. Excursions and barriers use received prints only, with no interpolation. Flow totals and visible-size fields freeze at END; `observing`, `book_observation` and `observation_end` identify their scope. Subsequent outcome rows continue updating price metrics only.
+
+Missing/invalid trade quotes, invalid stored quotes, depth older than two seconds, a depth-arrival gap over two seconds, a trade gap over ten seconds, depth quarantine, book resets, session close, a clock rewind over two seconds, and normal indicator termination interrupt pending records. These conservative checks may also censor quiet periods; they do not prove a disconnect. An abrupt process crash cannot write a termination row: any incomplete interaction/horizon in an uploaded file must also be treated as censored. At most **512** pending interactions are retained; capacity pressure explicitly interrupts the oldest. Completed horizon rows may be queued alongside newer events, so use IDs and timestamps rather than assuming chronological file order.
+
+For collection, keep one logging instance per instrument, retain the current trading settings, gather several RTH and ETH sessions, and close NinjaTrader normally before uploading the CSV. Extra rows increase file size. The thresholds are initial measurement definitions, not optimized parameters. Analysis must account for overlapping areas, source state, session phase, feed interruptions and transaction costs, and use later sessions for validation before presenting probabilities or chart assessments.
 
 ## How it works
 
@@ -197,9 +229,9 @@ The stale-depth check requires depth, valid uncrossed L1 quotes and a last trade
 - Pull/break, absorption, sweep, failed-run, held-run, and large-trade markers are heuristics, not proof of spoofing, iceberg orders, stop hunts, or future price direction.
 - A disappearing level that falls outside the currently visible depth window is not classified as a pull or break; it becomes a residual liquidity zone instead. Aggregated Level 2 cannot identify individual order cancellations or fills.
 - Failed sweeps require a level crossing, return across it, and enough opposite aggressive volume; held-run detection uses visible depth as a rough liquidity-vacuum proxy.
-- Event markers exist only in memory and disappear when the indicator is reloaded. The optional CSV records detected events but does not calculate trade outcomes.
+- Event markers exist only in memory and disappear when the indicator is reloaded. The optional CSV can record observed level interactions and price excursions, not actual trade fills, profitability, or a validated edge.
 - Session/day/week bar-derived references depend on the chart's data and trading-hours template.
-- Audio alerts and automated outcome tracking are not part of this release.
+- Audio alerts, predictive chart assessments, and automated trade execution are not part of this release.
 
 ## Troubleshooting
 
