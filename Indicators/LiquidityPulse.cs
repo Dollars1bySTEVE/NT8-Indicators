@@ -861,8 +861,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     lastTradeUpdate = now;
                     double price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
                     lastTradePrice = price;
-                    double bid = e.Bid > 0 ? e.Bid : lastBid;
-                    double ask = e.Ask > 0 ? e.Ask : lastAsk;
+                    // Classify only with the trade's own quote snapshot; cached quotes may be old.
+                    double bid = e.Bid;
+                    double ask = e.Ask;
                     bool invalidQuotes = !HasValidQuotes(bid, ask);
                     if (tradeQuotesInvalid != invalidQuotes)
                     {
@@ -1000,7 +1001,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 || now < lastBidUpdate || now < lastAskUpdate || now < lastTradeUpdate
                 || (now - lastBidUpdate).TotalSeconds > 2
                 || (now - lastAskUpdate).TotalSeconds > 2
-                || (now - lastTradeUpdate).TotalSeconds > 2 || IsBookStale())
+                || (now - lastTradeUpdate).TotalSeconds > 2 || IsBookStale() || IsDepthOlderThan(2))
             {
                 foreach (DepthRow row in askRows)
                     row.CrossedSince = DateTime.MinValue;
@@ -1186,15 +1187,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private bool IsBookStale()
         {
+            return IsDepthOlderThan(FeedStaleSeconds);
+        }
+
+        private bool IsDepthOlderThan(double seconds)
+        {
             if (State == State.Realtime && Connection.PlaybackConnection == null)
             {
                 long binary = Interlocked.Read(ref lastDepthArrivalUtcBinary);
                 return binary == 0
-                    || (DateTime.UtcNow - DateTime.FromBinary(binary)).TotalSeconds > FeedStaleSeconds;
+                    || (DateTime.UtcNow - DateTime.FromBinary(binary)).TotalSeconds > seconds;
             }
             DateTime lastDepth = GetLastDepthTime();
             return lastDepth == DateTime.MinValue
-                || (FeedNow() - lastDepth).TotalSeconds > FeedStaleSeconds;
+                || (FeedNow() - lastDepth).TotalSeconds > seconds;
         }
 
         private SessionPhase GetSessionPhase(DateTime eventTime)
@@ -1280,7 +1286,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 0; i < rows.Count; i++)
             {
                 DepthRow row = rows[i];
-                if (row.Size <= 0)
+                if (row.Invalidated)
                     continue;
                 WallState wall;
                 bool active = walls.TryGetValue(row.Price, out wall) && wall.Active;
@@ -1584,10 +1590,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             double edge = double.NaN;
             for (int i = 0; i < rows.Count; i++)
             {
-                if (rows[i].Size <= 0)
+                if (rows[i].Invalidated)
                 {
-                    if (rows[i].Invalidated
-                        && rows[i].Price.ApproxCompare(price) == 0)
+                    if (rows[i].Price.ApproxCompare(price) == 0)
                         return false;
                     continue;
                 }
@@ -1602,7 +1607,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // A consumed level may move onto the opposite side, but must stay inside its outer edge.
             List<DepthRow> opposite = isAsk ? bidRows : askRows;
             for (int i = opposite.Count - 1; i >= 0; i--)
-                if (opposite[i].Size > 0)
+                if (!opposite[i].Invalidated)
                     return isAsk ? price >= opposite[i].Price : price <= opposite[i].Price;
             return true;
         }

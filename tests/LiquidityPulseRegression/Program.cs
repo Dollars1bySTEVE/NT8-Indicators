@@ -71,6 +71,7 @@ class LiquidityPulse : IndicatorStub
     double sessionAggBuy, sessionAggSell;
     long processedTradeUpdates, ignoredSecondaryTradeUpdates;
     bool tradeQuotesInvalid, stale;
+    double depthAgeSeconds;
     DateTime lastBidUpdate, lastAskUpdate, lastTradeUpdate, clock;
     List<DepthRow> askRows = new List<DepthRow>(), bidRows = new List<DepthRow>();
     Dictionary<double, WallState> askWalls = new Dictionary<double, WallState>();
@@ -88,6 +89,7 @@ class LiquidityPulse : IndicatorStub
     DateTime FeedNow() { return clock; }
     DateTime AdvanceClockLocked(DateTime time) { return time; }
     bool IsBookStale() { return stale; }
+    bool IsDepthOlderThan(double seconds) { return depthAgeSeconds > seconds; }
     void RunDetectionLocked(DateTime time, bool force) { detectionCalls++; }
     void ThrottledForceRefresh() {}
     void RecordTradeThroughLocked(double price) { throughCalls++; }
@@ -125,6 +127,12 @@ class LiquidityPulse : IndicatorStub
         print.Bid = 100; print.Ask = 100.25;
         lp.OnMarketData(print);
         Check(lp.logs[1] == "QUOTE_RECOVERED", "Quote recovery must be logged");
+        lp.lastBid = 100; lp.lastAsk = 100.25;
+        print.Bid = 0; print.Ask = double.NaN;
+        lp.OnMarketData(print);
+        Check(lp.sessionAggBuy == 75 && lp.logs[2] == "QUOTE_INVALID",
+            "Missing trade quotes must not fall back to cached quotes");
+        print.Bid = 100; print.Ask = 100.25;
         Check(!HasValidQuotes(double.NaN, 101) && !HasValidQuotes(100, 100)
             && !HasValidQuotes(100, double.PositiveInfinity), "Reject invalid and locked quotes");
 
@@ -185,6 +193,17 @@ class LiquidityPulse : IndicatorStub
         lp.stale = true;
         lp.SanitizeDepthLocked(now.AddSeconds(1));
         Check(lp.askRows[0].CrossedSince == DateTime.MinValue, "Stale depth must suspend validation");
+        lp.stale = false; lp.depthAgeSeconds = 3;
+        lp.askRows[0].CrossedSince = now; lp.Fresh(now.AddSeconds(1));
+        lp.SanitizeDepthLocked(now.AddSeconds(1));
+        Check(lp.askRows[0].Size == 10 && lp.askRows[0].CrossedSince == DateTime.MinValue,
+            "Depth older than two seconds must not authorize invalidation");
+        lp.askRows.Add(new DepthRow { Price = 98, Size = 0 });
+        lp.bidRows.Add(new DepthRow { Price = 96, Size = 0 });
+        Check(lp.IsPriceInVisibleWindowLocked(lp.askRows, 98, true)
+            && lp.IsPriceInVisibleWindowLocked(lp.askRows, 96.5, true)
+            && !lp.IsPriceInVisibleWindowLocked(lp.askRows, 95.5, true),
+            "Ordinary zero-size rows remain visible depth levels and opposite edges");
 
         lp = new LiquidityPulse();
         var zone = new ResidualZone { Resolved = now, PeakSize = 29, QualifyingThreshold = 10 };
