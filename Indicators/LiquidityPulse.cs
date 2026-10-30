@@ -44,6 +44,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             public double Price;
             public long Size;
+            public DateTime CrossedSince;
+            public bool Invalidated;
         }
 
         private class WallState
@@ -54,6 +56,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime LastSeenAboveThreshold;
             public DateTime DisappearanceStarted;
             public long PeakSize;
+            public long QualifyingThreshold;
             public long LastSize;
             public long LastObservedSize;
             public double TradedBuy;
@@ -111,6 +114,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime Resolved;
             public DateTime LowSince;
             public long PeakSize;
+            public long QualifyingThreshold;
             public double Traded;
             public ResidualZoneState State;
         }
@@ -236,6 +240,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double lastAsk = double.NaN;
         private double sessionAggBuy;
         private double sessionAggSell;
+        private DateTime lastBidUpdate;
+        private DateTime lastAskUpdate;
+        private DateTime lastTradeUpdate;
+        private long processedTradeUpdates;
+        private long ignoredSecondaryTradeUpdates;
+        private bool tradeQuotesInvalid;
         private double lastTradePrice = double.NaN;
         private DateTime lastSweepBuyTime = DateTime.MinValue;
         private DateTime lastSweepSellTime = DateTime.MinValue;
@@ -452,6 +462,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ResidualZoneOpacity = 70;
                 TakenZoneFadeMinutes = 5;
                 ShowPulledZones = true;
+                PulledZoneFadeMinutes = 15;
+                LargePulledZoneFadeMinutes = 45;
                 EnableSessionLog = false;
                 SessionLogSnapshotSeconds = 5;
                 HeatmapHistorySeconds = 60;
@@ -767,7 +779,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnMarketDepth(MarketDepthEventArgs e)
         {
-            if (e == null)
+            if (e == null || BarsInProgress != 0)
                 return;
 
             SetEventTime(e.Time, true);
@@ -800,8 +812,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         if (position >= 0 && position < rows.Count)
                         {
+                            if (rows[position].Price.ApproxCompare(e.Price) != 0)
+                                rows[position].CrossedSince = DateTime.MinValue;
                             rows[position].Price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
                             rows[position].Size = Math.Max(0L, e.Volume);
+                            rows[position].Invalidated = false;
                         }
                     }
                     else if (e.Operation == Operation.Remove && position >= 0 && position < rows.Count)
@@ -818,23 +833,47 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (e == null)
                 return;
+            // Each added series subscribes to market data, including same-instrument series.
+            if (BarsInProgress != 0)
+            {
+                if (e.MarketDataType == MarketDataType.Last && e.Volume > 0)
+                    Interlocked.Increment(ref ignoredSecondaryTradeUpdates);
+                return;
+            }
 
             SetEventTime(e.Time, false);
             lock (bookLock)
             {
                 DateTime now = AdvanceClockLocked(FeedNow());
                 if (e.MarketDataType == MarketDataType.Bid)
+                {
                     lastBid = e.Price;
+                    lastBidUpdate = now;
+                }
                 else if (e.MarketDataType == MarketDataType.Ask)
+                {
                     lastAsk = e.Price;
+                    lastAskUpdate = now;
+                }
                 else if (e.MarketDataType == MarketDataType.Last && e.Volume > 0)
                 {
+                    processedTradeUpdates++;
+                    lastTradeUpdate = now;
                     double price = Instrument.MasterInstrument.RoundToTickSize(e.Price);
                     lastTradePrice = price;
-                    double bid = e.Bid > 0 ? e.Bid : lastBid;
-                    double ask = e.Ask > 0 ? e.Ask : lastAsk;
-                    bool aggressiveBuy = !double.IsNaN(ask) && price >= ask;
-                    bool aggressiveSell = !double.IsNaN(bid) && price <= bid;
+                    // Classify only with the trade's own quote snapshot; cached quotes may be old.
+                    double bid = e.Bid;
+                    double ask = e.Ask;
+                    bool invalidQuotes = !HasValidQuotes(bid, ask);
+                    if (tradeQuotesInvalid != invalidQuotes)
+                    {
+                        tradeQuotesInvalid = invalidQuotes;
+                        LogSessionLocked(now, invalidQuotes ? "QUOTE_INVALID" : "QUOTE_RECOVERED",
+                            string.Empty, price, 0, string.Format(CultureInfo.InvariantCulture,
+                                "trade quote classification bid={0} ask={1}", bid, ask));
+                    }
+                    bool aggressiveBuy = !invalidQuotes && price >= ask;
+                    bool aggressiveSell = !invalidQuotes && price <= bid;
                     if (aggressiveBuy)
                     {
                         sessionAggBuy += e.Volume;
@@ -950,6 +989,60 @@ namespace NinjaTrader.NinjaScript.Indicators
             pendingDetection = false;
         }
 
+        private static bool HasValidQuotes(double bid, double ask)
+        {
+            return !double.IsNaN(bid) && !double.IsInfinity(bid) && bid > 0
+                && !double.IsNaN(ask) && !double.IsInfinity(ask) && ask > bid;
+        }
+
+        private void SanitizeDepthLocked(DateTime now)
+        {
+            if (!HasValidQuotes(lastBid, lastAsk) || double.IsNaN(lastTradePrice)
+                || now < lastBidUpdate || now < lastAskUpdate || now < lastTradeUpdate
+                || (now - lastBidUpdate).TotalSeconds > 2
+                || (now - lastAskUpdate).TotalSeconds > 2
+                || (now - lastTradeUpdate).TotalSeconds > 2 || IsBookStale() || IsDepthOlderThan(2))
+            {
+                foreach (DepthRow row in askRows)
+                    row.CrossedSince = DateTime.MinValue;
+                foreach (DepthRow row in bidRows)
+                    row.CrossedSince = DateTime.MinValue;
+                return;
+            }
+            SanitizeDepthSideLocked(askRows, askWalls, retiredAskWalls, true, now);
+            SanitizeDepthSideLocked(bidRows, bidWalls, retiredBidWalls, false, now);
+        }
+
+        private void SanitizeDepthSideLocked(List<DepthRow> rows, Dictionary<double, WallState> walls,
+            List<WallState> retiredWalls, bool isAsk, DateTime now)
+        {
+            double tolerance = 4 * Instrument.MasterInstrument.TickSize;
+            double boundary = isAsk ? Math.Min(lastBid, lastTradePrice) - tolerance
+                : Math.Max(lastAsk, lastTradePrice) + tolerance;
+            foreach (DepthRow row in rows)
+            {
+                bool crossed = isAsk ? row.Price < boundary : row.Price > boundary;
+                if (!crossed || now < row.CrossedSince)
+                {
+                    row.CrossedSince = DateTime.MinValue;
+                    continue;
+                }
+                if (row.CrossedSince == DateTime.MinValue)
+                    row.CrossedSince = now;
+                if (row.Size <= 0 || (now - row.CrossedSince).TotalSeconds < 1)
+                    continue;
+
+                long size = row.Size;
+                // Preserve MBP positions: deleting the row would shift subsequent positional updates.
+                row.Size = 0;
+                row.Invalidated = true;
+                walls.Remove(row.Price);
+                retiredWalls.RemoveAll(delegate(WallState wall) { return wall.Price == row.Price; });
+                LogSessionLocked(now, "DEPTH_INVALIDATED", isAsk ? "ASK" : "BID", row.Price, size,
+                    "crossed quote and last by more than 4 ticks for 1s; position retained");
+            }
+        }
+
         private void RunDetectionLocked(DateTime now, bool force)
         {
             SessionPhase phase = GetSessionPhase(now);
@@ -990,6 +1083,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 lastDetectionTime = now;
                 pendingDetection = false;
+                SanitizeDepthLocked(now);
                 UpdateAdaptiveBaselineLocked(now);
                 bool bookFresh = !IsBookStale();
                 CaptureHeatmapSnapshotLocked(now, bookFresh);
@@ -1093,15 +1187,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private bool IsBookStale()
         {
+            return IsDepthOlderThan(FeedStaleSeconds);
+        }
+
+        private bool IsDepthOlderThan(double seconds)
+        {
             if (State == State.Realtime && Connection.PlaybackConnection == null)
             {
                 long binary = Interlocked.Read(ref lastDepthArrivalUtcBinary);
                 return binary == 0
-                    || (DateTime.UtcNow - DateTime.FromBinary(binary)).TotalSeconds > FeedStaleSeconds;
+                    || (DateTime.UtcNow - DateTime.FromBinary(binary)).TotalSeconds > seconds;
             }
             DateTime lastDepth = GetLastDepthTime();
             return lastDepth == DateTime.MinValue
-                || (FeedNow() - lastDepth).TotalSeconds > FeedStaleSeconds;
+                || (FeedNow() - lastDepth).TotalSeconds > seconds;
         }
 
         private SessionPhase GetSessionPhase(DateTime eventTime)
@@ -1140,11 +1239,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             int count = 0;
             for (int i = 0; i < askRows.Count; i++)
             {
+                if (askRows[i].Size <= 0)
+                    continue;
                 total += askRows[i].Size;
                 count++;
             }
             for (int i = 0; i < bidRows.Count; i++)
             {
+                if (bidRows[i].Size <= 0)
+                    continue;
                 total += bidRows[i].Size;
                 count++;
             }
@@ -1183,6 +1286,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 0; i < rows.Count; i++)
             {
                 DepthRow row = rows[i];
+                if (row.Invalidated)
+                    continue;
                 WallState wall;
                 bool active = walls.TryGetValue(row.Price, out wall) && wall.Active;
                 if (active && wall.LostQualification
@@ -1220,6 +1325,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Price = row.Price,
                         IsAsk = isAsk,
                         FirstSeen = now,
+                        QualifyingThreshold = threshold,
                         LastObservedSize = row.Size,
                         Active = true
                     };
@@ -1481,20 +1587,29 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private bool IsPriceInVisibleWindowLocked(List<DepthRow> rows, double price, bool isAsk)
         {
+            double edge = double.NaN;
             for (int i = 0; i < rows.Count; i++)
-                if (rows[i].Price.ApproxCompare(price) == 0)
+            {
+                if (rows[i].Invalidated)
+                {
+                    if (rows[i].Price.ApproxCompare(price) == 0)
+                        return false;
+                    continue;
+                }
+                edge = rows[i].Price;
+                if (edge.ApproxCompare(price) == 0)
                     return true;
-            if (rows.Count == 0)
+            }
+            if (double.IsNaN(edge))
                 return false;
-            double edge = rows[rows.Count - 1].Price;
             if (isAsk ? price > edge : price < edge)
                 return false;
             // A consumed level may move onto the opposite side, but must stay inside its outer edge.
             List<DepthRow> opposite = isAsk ? bidRows : askRows;
-            if (opposite.Count == 0)
-                return true;
-            double oppositeEdge = opposite[opposite.Count - 1].Price;
-            return isAsk ? price >= oppositeEdge : price <= oppositeEdge;
+            for (int i = opposite.Count - 1; i >= 0; i--)
+                if (!opposite[i].Invalidated)
+                    return isAsk ? price >= opposite[i].Price : price <= opposite[i].Price;
+            return true;
         }
 
         private int CountRecentPullsLocked(bool isAsk, DateTime now)
@@ -1559,10 +1674,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return false;
             double aheadSize = 0;
             double current = lastTradePrice;
+            int visibleCount = 0;
             for (int i = 0; i < rows.Count; i++)
+            {
+                if (rows[i].Size <= 0)
+                    continue;
+                visibleCount++;
                 if (candidate.IsUp ? rows[i].Price > current : rows[i].Price < current)
                     aheadSize += rows[i].Size;
-            return aheadSize < adaptiveBaseline * Math.Max(1, rows.Count) * 0.5;
+            }
+            return visibleCount > 0 && aheadSize < adaptiveBaseline * visibleCount * 0.5;
         }
 
         private void AddRecentTradeLocked(TradeSample sample)
@@ -1637,7 +1758,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 return (now - zone.Created).TotalMinutes > zoneRetention
                     || (zone.State == ResidualZoneState.Taken
-                        && (now - zone.Resolved).TotalMinutes >= TakenZoneFadeMinutes);
+                        && (now - zone.Resolved).TotalMinutes >= TakenZoneFadeMinutes)
+                    || (zone.State == ResidualZoneState.Gone && GetPulledZoneFadeFactor(zone, now) <= 0);
             });
             while (residualZones.Count > 150)
                 residualZones.RemoveAt(0);
@@ -1646,6 +1768,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         private static bool IsResidualZoneLive(ResidualZone zone)
         {
             return zone.State == ResidualZoneState.Untested || zone.State == ResidualZoneState.Held;
+        }
+
+        private double GetPulledZoneFadeFactor(ResidualZone zone, DateTime now)
+        {
+            double multiple = (double)zone.PeakSize / Math.Max(1L, zone.QualifyingThreshold);
+            if (multiple >= 10)
+                return 1;
+            double minutes = multiple >= 3 ? LargePulledZoneFadeMinutes : PulledZoneFadeMinutes;
+            return minutes <= 0 ? 0
+                : Math.Max(0, 1 - Math.Max(0, (now - zone.Resolved).TotalMinutes) / minutes);
         }
 
         private void RemovePulledZonesLocked(double price, bool isAsk)
@@ -1685,12 +1817,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Resolved = DateTime.MinValue,
                 LowSince = DateTime.MinValue,
                 PeakSize = wall.PeakSize,
+                QualifyingThreshold = wall.QualifyingThreshold,
                 State = ResidualZoneState.Untested
             });
             LogSessionLocked(now, "ZONE_NEW", wall.IsAsk ? "ASK" : "BID",
                 wall.Price, wall.PeakSize, string.Format(CultureInfo.InvariantCulture,
-                    "first_seen={0:HH:mm:ss} last_seen={1:HH:mm:ss} traded={2:F0}",
-                    wall.FirstSeen, wall.LastSeenAboveThreshold, traded));
+                    "first_seen={0:HH:mm:ss} last_seen={1:HH:mm:ss} traded={2:F0} qualifying_threshold={3}",
+                    wall.FirstSeen, wall.LastSeenAboveThreshold, traded, wall.QualifyingThreshold));
         }
 
         private void UpdateResidualZonesLocked(DateTime now)
@@ -1789,9 +1922,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void LogZoneLocked(DateTime now, ResidualZone zone, string kind, long currentSize)
         {
             LogSessionLocked(now, kind, zone.IsAsk ? "ASK" : "BID", zone.Price, zone.PeakSize,
-                string.Format(CultureInfo.InvariantCulture, "age={0:F0}s traded={1:F0}{2}",
+                string.Format(CultureInfo.InvariantCulture, "age={0:F0}s traded={1:F0}{2} qualifying_threshold={3}",
                     (now - zone.Created).TotalSeconds, zone.Traded,
-                    currentSize >= 0 ? " size_now=" + currentSize.ToString(CultureInfo.InvariantCulture) : " traded_through"));
+                    currentSize >= 0 ? " size_now=" + currentSize.ToString(CultureInfo.InvariantCulture) : " traded_through",
+                    zone.QualifyingThreshold));
         }
 
         private void LogSnapshotLocked(DateTime now, bool bookFresh)
@@ -1811,9 +1945,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (st == ResidualZoneState.Gone) pulled++;
             }
             string detail = string.Format(CultureInfo.InvariantCulture,
-                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5}",
+                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5} trades_processed={6} secondary_ignored={7}",
                 TopWallsText(askWalls), TopWallsText(bidWalls), untested, held, pulled,
-                bookFresh ? string.Empty : " BOOK_STALE");
+                bookFresh ? string.Empty : " BOOK_STALE", processedTradeUpdates,
+                Interlocked.Read(ref ignoredSecondaryTradeUpdates));
             LogSessionLocked(now, "SNAPSHOT", string.Empty, double.NaN, 0, detail);
         }
 
@@ -2277,6 +2412,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Created = z.Created,
                         Resolved = z.Resolved,
                         PeakSize = z.PeakSize,
+                        QualifyingThreshold = z.QualifyingThreshold,
                         State = z.State
                     });
                 }
@@ -2309,7 +2445,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                     opacity = baseOpacity * 0.35f * (float)(1.0 - Math.Max(0, elapsed) / fadeMinutes);
                 }
                 else if (pulled)
-                    opacity = baseOpacity * 0.6f;
+                {
+                    double factor = GetPulledZoneFadeFactor(zone, now);
+                    if (factor <= 0)
+                        continue;
+                    opacity = baseOpacity * 0.6f * (float)factor;
+                }
 
                 float x0 = Math.Max(left, chartControl.GetXByTime(zone.Created));
                 float x1 = taken ? Math.Min(right, chartControl.GetXByTime(zone.Resolved)) : right;
@@ -3067,6 +3208,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Show Pulled Zones", Order = 12, GroupName = "2. Visualization")]
         public bool ShowPulledZones { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 1440)]
+        [Display(Name = "Pulled Zone Fade Minutes", Order = 13, GroupName = "2. Visualization",
+            Description = "Fade ordinary pulled zones after the pull. 0 hides them immediately.")]
+        public int PulledZoneFadeMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 1440)]
+        [Display(Name = "Large Pulled Zone Fade Minutes", Order = 14, GroupName = "2. Visualization",
+            Description = "Fade pulled zones with peak size at least 3x their original wall threshold. At 10x, keep until maximum zone age.")]
+        public int LargePulledZoneFadeMinutes { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Show Event Markers", Order = 1, GroupName = "2. Event Detection")]

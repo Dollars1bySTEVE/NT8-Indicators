@@ -98,14 +98,18 @@ Event labels are anchored to their event time and price instead of collecting at
 | Residual Zone Max Minutes | 120 | Zones older than this (measured from when the wall first appeared) are removed. |
 | Residual Zone Opacity | 70% | Opacity of live zones; resolved zones draw at about a third of this. |
 | Taken Zone Fade Minutes | 5 | Taken zones fade to nothing over this many minutes, then are removed. 0 hides them immediately. |
-| Show Pulled Zones | On | Keeps zones whose liquidity vanished without trading (likely pulled or spoofed) as dotted `PULLED` lines until Residual Zone Max Minutes. |
+| Show Pulled Zones | On | Shows inferred withdrawals as dotted `PULLED` lines. Size-aware fading clears ordinary pulls sooner. |
+| Pulled Zone Fade Minutes | 15 | Ordinary pulled zones fade linearly from the pull time, then are removed. 0 hides them immediately. |
+| Large Pulled Zone Fade Minutes | 45 | Pulled zones with peak size at least 3 times their original qualifying threshold fade over this period. 0 hides this tier immediately. |
 
 A zone is created when a qualified wall, older than **Wall Minimum Age Seconds**, drops out of the visible depth window because price moved away, without being traded through and with less aggressive volume than its peak size. The line starts where the wall first appeared and is labeled with side, peak size, and age (for example `BID 14 6m00s`).
 
 - **Dashed:** last seen here; not yet revisited.
 - **Solid `HELD`:** price returned close enough for the level to be visible again, and at least half the peak size is still resting there.
 - **`TAKEN`:** price traded through the level, or it emptied after enough aggressive volume hit it. Taken zones fade out over **Taken Zone Fade Minutes**.
-- **Dotted `PULLED`:** the level came back into view but stayed below half its peak size for **Wall Grace Milliseconds** without enough volume traded there; the liquidity was likely pulled (or spoofed) while price was away. Pulled zones stay visible as possible areas of interest until they expire, since someone deliberately showed size there.
+- **Dotted `PULLED`:** the level came back into view but stayed below half its peak size for **Wall Grace Milliseconds** without enough volume traded there; this is an inferred withdrawal, not proof of spoofing. Ordinary pulls fade over 15 minutes by default, large pulls over 45 minutes. Exceptional pulls (peak size at least 10 times their original qualifying threshold) retain their opacity until maximum zone age.
+
+The qualifying threshold is saved when the wall first forms, so size is relative to the market conditions at that time, including adaptive RTH/ETH thresholds. It does not get reclassified against a later baseline. For example, a 505-contract peak against a 10-contract threshold is exceptional; a 12-contract peak against a 9-contract threshold is ordinary. The original threshold and peak determine the fade tier when the zone becomes PULLED. All tiers remain subject to **Residual Zone Max Minutes**, measured from the wall's first appearance, and the 150-zone cap. Larger size buys more display time, not greater predictive confidence.
 
 While price is away, NT8's aggregated top-of-book feed cannot see the level, so a dashed zone means "last seen", not "still resting". Zones are kept only in memory, do not backfill from history, and are capped at 150.
 
@@ -161,6 +165,12 @@ Columns: `time, kind, side, price, size, last, bid, ask, book_imbalance_pct, ses
 | `EVENT_*` | Every detected event, logged even when event markers are hidden. |
 | `SNAPSHOT` | Top three active walls per side as `price:size`, live zone counts, and `BOOK_STALE` when the book is stale. |
 | `BOOK_RESET` | The depth feed reset the book. |
+| `DEPTH_INVALIDATED` | A depth row remained more than four ticks beyond both the opposing quote and the last trade for one second. Its stale wall is discarded; its position is retained for subsequent feed updates. |
+| `QUOTE_INVALID` / `QUOTE_RECOVERED` | Trade quotes became missing, locked or crossed, or returned to a valid spread. Invalid quotes do not contribute classified buy/sell volume. |
+
+Snapshots also include `trades_processed` and `secondary_ignored`, cumulative callback counts since this indicator instance started. Market data and depth are processed only on the primary series; secondary-series trade callbacks are counted but do not alter delta or detection. This avoids counting a print again for the two same-instrument bias series without suppressing genuine primary prints that share a timestamp, price and size. After updating, check the counters and large-trade rows in a fresh live log; historical CSVs are not corrected.
+
+The stale-depth check requires depth, valid uncrossed L1 quotes and a last trade, each updated within two seconds (independent of `FeedStaleSeconds`). Trade aggression is classified only from the trade callback's own bid/ask; missing quotes leave the print unclassified. A four-tick buffer and one-second persistence avoid discarding normal transient crossings. Invalidated rows have zero analytical size but stay at their original MBP position until the feed updates/removes them, preventing a cascade of shifted positional updates. They are excluded from walls, heatmap samples, baseline, imbalance and visible-depth/vacuum checks. This is a conservative consistency check, not a reconstruction of missing feed data.
 
 ## How it works
 
@@ -187,9 +197,9 @@ Columns: `time, kind, side, price, size, last, bid, ask, book_imbalance_pct, ses
 - Pull/break, absorption, sweep, failed-run, held-run, and large-trade markers are heuristics, not proof of spoofing, iceberg orders, stop hunts, or future price direction.
 - A disappearing level that falls outside the currently visible depth window is not classified as a pull or break; it becomes a residual liquidity zone instead. Aggregated Level 2 cannot identify individual order cancellations or fills.
 - Failed sweeps require a level crossing, return across it, and enough opposite aggressive volume; held-run detection uses visible depth as a rough liquidity-vacuum proxy.
-- Event markers exist only in memory and disappear when the indicator is reloaded. Alerts and CSV/outcome tracking are not part of this release.
+- Event markers exist only in memory and disappear when the indicator is reloaded. The optional CSV records detected events but does not calculate trade outcomes.
 - Session/day/week bar-derived references depend on the chart's data and trading-hours template.
-- Audio alerts and CSV/outcome tracking are not part of this release.
+- Audio alerts and automated outcome tracking are not part of this release.
 
 ## Troubleshooting
 
@@ -215,6 +225,10 @@ Use the chart's intended exchange time zone and the **CME US Index Futures ETH**
 ### Compile errors
 
 Compile from NinjaScript Editor with **F5** and inspect the Errors tab. The generated NinjaScript region is intentionally omitted from the source file.
+
+### Developer regression checks
+
+With the .NET 10 SDK, run `dotnet run --project tests/LiquidityPulseRegression`. This uses the SDK's bundled Roslyn compiler to parse the full indicator and exercise its actual callback, depth-validation and zone-fading methods against small feed stubs. It does not replace compiling in NT8 or verifying callback behavior with a live/Playback log.
 
 ---
 
