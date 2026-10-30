@@ -1,0 +1,267 @@
+# LiquidityPulse — Level 2 Liquidity and Reference Levels for NinjaTrader 8
+
+**Version:** v0.2 — Event detection and live visualization
+
+**Type:** On-chart overlay indicator (SharpDX)
+**Related specification:** [Issue #196](https://github.com/Dollars1bySTEVE/NT8-Indicators/issues/196)
+
+---
+
+## Overview
+
+LiquidityPulse combines the standard NinjaTrader Level 2 book and trade feed with session/day/week reference levels. It displays persistent, large resting bid and ask liquidity, tracks aggressive trade volume at those levels, and marks heuristic pull, break, absorption, sweep, failed-sweep, held-run, and large-trade events.
+
+Event markers and the depth heatmap are live/Playback context, not predictions or trade recommendations. This release does not issue alerts or retain event history across indicator reloads.
+
+## Requirements
+
+- NinjaTrader 8 and a live or Playback connection supplying Level 2 market depth and trades.
+- A chart using **CME US Index Futures ETH** trading hours is recommended.
+- `OnMarketDepth` has no historical depth series; book walls, tape totals, and feed status begin when the indicator receives data.
+- Wall visibility reflects the provider's aggregated Market-By-Price book, usually the top ~10 levels. Order counts are not available.
+- This indicator is not a prediction or backtesting tool.
+
+## Installation
+
+1. Copy `LiquidityPulse.cs` to `Documents\NinjaTrader 8\bin\Custom\Indicators\`.
+2. Open **Control Center → New → NinjaScript Editor** and press **F5**.
+3. Add **LiquidityPulse** from the chart's Indicators list.
+4. Confirm the selected connection and instrument provide Level 2 data.
+
+`SharpEngineAllInOne.cs` remains unchanged and may be run alongside LiquidityPulse for comparison.
+
+## Settings
+
+### Liquidity walls
+
+| Setting | Default | Description |
+|---|---:|---|
+| Use Adaptive Threshold | On | Uses a rolling median of sampled average book size. |
+| Wall Multiplier | 3.0 | Multiplier applied to the adaptive median. |
+| Adaptive Window Minutes | 5 | Time covered by the rolling sample window. |
+| Minimum Lot Floor | 8 | Threshold during warmup and the minimum threshold. |
+| Maximum Walls Per Side | 5 | Largest visible active walls retained per side. |
+| Walls From Last Bar | On | Starts wall lines at the last bar and extends them right. |
+| Scale Walls By Size | On | Scales line width and opacity by size relative to threshold; brightness scaling retains a 40% minimum before the configured opacity. |
+| Minimum Wall Label Spacing | 12 px | Vertical separation used to avoid label overlap. |
+| Wall Minimum Age Seconds | 3 | Suppresses short-lived walls. |
+| Wall Grace Milliseconds | 1000 | Event-time grace (0–10000 ms) before a wall below its retention threshold becomes inactive. |
+| Feed Stale Seconds | 5 | Marks the HUD stale and greys the walls after this long without depth. |
+| Show Walls / Show Wall Labels | On / On | Independent wall and label display switches. |
+| Ask / Bid / Stale Wall Color | Crimson / Lime Green / Gray | Independently serialized colors. |
+| Ask / Bid / Stale Wall Opacity | 90 / 90 / 65% | Independent alpha settings. |
+| Wall Minimum / Maximum Width | 1 / 6 px | Width range for size-scaled lines. |
+| Wall Dash Style / Label Font Size | Solid / 10 | Line style and label type size. |
+
+The adaptive baseline samples the average size of available ask and bid rows every two event-time seconds. It keeps the median for the selected window and uses `max(Minimum Lot Floor, ceil(median × Wall Multiplier))`. The baseline and samples reset when the phase changes. Sampling continues when Use Adaptive Threshold is off (walls then use the fixed floor) so held-run detection keeps its liquidity-vacuum baseline.
+
+### Event detection
+
+| Setting | Default | Description |
+|---|---:|---|
+| Show Event Markers | On | Master switch for all event annotations. |
+| Show Pull / Filled / Absorption / Sweep / Failed Sweep / Held Run / Large Trade | On | Independent event visibility switches. |
+| Event Marker Font Size / Opacity | 9 / 90% | Marker label styling. |
+| Event Marker Retention Minutes | 60 | Maximum age retained in the current indicator instance. |
+| Wall Fade Duration Seconds | 10 | Pulled walls fade as dashed gray lines; broken walls fade as solid lines. |
+| Event Grace Milliseconds | 300 | Initial event grace; final pull/break classification waits for the greater of this value and Wall Grace. |
+| Pull Trade Ratio | 0.3 | A disappearance with traded volume below this fraction of peak wall size is labeled a likely pull. |
+| Absorption Trade Multiple | 1.5 | Requires aggressive volume above this multiple of peak wall size, a detected refill, and price holding at the wall. |
+| Sweep Window / Minimum Ticks / Minimum Volume | 3 sec / 3 / 20 | Same-side aggressive trade burst needed for a sweep marker. |
+| Failed Run Window Seconds | 10 | Time to return across a crossed key level with sufficient opposite-side aggressive volume. |
+| Large Trade Minimum Contracts | 20 | Minimum print size; the effective cutoff is also at least 2× the current wall threshold. |
+| Key Level Proximity Ticks / Event Cooldown Seconds | 2 / 5 | Level tagging distance and minimum interval between distinct directional sweep episodes. |
+| Event Colors | Per-event | Independently configurable pull, break, absorption, sweep, failed-sweep, held-run, and large-trade colors. |
+
+The book-imbalance readout in the HUD is a smoothed bid-versus-ask size comparison. It is context only and does not trigger a directional signal.
+
+### Heatmap and event placement
+
+| Setting | Default | Description |
+|---|---:|---|
+| Show Heatmap | On | Displays recent bid/ask depth in a narrow strip at the chart's right edge. |
+| Heatmap History Seconds | 60 | Visible rolling window, configurable from 10 to 60 seconds. |
+| Heatmap Width | 160 px | Width of the strip, configurable from 40 to 400 px. |
+| Heatmap Opacity | 70% | Maximum cell opacity. Brightness is relative to the largest displayed size in the retained window, so thin books still show contrast; older samples fade. |
+| Heatmap Bid / Ask Color | Lime Green / Crimson | Independently configurable depth colors. |
+
+Depth is sampled at most every 250 ms, retaining at most 240 snapshots and the top 10 rows per side. The heatmap begins only after live/Playback depth arrives and does not backfill historical depth. It uses aggregated displayed size, not individual order identity. The strip occupies chart space at the right edge; a chart right margin can help keep it clear of the latest bars.
+
+Event labels are anchored to their event time and price instead of collecting at the latest bar. Labels outside the visible chart range are skipped, nearby labels are repositioned to avoid overlap (wall and zone labels that cannot find a free slot within three rows of their line are skipped rather than stacked at the chart edge), and each label has a dark backing so it stays readable over volumetric bars.
+
+### Residual liquidity zones
+
+| Setting | Default | Description |
+|---|---:|---|
+| Show Residual Liquidity Zones | On | Keeps walls that price left behind as lines extending to the right. |
+| Show Taken Zones | On | Shows taken zones as faint lines that stop where they were taken, then fade out. |
+| Residual Zone Max Minutes | 120 | Zones older than this (measured from when the wall first appeared) are removed. |
+| Residual Zone Opacity | 70% | Opacity of live zones; resolved zones draw at about a third of this. |
+| Taken Zone Fade Minutes | 5 | Taken zones fade to nothing over this many minutes, then are removed. 0 hides them immediately. |
+| Show Pulled Zones | On | Shows inferred withdrawals as dotted `PULLED` lines. Size-aware fading clears ordinary pulls sooner. |
+| Pulled Zone Fade Minutes | 15 | Ordinary pulled zones fade linearly from the pull time, then are removed. 0 hides them immediately. |
+| Large Pulled Zone Fade Minutes | 45 | Pulled zones with peak size at least 3 times their original qualifying threshold fade over this period. 0 hides this tier immediately. |
+
+A zone is created when a qualified wall, older than **Wall Minimum Age Seconds**, drops out of the visible depth window because price moved away, without being traded through and with less aggressive volume than its peak size. The line starts where the wall first appeared and is labeled with side, peak size, and age (for example `BID 14 6m00s`).
+
+- **Dashed:** last seen here; not yet revisited.
+- **Solid `HELD`:** price returned close enough for the level to be visible again, and at least half the peak size is still resting there.
+- **`TAKEN`:** price traded through the level, or it emptied after enough aggressive volume hit it. Taken zones fade out over **Taken Zone Fade Minutes**.
+- **Dotted `PULLED`:** the level came back into view but stayed below half its peak size for **Wall Grace Milliseconds** without enough volume traded there; this is an inferred withdrawal, not proof of spoofing. Ordinary pulls fade over 15 minutes by default, large pulls over 45 minutes. Exceptional pulls (peak size at least 10 times their original qualifying threshold) retain their opacity until maximum zone age.
+
+The qualifying threshold is saved when the wall first forms, so size is relative to the market conditions at that time, including adaptive RTH/ETH thresholds. It does not get reclassified against a later baseline. For example, a 505-contract peak against a 10-contract threshold is exceptional; a 12-contract peak against a 9-contract threshold is ordinary. The original threshold and peak determine the fade tier when the zone becomes PULLED. All tiers remain subject to **Residual Zone Max Minutes**, measured from the wall's first appearance, and the 150-zone cap. Larger size buys more display time, not greater predictive confidence.
+
+While price is away, NT8's aggregated top-of-book feed cannot see the level, so a dashed zone means "last seen", not "still resting". Zones are kept only in memory, do not backfill from history, and are capped at 150.
+
+### HUD and bias shading
+
+| Setting | Default | Description |
+|---|---:|---|
+| Show HUD | On | Displays session phase, baseline, wall threshold, aggressive delta, and feed health. |
+| HUD Corner | Bottom Left | Selects one of the four chart corners. |
+| HUD Font Size | 12 | HUD text size. |
+| HUD Text / Background Color | White Smoke / Black | Independently serialized colors. |
+| HUD Text / Background Opacity | 100 / 65% | Independent opacity controls. |
+| Enable Bias Shading | Off | Enables optional Swing-based context shading. |
+| Bull / Bear Shade Color | Forest Green / Crimson | Independently serialized colors. |
+| Shade Opacity | 5% | Opacity for both bias shades. |
+| Shading Mode | Full Height | Full panel, top band, or bottom band. |
+| HTF Bars Period / Value | Minute / 60 | Higher timeframe used for Swing context. |
+| Confirm Bars Period / Value | Tick / 80 | Faster confirming Swing series. |
+| Swing Strength | 3 | Swing look-back/look-forward strength. |
+
+If the HTF swing is not formed yet, the shading uses the confirmation series alone. This avoids treating a zero-valued HTF swing as a real price.
+
+### Reference levels and profiles
+
+Day, week, previous-session, and current-session levels preserve individual show switches and colors for Open, High, and Low. Session and weekly Volume Profile retain separate POC, VAH, VAL, and VWAP switches and colors.
+
+| Setting | Default | Description |
+|---|---:|---|
+| Reference Line Width / Style | 1 / Dash | Appearance of day/week/session OHL lines. |
+| Reference Opacity | 100% | Shared opacity for reference levels. |
+| Show Level Labels / Label Font Size | On / 10 | Reference/profile labels and text size. |
+| Value Area Percent | 70 | Profile value-area coverage. |
+| Profile Line Width / Style | 2 / Solid | Appearance of profile and VWAP lines. |
+| Profile Opacity | 100% | Shared opacity for profile and VWAP lines. |
+
+Every brush color is stored using NinjaTrader's brush serialization properties. All distances and sizes used by future event logic are in instrument ticks.
+
+### Session log
+
+| Setting | Default | Description |
+|---|---:|---|
+| Enable Session Log | Off | Writes a CSV log while the indicator runs in realtime. Historical bars are never logged. |
+| Snapshot Seconds | 5 | Seconds between `SNAPSHOT` rows. 0 disables periodic book snapshots, not events or interaction logging. |
+| Enable Interaction Log | On | Adds targeted level-interaction research rows when **Enable Session Log** is on. Does not add chart signals. Independent of Snapshot Seconds and display switches. |
+
+Files are written to `Documents\NinjaTrader 8\LiquidityPulse\logs\<instrument>_<yyyy-MM-dd>.csv`, one file per instrument per day, appended if the indicator is reloaded. Multiple charts on the same instrument share one writer and append to the same file. Times are feed times in NinjaTrader's local timezone. Writing happens on a background timer about once per second, so the chart is not slowed by disk access. If the file cannot be written, logging stops and a message is printed to the NinjaScript Output window.
+
+Columns: `time, kind, side, price, size, last, bid, ask, book_imbalance_pct, session_delta, baseline, wall_threshold, detail`.
+
+| Kind | Meaning |
+|---|---|
+| `WALL_NEW` | A new wall qualified (size = current size). |
+| `ZONE_NEW` / `ZONE_HELD` / `ZONE_TAKEN` / `ZONE_PULLED` | Residual zone created or changed state (size = peak size; detail has age, traded volume, size now). |
+| `EVENT_*` | Every detected event, logged even when event markers are hidden. |
+| `SNAPSHOT` | Top three active walls per side as `price:size`, live zone counts, and `BOOK_STALE` when the book is stale. |
+| `BOOK_RESET` | The depth feed reset the book. |
+| `DEPTH_INVALIDATED` | A depth row remained more than four ticks beyond both the opposing quote and the last trade for one second. Its stale wall is discarded; its position is retained for subsequent feed updates. |
+| `QUOTE_INVALID` / `QUOTE_RECOVERED` | Trade quotes became missing, locked or crossed, or returned to a valid spread. Invalid quotes do not contribute classified buy/sell volume. |
+
+Snapshots also include `trades_processed` and `secondary_ignored`, cumulative callback counts since this indicator instance started. Market data and depth are processed only on the primary series; secondary-series trade callbacks are counted but do not alter delta or detection. This avoids counting a print again for the two same-instrument bias series without suppressing genuine primary prints that share a timestamp, price and size. After updating, check the counters and large-trade rows in a fresh live log; historical CSVs are not corrected.
+
+The stale-depth check requires depth, valid uncrossed L1 quotes and a last trade, each updated within two seconds (independent of `FeedStaleSeconds`). Trade aggression is classified only from the trade callback's own bid/ask; missing quotes leave the print unclassified. A four-tick buffer and one-second persistence avoid discarding normal transient crossings. Invalidated rows have zero analytical size but stay at their original MBP position until the feed updates/removes them, preventing a cascade of shifted positional updates. They are excluded from walls, heatmap samples, baseline, imbalance and visible-depth/vacuum checks. This is a conservative consistency check, not a reconstruction of missing feed data.
+
+#### Level-interaction research logging
+
+This collection step measures what happens around liquidity areas before introducing any reaction score or predictive chart labels. Existing walls, zones, event detection, fading, and rendering are unchanged. Turn on **Enable Session Log** and leave **Enable Interaction Log** on; the extra rows append to the same daily CSV. Set Enable Interaction Log off to retain the previous logging volume.
+
+Eligible areas are active walls past Wall Minimum Age Seconds and all retained residual zones, including TAKEN and PULLED areas. Discovery uses the existing approximately 150 ms detection pass; an area that forms and disappears between passes may be missed. One watch per side/price prevents an overlapping wall and residual zone from creating duplicate observations; the active wall takes precedence. Nearby prices remain separate, correlated observations, not independent trading setups.
+
+The fixed initial research definitions are in instrument ticks, not NQ points:
+
+- An approach begins on a primary trade within **8 ticks** of the level, from either side. `START` records the source state, original qualifying threshold, peak, source first-seen time, session phase, and nearest reference level. It does not imply the wall was actually touched.
+- A `TEST` is entry into the **1-tick** contact band. Leaving that band and returning counts another contact, not necessarily another setup.
+- `CROSS` / `RECROSS` report trades moving beyond / back inside the original defense side. A single crossing is not confirmed acceptance or a successful break/retest. Starting beyond a level does not fabricate a prior crossing.
+- `LEAVE` occurs at least **12 ticks** away; `RETURN` is back within 8 ticks during the same observation. Observation ends after departure lasting at least **3 seconds** (enforced on the next trade, depth update, or clock tick, before further flow is recorded), or **120 seconds** from approach. A new approach requires the 12-tick/3-second rearm. Its visit number increments while that watch is retained.
+- While observing, exact-level primary executions accumulate as buy, sell, or unclassified volume. Every received primary depth update contributes observed displayed-size increases/decreases and reduction-then-increase counts. These are aggregate book changes, **not identified cancellations, individual orders, or proven iceberg replenishment**. Outside visible depth, size is `unknown`; returning visibility does not count as added size.
+- `SAMPLE` rows are limited to one per **250 ms per interaction**, only while within 12 ticks. Contact/crossing events and accumulated depth changes are not downsampled to that rate. This is not a full tick tape.
+
+| Kind (prefixed `INTERACTION_`) | Meaning |
+|---|---|
+| `START`, `TEST`, `CROSS`, `RECROSS`, `LEAVE`, `RETURN`, `SAMPLE` | Observed approach and interaction sequence. |
+| `END` | Local book/tape observation ended; price outcome tracking continues. |
+| `BARRIER` | First observed move of 8, 16, or 32 ticks in each direction from the **approach's initial trade price**. Row order preserves which barrier was observed first; price jumps may cross several thresholds in one print. |
+| `OUTCOME` | Observed price result at 30, 120, 600, and 3600 seconds from approach, not from first contact or a hypothetical entry. |
+| `INTERRUPTED` | Remaining observation/outcome windows are censored with a reason, not counted as clean successes or failures. Earlier completed windows remain valid observations. |
+
+Every interaction row has `schema=1`, a unique per-instance `run`, `level` and `interaction` ID, start and last-observed timestamps, initial/observed price, net movement, maximum favorable/adverse excursion (`mfe_ticks` / `mae_ticks`), contact count, exact-level classified/unclassified volume, visible size or `unknown`, displayed changes, and refill count. Defense direction is **up for BID / down for ASK**; "favorable" is only that research convention, not a trade recommendation. Changes to wall identity at the same price are not individual-order tracking. IDs change on reload, and separate chart instances remain distinguishable even though they share a CSV.
+
+Outcome rows use the horizon cutoff as their timestamp. All prints and depth updates exactly at the cutoff are included; the row is written once feed time advances past the cutoff (next trade, depth update, or about one-second clock tick), and that later data is excluded. Read `observed_price` and `last_observation` in detail for the actual last print used, rather than assuming the common CSV `last` column is the cutoff price. Excursions and barriers use received prints only, with no interpolation. Flow totals and visible-size fields freeze at END; `observing`, `book_observation` and `observation_end` identify their scope. Subsequent outcome rows continue updating price metrics only.
+
+Missing/invalid trade quotes, invalid stored quotes, depth older than two seconds, a depth-arrival gap over two seconds, a trade gap over ten seconds, depth quarantine, book resets, session close, a clock rewind over two seconds, and normal indicator termination interrupt pending records. These conservative checks may also censor quiet periods; they do not prove a disconnect. An abrupt process crash cannot write a termination row: any incomplete interaction/horizon in an uploaded file must also be treated as censored. At most **512** pending interactions are retained; capacity pressure explicitly interrupts the oldest. Completed horizon rows may be queued alongside newer events, so use IDs and timestamps rather than assuming chronological file order.
+
+For collection, keep one logging instance per instrument, retain the current trading settings, gather several RTH and ETH sessions, and close NinjaTrader normally before uploading the CSV. Extra rows increase file size. The thresholds are initial measurement definitions, not optimized parameters. Analysis must account for overlapping areas, source state, session phase, feed interruptions and transaction costs, and use later sessions for validation before presenting probabilities or chart assessments.
+
+## How it works
+
+1. **Book:** market-depth Add/Update/Remove operations modify positional ask and bid row lists using `e.Position`; reset events clear the lists. Book updates are performed under a single lock.
+2. **Tape:** bid and ask quotes are cached. Last trades at or above the ask add aggressive-buy volume; trades at or below the bid add aggressive-sell volume. Trades between the quotes are unclassified. Classified volume is credited to active walls at the matching price.
+3. **Wall lifecycle:** each threshold-qualified price tracks first-seen time, last-qualified time, peak/current size, trade volume, refills, and active state. Existing walls stay qualified at 80% of the current threshold (hysteresis). Below that level or absent from the book, they remain active until **Wall Grace Milliseconds** elapses since last qualification. Returning within grace preserves age, peak size, and traded volumes. Once a detection pass has observed the loss of qualification, a return after grace has elapsed ends the old lifecycle and must meet the full entry threshold again; walls that stay continuously qualified during quiet periods are never reset. Only active walls past their minimum age are rendered.
+4. **Clock and phases:** depth/trade event timestamps drive session phase, wall age, and sampling. Before the first event, the local clock is used only as a fallback. Live realtime feed health instead uses UTC wall-clock time since the last depth arrival, so a complete feed drop still becomes stale; Playback retains event-time feed health, including when paused. Eastern time is resolved with the DST-aware `Eastern Standard Time` zone. Phases are ETH Overnight (18:00–03:00), ETH London (03:00–09:30), RTH Open (09:30–10:00), RTH (10:00–16:00), ETH Post-RTH (16:00–17:00, HUD `ETH-POST-RTH`), and Post-Close (17:00–18:00 CME maintenance). The chart's `SessionIterator` supplies its session end when available, including early closes; the book and wall lifecycles are reset once whenever the clock crosses the 17:00 close or an earlier actual session end, even if no event arrived inside the closed interval. Walls stay suppressed until 18:00, but depth received during maintenance is retained so positional updates at reopening still apply. In live realtime, the timer advances the event clock by elapsed wall-clock time since the last event so grace expiry and close boundaries are processed without new data; Playback stays on event time.
+5. **Levels:** previous/current day, week, and trading session OH/L are updated from primary bars. Session and weekly profile/VWAP calculations replace the current developing-bar contribution before adding the updated value, preventing cumulative-volume overcounting with `Calculate.OnEachTick`.
+6. **Rendering:** both depth and trade/quote events run shared wall refresh/baseline work throttled to approximately 150 ms; book changes skipped by the throttle schedule a trailing detection pass so the final change in a burst is always reconciled. Chart invalidation is limited to at most about 13 times per second. A realtime timer also requests a repaint about once per second without new data so stale status and grey walls remain visible; it is disposed at termination. Rendering snapshots active wall state under the book lock, filters to the visible price scale, selects the largest walls, and avoids nearby labels. SharpDX brushes, text formats, and stroke styles are reused and disposed on render-target changes and termination.
+7. **Events:** trades are kept in short rolling per-side windows with running volume and price extrema for sweep detection. Each directional rolling burst can trigger once and rearms only after its qualifying volume/price span subsides, preventing repeated labels for the same burst. Wall disappearance is classified only after the grace window and only while its price remains between the outer edges of the visible bid and ask depth: low traded volume yields a likely-pull marker; sufficient traded volume plus a trade through the price recorded at any time during the wall lifecycle yields a broken-wall marker. A wall that requalifies before its earlier disappearance is classified keeps that earlier lifecycle pending until classification completes. Absorption requires a fresh book, a size reduction/refill, aggressive traded volume above the configured multiple of peak size, and price holding at the wall. Sweeps require same-side aggressive volume and time-ordered progress in the aggressor direction (from the earlier window extreme to the current print); key-level crossings are searched across the full sweep span; a key-level sweep becomes a failed sweep only after price returns across the level with opposite aggressive volume, or a held run when price remains beyond the level and depth ahead is thin. Large-trade and book-imbalance measures are contextual heuristics. Event markers are retained in memory only, expire by age (including during maintenance/early-close suppression), and render at both event time and price with separate colors and switches. Up to 12 recent visible labels are rendered with overlap avoidance.
+8. **Heatmap:** a fresh-book snapshot is sampled at most every 250 ms, with a bounded in-memory history of up to 240 snapshots and 10 levels per side. Cell position represents snapshot age within the configured recent-history window and each cell spans until the next sample (capped at Feed Stale Seconds); samples sharing a pixel column are merged using the largest size per level; color represents bid/ask and opacity scales with displayed size and fades with age. It is a rolling live/Playback visualization and has no historical-depth backfill.
+
+## Recommended charts
+
+- **Primary:** 1-minute Volumetric chart for levels and context.
+- **Scalping:** NQ 500–1000 tick chart.
+- Use the **CME US Index Futures ETH** trading-hours template.
+- MNQ has a thinner independent book; consider observing NQ liquidity while executing MNQ.
+
+## Known limits
+
+- Only the provider's visible top ~10 depth levels are available; this is aggregated MBP data, not per-order MBO.
+- There is no historical depth replay on ordinary chart history. Walls, tape, and heatmap snapshots start on load; Market Replay works only when depth data is present.
+- Pull/break, absorption, sweep, failed-run, held-run, and large-trade markers are heuristics, not proof of spoofing, iceberg orders, stop hunts, or future price direction.
+- A disappearing level that falls outside the currently visible depth window is not classified as a pull or break; it becomes a residual liquidity zone instead. Aggregated Level 2 cannot identify individual order cancellations or fills.
+- Failed sweeps require a level crossing, return across it, and enough opposite aggressive volume; held-run detection uses visible depth as a rough liquidity-vacuum proxy.
+- Event markers exist only in memory and disappear when the indicator is reloaded. The optional CSV can record observed level interactions and price excursions, not actual trade fills, profitability, or a validated edge.
+- Session/day/week bar-derived references depend on the chart's data and trading-hours template.
+- Audio alerts, predictive chart assessments, and automated trade execution are not part of this release.
+
+## Troubleshooting
+
+### No walls appear
+
+1. Check that the connection and instrument provide Level 2 depth.
+2. Wait for live or Playback depth events; historical bars do not contain the book.
+3. Temporarily lower **Minimum Lot Floor** or **Wall Multiplier**.
+4. Confirm **Show Walls** is enabled and the price is within the visible chart scale.
+
+### HUD says `BOOK STALE`
+
+Check the connection and instrument's depth subscription. Live realtime uses elapsed UTC time since the last depth arrival, even if all feeds stop; Playback uses elapsed feed-event time since the last depth update. A continuing trade feed alone cannot make the book healthy.
+
+### No bias shading
+
+Enable **Enable Bias Shading**, allow the confirmation Swing to form, and check its period and strength. HTF-unformed periods fall back to the confirmation series.
+
+### Session phase or early close looks wrong
+
+Use the chart's intended exchange time zone and the **CME US Index Futures ETH** trading-hours template. The phase clock is Eastern; the template's actual session end is used for early close when the chart has provided a session boundary.
+
+### Compile errors
+
+Compile from NinjaScript Editor with **F5** and inspect the Errors tab. The generated NinjaScript region is intentionally omitted from the source file.
+
+### Developer regression checks
+
+With the .NET 10 SDK, run `dotnet run --project tests/LiquidityPulseRegression`. This uses the SDK's bundled Roslyn compiler to parse the full indicator and exercise its actual callback, depth-validation and zone-fading methods against small feed stubs. It does not replace compiling in NT8 or verifying callback behavior with a live/Playback log.
+
+---
+
+Free to use and modify.
