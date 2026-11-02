@@ -912,11 +912,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     lastBid = e.Price;
                     lastBidUpdate = now;
+                    // Unthrottled so brief quote locks are seen before later depth refills.
+                    UpdateInteractionClockLocked(now);
                 }
                 else if (e.MarketDataType == MarketDataType.Ask)
                 {
                     lastAsk = e.Price;
                     lastAskUpdate = now;
+                    UpdateInteractionClockLocked(now);
                 }
                 else if (e.MarketDataType == MarketDataType.Last && e.Volume > 0)
                 {

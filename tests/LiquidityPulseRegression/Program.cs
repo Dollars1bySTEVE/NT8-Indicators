@@ -661,6 +661,32 @@ class LiquidityPulse : IndicatorStub
                 "Quality issues after observation expiry cannot contaminate frozen local flow");
         }
 
+        foreach (bool lockViaBid in new[] { false, true })
+        {
+            lp = InteractionFixture(now, false);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            var locked = lp.interactions[0];
+            var bidDepth = new MarketDepthEventArgs { Time = now.AddMilliseconds(10),
+                MarketDataType = MarketDataType.Bid, Operation = Operation.Update, Position = 0,
+                Price = 100, Volume = 10 };
+            lp.OnMarketDepth(bidDepth);
+            lp.OnMarketData(new MarketDataEventArgs { Time = now.AddMilliseconds(20),
+                MarketDataType = lockViaBid ? MarketDataType.Bid : MarketDataType.Ask,
+                Price = lockViaBid ? 100.25 : 100 });
+            lp.OnMarketData(new MarketDataEventArgs { Time = now.AddMilliseconds(82),
+                MarketDataType = lockViaBid ? MarketDataType.Bid : MarketDataType.Ask,
+                Price = lockViaBid ? 100 : 100.25 });
+            bidDepth.Time = now.AddMilliseconds(90); bidDepth.Volume = 50;
+            lp.OnMarketDepth(bidDepth);
+            Check(locked.BookGaps == 1 && locked.AddedSize == 0 && locked.Refills == 0 && locked.LastSize == 50,
+                "Primary " + (lockViaBid ? "Bid" : "Ask") + " callbacks must record brief locks between depth updates");
+            for (int seconds = 5; seconds <= 35; seconds += 5)
+                lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+            outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+            Check(outcomeIndex >= 0 && lp.details[outcomeIndex].Contains("flow_complete=0"),
+                "A quote lock seen only by a primary quote callback marks the horizon flow incomplete");
+        }
+
         lp = InteractionFixture(now, false);
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
         lp.BarsInProgress = 1;
