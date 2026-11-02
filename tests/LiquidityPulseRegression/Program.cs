@@ -23,7 +23,9 @@ var names = new HashSet<string>
     "ProcessInteractionTradeLocked", "UpdateInteractionDepthLocked", "GetInteractionSizeLocked",
     "EndInteractionObservationLocked", "CompleteInteractionHorizonsLocked", "LogInteractionLocked",
     "ResetBookLocked", "AdvanceClockLocked", "SessionLogAcceptsLocked", "InterruptInteractionsForTerminationLocked",
-    "ExpireInteractionDeparturesLocked"
+    "ExpireInteractionDeparturesLocked", "InteractionBookIssueLocked",
+    "UpdateInteractionBookQualityLocked", "EndInteractionBookObservationsLocked",
+    "ExpireInteractionObservationsLocked"
 };
 var members = indicator.Members.Where(m => names.Contains(m switch
 {
@@ -426,23 +428,14 @@ class LiquidityPulse : IndicatorStub
             && lp.interactionWatches["B:100"].Visits == 2,
             "A return trade after three seconds away cannot resume the old interaction");
 
-        foreach (string issue in new[] { "quotes", "depth", "gap", "reset", "rewind", "close", "termination", "invalidated" })
+        foreach (string issue in new[] { "gap", "rewind", "close", "termination" })
         {
             lp = InteractionFixture(now, false);
             lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
-            if (issue == "quotes") lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 100, 1, 0, true);
-            if (issue == "depth") { lp.depthAgeSeconds = 3; lp.UpdateInteractionClockLocked(now.AddSeconds(1)); }
             if (issue == "gap") lp.UpdateInteractionClockLocked(now.AddSeconds(11));
-            if (issue == "reset") lp.ResetBookLocked();
             if (issue == "rewind") { lp.lastClockTime = now; lp.AdvanceClockLocked(now.AddSeconds(-3)); }
             if (issue == "close") { lp.phase = SessionPhase.PostClose; lp.UpdateInteractionClockLocked(now); }
             if (issue == "termination") { lp.State = State.Terminated; lp.InterruptInteractionsForTerminationLocked(now); }
-            if (issue == "invalidated")
-            {
-                lp.lastBid = 104; lp.lastAsk = 104.25; lp.lastTradePrice = 104;
-                lp.bidRows[0].Price = 108; lp.bidRows[0].CrossedSince = now.AddSeconds(-2);
-                lp.Fresh(now); lp.SanitizeDepthLocked(now);
-            }
             Check(lp.interactions.Count == 0 && lp.logs.Contains("INTERACTION_INTERRUPTED")
                 && !lp.logs.Contains("INTERACTION_OUTCOME"), "Unreliable observations are censored: " + issue);
         }
@@ -504,11 +497,169 @@ class LiquidityPulse : IndicatorStub
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
         lp.UpdateInteractionDepthLocked(now);
         lp.UpdateInteractionDepthLocked(now.AddSeconds(3));
-        Check(lp.interactions.Count == 0 && lp.details.Any(d => d.Contains("reason=depth_gap")),
-            "A returning depth update must not conceal the preceding feed gap");
+        Check(lp.interactions.Count == 1 && lp.details.Any(d => d.Contains("status=depth_gap"))
+            && lp.interactions[0].BookGaps == 1,
+            "A returning depth update flags the gap without discarding continuous tape");
         lp.ProcessInteractionTradeLocked(now.AddSeconds(4), 100, 1, 0, false);
-        Check(lp.interactions.Count == 1 && lp.interactionSequence == 2,
-            "Recovery starts an independent interaction rather than resuming censored data");
+        Check(lp.interactions.Count == 1 && lp.interactionSequence == 1,
+            "Book recovery preserves the interaction ID");
+
+        foreach (bool isAsk in new[] { false, true })
+        {
+            lp = InteractionFixture(now, isAsk);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            var interaction = lp.interactions[0];
+            var rows = isAsk ? lp.askRows : lp.bidRows;
+            lp.lastAsk = lp.lastBid;
+            lp.UpdateInteractionClockLocked(now.AddMilliseconds(10));
+            rows[0].Size = 2;
+            lp.UpdateInteractionDepthLocked(now.AddMilliseconds(20));
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(30), 100, 9, 1, true);
+            Check(interaction.InvalidQuoteVolume == 9 && interaction.BuyVolume == 0
+                && interaction.NeutralVolume == 1 && interaction.LastTrade == now.AddMilliseconds(30),
+                "Invalid own quotes preserve price but cannot manufacture classified or neutral flow");
+            Check(!interaction.LastSize.HasValue && interaction.RemovedSize == 0 && interaction.BookGaps == 1,
+                "Bad stored quotes suspend depth and log one transition rather than repeated gaps");
+            lp.lastAsk = 100.25; rows[0].Size = 60;
+            lp.UpdateInteractionDepthLocked(now.AddMilliseconds(62));
+            Check(interaction.LastSize == 60 && interaction.AddedSize == 0 && interaction.Refills == 0,
+                "Recovery re-baselines size without inventing a refill across unknown depth");
+            rows[0].Size = 40; lp.UpdateInteractionDepthLocked(now.AddMilliseconds(70));
+            rows[0].Size = 50; lp.UpdateInteractionDepthLocked(now.AddMilliseconds(80));
+            Check(interaction.RemovedSize == 20 && interaction.AddedSize == 10 && interaction.Refills == 1,
+                "Healthy post-recovery depth is accumulated normally");
+            Check(lp.details.Any(d => d.Contains("status=recovered")) && !lp.logs.Contains("INTERACTION_INTERRUPTED"),
+                "Brief quote crossings are quality transitions, not price interruptions");
+            for (int seconds = 5; seconds <= 35; seconds += 5)
+                lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+            int qualityOutcome = lp.logs.IndexOf("INTERACTION_OUTCOME");
+            Check(qualityOutcome >= 0 && lp.details[qualityOutcome].Contains("flow_complete=0")
+                && lp.details[qualityOutcome].Contains("schema=2"),
+                "Price outcomes retain explicit incomplete-flow provenance");
+        }
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.RegisterInteractionLevelLocked(101, true, now.AddMinutes(-1), 30, 10, "WALL");
+        lp.ProcessInteractionTradeLocked(now.AddMilliseconds(10), 100, 1, 0, false);
+        var affected = lp.interactions[0];
+        var unaffected = lp.interactions[1];
+        lp.EndInteractionBookObservationsLocked(now.AddSeconds(1), "depth_invalidated", 100, false);
+        Check(!affected.Observing && unaffected.Observing && lp.interactions.Count == 2
+            && affected.BookGaps == 1 && unaffected.BookGaps == 0,
+            "Local quarantine ends only the matching side/price book observation, not other levels or price outcomes");
+        lp.ResetBookLocked();
+        Check(lp.interactions.Count == 2 && !unaffected.Observing && lp.interactionWatches.Count == 0
+            && lp.lastInteractionTrade != DateTime.MinValue,
+            "Book reset ends local observations and clears discovery without discarding continuous price tracking");
+        for (int seconds = 5; seconds <= 35; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 102, 1, 0, false);
+        Check(lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 2
+            && !lp.logs.Contains("INTERACTION_INTERRUPTED"),
+            "Book-reset price outcomes continue with their original IDs");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.depthAgeSeconds = 3;
+        lp.UpdateInteractionClockLocked(now.AddSeconds(1));
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(2), 102, 1, 0, false);
+        Check(lp.interactions.Count == 1 && lp.interactions[0].LastPrice == 102
+            && lp.interactions[0].BookIssue == "depth_stale",
+            "Stale depth does not erase fresh trade prices");
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(13), 110, 1, 0, false);
+        Check(lp.interactions.Count == 0 && lp.details.Any(d => d.Contains("reason=trade_gap")),
+            "Actual trade gaps still censor price outcomes even during book uncertainty");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastClockTime = now; lp.crossClose = true;
+        lp.AdvanceClockLocked(now.AddSeconds(1));
+        Check(lp.interactions.Count == 0 && lp.details.Any(d => d.Contains("reason=session_closed")),
+            "Session-close book resets must still censor all pending price outcomes");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 1; seconds <= 3601; seconds++)
+        {
+            DateTime time = now.AddSeconds(seconds);
+            if (seconds % 14 == 0)
+            {
+                lp.lastAsk = lp.lastBid;
+                lp.UpdateInteractionClockLocked(time);
+                lp.ProcessInteractionTradeLocked(time, 100, 1, 0, false);
+                lp.lastAsk = 100.25;
+                lp.UpdateInteractionDepthLocked(time.AddMilliseconds(62));
+            }
+            else
+            {
+                lp.ProcessInteractionTradeLocked(time, 100, 1, 0, false);
+                lp.UpdateInteractionDepthLocked(time);
+            }
+        }
+        Check(lp.interactions.Count == 0 && lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 4
+            && !lp.logs.Contains("INTERACTION_INTERRUPTED"),
+            "Repeated 62ms stored-quote crossings cannot erase 30/120/600/3600-second continuous-tape outcomes");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 100, 8, 1, false);
+        Check(lp.interactions[0].BuyVolume == 8 && lp.interactions[0].InvalidQuoteVolume == 0,
+            "Valid trade-owned quotes may classify flow despite asynchronous invalid cached quotes");
+
+        foreach (double invalidPrice in new[] { double.NaN, double.PositiveInfinity, 0.0, -1.0 })
+        {
+            lp = InteractionFixture(now, false);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(1), invalidPrice, 1, 0, false);
+            Check(lp.interactions.Count == 0 && lp.details.Any(d => d.Contains("reason=trade_price_invalid")),
+                "Nonfinite or nonpositive prices cannot produce plausible-looking outcomes");
+        }
+
+        lp = InteractionFixture(now, false);
+        lp.bidRows[0].Invalidated = true;
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        Check(lp.interactions.Count == 0, "Quarantined exact-price rows cannot immediately start another observation");
+        lp.bidRows[0].Invalidated = false;
+        lp.ProcessInteractionTradeLocked(now.AddSeconds(1), 100, 1, 0, false);
+        Check(lp.interactions.Count == 1, "A healthy later row update permits a new observation");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 5; seconds <= 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.UpdateInteractionClockLocked(now.AddSeconds(30.1));
+        outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(lp.details[outcomeIndex].Contains("flow_complete=1")
+            && lp.interactions[0].BookGaps == 1,
+            "Book uncertainty detected after a cutoff must not be retroactively injected into that horizon");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        for (int seconds = 5; seconds <= 30; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+        lp.EndInteractionBookObservationsLocked(now.AddSeconds(30.1), "depth_invalidated", 100, false);
+        outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
+        Check(lp.details[outcomeIndex].Contains("flow_complete=1") && lp.interactions[0].BookGaps == 1,
+            "Late quarantine cannot change an earlier horizon before the clock path runs");
+
+        foreach (bool viaDepth in new[] { false, true })
+        {
+            lp = InteractionFixture(now, false);
+            lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+            var bounded = lp.interactions[0];
+            for (int seconds = 5; seconds <= 120; seconds += 5)
+                lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(120), 100, 4, 0, false);
+            Check(bounded.NeutralVolume == 29 && bounded.Observing,
+                "All primary prints sharing the 120-second observation boundary are included");
+            lp.lastAsk = lp.lastBid;
+            if (viaDepth) lp.UpdateInteractionDepthLocked(now.AddSeconds(120.1));
+            else lp.UpdateInteractionClockLocked(now.AddSeconds(120.1));
+            Check(!bounded.Observing && bounded.BookGaps == 0,
+                "Quality issues after observation expiry cannot contaminate frozen local flow");
+        }
 
         lp = InteractionFixture(now, false);
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
