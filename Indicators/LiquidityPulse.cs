@@ -169,6 +169,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             public bool Observing = true;
             public int Horizon;
             public int Barriers;
+            public string BookIssue;
+            public int BookGaps;
+            public double InvalidQuoteVolume;
         }
 
         // One writer per log file shared by all instances, so charts on the same instrument append safely.
@@ -909,11 +912,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     lastBid = e.Price;
                     lastBidUpdate = now;
+                    // Unthrottled so brief quote locks are seen before later depth refills.
+                    UpdateInteractionClockLocked(now);
                 }
                 else if (e.MarketDataType == MarketDataType.Ask)
                 {
                     lastAsk = e.Price;
                     lastAskUpdate = now;
+                    UpdateInteractionClockLocked(now);
                 }
                 else if (e.MarketDataType == MarketDataType.Last && e.Volume > 0)
                 {
@@ -1014,6 +1020,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 else if (CrossedSessionCloseLocked(lastClockTime, now))
                 {
+                    InterruptInteractionsLocked(now, "session_closed");
                     ResetBookLocked();
                 }
             }
@@ -1042,8 +1049,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void ResetBookLocked()
         {
-            InterruptInteractionsLocked(lastClockTime, "book_reset");
+            EndInteractionBookObservationsLocked(lastClockTime, "book_reset", null, false);
             interactionWatches.Clear();
+            lastInteractionDepth = DateTime.MinValue;
             askRows.Clear();
             bidRows.Clear();
             askWalls.Clear();
@@ -1102,7 +1110,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Preserve MBP positions: deleting the row would shift subsequent positional updates.
                 row.Size = 0;
                 row.Invalidated = true;
-                InterruptInteractionsLocked(now, "depth_invalidated");
+                EndInteractionBookObservationsLocked(now, "depth_invalidated", row.Price, isAsk);
                 walls.Remove(row.Price);
                 retiredWalls.RemoveAll(delegate(WallState wall) { return wall.Price == row.Price; });
                 LogSessionLocked(now, "DEPTH_INVALIDATED", isAsk ? "ASK" : "BID", row.Price, size,
@@ -2007,13 +2015,53 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (GetSessionPhase(now) == SessionPhase.PostClose)
                 return "session_closed";
+            if (lastInteractionTrade != DateTime.MinValue && (now - lastInteractionTrade).TotalSeconds > 10)
+                return "trade_gap";
+            return null;
+        }
+
+        private string InteractionBookIssueLocked()
+        {
             if (IsBookStale() || IsDepthOlderThan(2))
                 return "depth_stale";
             if (!HasValidQuotes(lastBid, lastAsk))
                 return "quotes_invalid";
-            if (lastInteractionTrade != DateTime.MinValue && (now - lastInteractionTrade).TotalSeconds > 10)
-                return "trade_gap";
             return null;
+        }
+
+        private void UpdateInteractionBookQualityLocked(DateTime now, string issue)
+        {
+            foreach (LevelInteraction interaction in interactions)
+            {
+                if (!interaction.Observing || interaction.BookIssue == issue)
+                    continue;
+                string previous = interaction.BookIssue;
+                interaction.BookIssue = issue;
+                interaction.LastSize = null;
+                interaction.Reduced = false;
+                if (issue != null)
+                    interaction.BookGaps++;
+                LogInteractionLocked(now, interaction, "QUALITY", "scope=book status="
+                    + (issue ?? "recovered") + " previous=" + (previous ?? "ok"));
+            }
+        }
+
+        private void EndInteractionBookObservationsLocked(DateTime now, string reason, double? price, bool isAsk)
+        {
+            if (InteractionLoggingEnabled() && InteractionFeedIssueLocked(now) == null)
+                CompleteInteractionHorizonsLocked(now);
+            ExpireInteractionObservationsLocked(now);
+            foreach (LevelInteraction interaction in interactions)
+            {
+                if (!interaction.Observing || (price.HasValue
+                    && (interaction.Watch.Price != price.Value || interaction.Watch.IsAsk != isAsk)))
+                    continue;
+                interaction.BookGaps++;
+                interaction.BookIssue = reason;
+                interaction.LastSize = null;
+                interaction.Reduced = false;
+                EndInteractionObservationLocked(now, interaction, reason);
+            }
         }
 
         private void InterruptInteractionsLocked(DateTime now, string reason)
@@ -2053,6 +2101,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     && (now - watch.AwaySince).TotalSeconds >= 3)
                     EndInteractionObservationLocked(now, interaction, "departed");
             }
+        }
+
+        private void ExpireInteractionObservationsLocked(DateTime now)
+        {
+            foreach (LevelInteraction interaction in interactions)
+                if (interaction.Observing && (now - interaction.Started).TotalSeconds > 120)
+                    EndInteractionObservationLocked(now, interaction, "observation_limit");
+            ExpireInteractionDeparturesLocked(now);
         }
 
         private void DiscoverInteractionLevelsLocked(DateTime now)
@@ -2117,10 +2173,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             }
             CompleteInteractionHorizonsLocked(now);
-            foreach (LevelInteraction interaction in interactions)
-                if (interaction.Observing && (now - interaction.Started).TotalSeconds >= 120)
-                    EndInteractionObservationLocked(now, interaction, "observation_limit");
-            ExpireInteractionDeparturesLocked(now);
+            ExpireInteractionObservationsLocked(now);
+            UpdateInteractionBookQualityLocked(now, InteractionBookIssueLocked());
         }
 
         private void ProcessInteractionTradeLocked(DateTime now, double price, double volume,
@@ -2128,7 +2182,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (!InteractionLoggingEnabled())
                 return;
-            string issue = invalidQuotes ? "trade_quotes_invalid" : InteractionFeedIssueLocked(now);
+            if (double.IsNaN(price) || double.IsInfinity(price) || price <= 0)
+            {
+                InterruptInteractionsLocked(now, "trade_price_invalid");
+                return;
+            }
+            string issue = InteractionFeedIssueLocked(now);
             if (issue != null)
             {
                 InterruptInteractionsLocked(now, issue);
@@ -2138,10 +2197,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             lastInteractionTrade = now;
             CompleteInteractionHorizonsLocked(now);
-            foreach (LevelInteraction existing in interactions)
-                if (existing.Observing && (now - existing.Started).TotalSeconds > 120)
-                    EndInteractionObservationLocked(now, existing, "observation_limit");
-            ExpireInteractionDeparturesLocked(now);
+            ExpireInteractionObservationsLocked(now);
+            string bookIssue = InteractionBookIssueLocked();
+            UpdateInteractionBookQualityLocked(now, bookIssue);
             double tick = Instrument.MasterInstrument.TickSize;
             foreach (InteractionWatch watch in interactionWatches.Values)
             {
@@ -2160,7 +2218,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                         watch.Armed = true;
                     watch.AwaySince = DateTime.MinValue;
                 }
-                if (!watch.Available || !watch.Armed || watch.Current != null || distance > 8)
+                if (!watch.Available || !watch.Armed || watch.Current != null || distance > 8
+                    || bookIssue != null || invalidQuotes)
+                    continue;
+                List<DepthRow> levelRows = watch.IsAsk ? askRows : bidRows;
+                bool quarantined = levelRows.Exists(delegate(DepthRow row)
+                {
+                    return row.Invalidated && row.Price == watch.Price;
+                });
+                if (quarantined)
                     continue;
                 if (interactions.Count >= 512)
                 {
@@ -2224,7 +2290,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 bool beyond = watch.IsAsk ? price > watch.Price : price < watch.Price;
                 if (price.ApproxCompare(watch.Price) == 0)
                 {
-                    if (aggressor > 0) interaction.BuyVolume += volume;
+                    if (invalidQuotes) interaction.InvalidQuoteVolume += volume;
+                    else if (aggressor > 0) interaction.BuyVolume += volume;
                     else if (aggressor < 0) interaction.SellVolume += volume;
                     else interaction.NeutralVolume += volume;
                 }
@@ -2252,10 +2319,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     interaction.LastSample = now;
                     LogInteractionLocked(now, interaction, "SAMPLE", string.Empty);
                 }
-                if ((now - interaction.Started).TotalSeconds >= 120
-                    || (interaction.Left && watch.AwaySince != DateTime.MinValue
-                        && (now - watch.AwaySince).TotalSeconds >= 3))
-                    EndInteractionObservationLocked(now, interaction, interaction.Left ? "departed" : "observation_limit");
+                if (interaction.Left && watch.AwaySince != DateTime.MinValue
+                    && (now - watch.AwaySince).TotalSeconds >= 3)
+                    EndInteractionObservationLocked(now, interaction, "departed");
             }
         }
 
@@ -2263,8 +2329,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (!InteractionLoggingEnabled())
                 return;
-            if (lastInteractionDepth != DateTime.MinValue && (now - lastInteractionDepth).TotalSeconds > 2)
-                InterruptInteractionsLocked(now, "depth_gap");
+            bool depthGap = lastInteractionDepth != DateTime.MinValue
+                && (now - lastInteractionDepth).TotalSeconds > 2;
             lastInteractionDepth = now;
             string issue = InteractionFeedIssueLocked(now);
             if (issue != null)
@@ -2273,16 +2339,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             }
             CompleteInteractionHorizonsLocked(now);
-            ExpireInteractionDeparturesLocked(now);
+            ExpireInteractionObservationsLocked(now);
+            if (depthGap)
+                UpdateInteractionBookQualityLocked(now, "depth_gap");
+            string bookIssue = InteractionBookIssueLocked();
+            UpdateInteractionBookQualityLocked(now, bookIssue);
             foreach (LevelInteraction interaction in interactions)
             {
                 if (!interaction.Observing)
                     continue;
-                if ((now - interaction.Started).TotalSeconds > 120)
-                {
-                    EndInteractionObservationLocked(now, interaction, "observation_limit");
+                if (bookIssue != null)
                     continue;
-                }
                 long? size = GetInteractionSizeLocked(interaction.Watch);
                 if (size.HasValue && interaction.LastSize.HasValue)
                 {
@@ -2356,7 +2423,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 / Instrument.MasterInstrument.TickSize * (watch.IsAsk ? -1 : 1);
             LogSessionLocked(now, "INTERACTION_" + kind, watch.IsAsk ? "ASK" : "BID", watch.Price,
                 interaction.LastSize.GetValueOrDefault(), string.Format(CultureInfo.InvariantCulture,
-                    "schema=1 run={0} level={1} interaction={2} started={3:yyyy-MM-ddTHH:mm:ss.fff} last_observation={4:yyyy-MM-ddTHH:mm:ss.fff} start_price={5} observed_price={6} net_ticks={7:F1} mfe_ticks={8:F1} mae_ticks={9:F1} tests={10} buy_at_level={11:F0} sell_at_level={12:F0} neutral_at_level={13:F0} visible={14} size_now={15} displayed_added={16} displayed_removed={17} refills={18} observing={19} book_observation={20:yyyy-MM-ddTHH:mm:ss.fff} observation_end={21} {22}",
+                    "schema=2 run={0} level={1} interaction={2} started={3:yyyy-MM-ddTHH:mm:ss.fff} last_observation={4:yyyy-MM-ddTHH:mm:ss.fff} start_price={5} observed_price={6} net_ticks={7:F1} mfe_ticks={8:F1} mae_ticks={9:F1} tests={10} buy_at_level={11:F0} sell_at_level={12:F0} neutral_at_level={13:F0} visible={14} size_now={15} displayed_added={16} displayed_removed={17} refills={18} observing={19} book_observation={20:yyyy-MM-ddTHH:mm:ss.fff} observation_end={21} book_status={22} book_gaps={23} invalid_quote_volume={24:F0} flow_complete={25} {26}",
                     interactionRunId, watch.Id, interaction.Id, interaction.Started, interaction.LastTrade,
                     interaction.StartPrice, interaction.LastPrice, net, interaction.FavorableTicks,
                     interaction.AdverseTicks, interaction.Tests, interaction.BuyVolume, interaction.SellVolume,
@@ -2365,6 +2432,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     interaction.AddedSize, interaction.RemovedSize, interaction.Refills,
                     interaction.Observing ? 1 : 0, interaction.LastBookObservation,
                     interaction.Observing ? "pending" : interaction.ObservationEnded.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture),
+                    interaction.BookIssue ?? "ok", interaction.BookGaps, interaction.InvalidQuoteVolume,
+                    interaction.BookGaps == 0 && interaction.InvalidQuoteVolume == 0 ? 1 : 0,
                     extra));
         }
 
