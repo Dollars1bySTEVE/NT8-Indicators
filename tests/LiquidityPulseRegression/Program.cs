@@ -24,7 +24,8 @@ var names = new HashSet<string>
     "EndInteractionObservationLocked", "CompleteInteractionHorizonsLocked", "LogInteractionLocked",
     "ResetBookLocked", "AdvanceClockLocked", "SessionLogAcceptsLocked", "InterruptInteractionsForTerminationLocked",
     "ExpireInteractionDeparturesLocked", "InteractionBookIssueLocked",
-    "UpdateInteractionBookQualityLocked", "EndInteractionBookObservationsLocked",
+    "UpdateInteractionBookQualityLocked", "InteractionOverlapsQuoteEpisode", "TrackInteractionQuoteValidityLocked",
+    "EndInteractionBookObservationsLocked",
     "ExpireInteractionObservationsLocked"
 };
 var members = indicator.Members.Where(m => names.Contains(m switch
@@ -90,8 +91,11 @@ class LiquidityPulse : IndicatorStub
     List<LevelInteraction> interactions = new List<LevelInteraction>();
     static int[] interactionHorizons = { 30, 120, 600, 3600 };
     static int[] interactionBarriers = { 8, 16, 32 };
+    const double InteractionQuoteInvalidGraceMilliseconds = 100;
     long interactionSequence, interactionLevelSequence;
     DateTime lastInteractionTrade, lastInteractionDepth, lastClockTime;
+    DateTime interactionQuoteInvalidSince;
+    long interactionQuoteFlickersSuppressed, interactionQuoteFlickerMilliseconds;
     bool pendingDetection, crossClose;
     List<int> sweepCandidates = new List<int>();
     int KeyLevelProximityTicks = 2;
@@ -518,8 +522,8 @@ class LiquidityPulse : IndicatorStub
             Check(interaction.InvalidQuoteVolume == 9 && interaction.BuyVolume == 0
                 && interaction.NeutralVolume == 1 && interaction.LastTrade == now.AddMilliseconds(30),
                 "Invalid own quotes preserve price but cannot manufacture classified or neutral flow");
-            Check(!interaction.LastSize.HasValue && interaction.RemovedSize == 0 && interaction.BookGaps == 1,
-                "Bad stored quotes suspend depth and log one transition rather than repeated gaps");
+            Check(!interaction.LastSize.HasValue && interaction.RemovedSize == 0 && interaction.BookGaps == 0,
+                "Brief stored quote crossings suspend depth without creating a sustained quality gap");
             lp.lastAsk = 100.25; rows[0].Size = 60;
             lp.UpdateInteractionDepthLocked(now.AddMilliseconds(62));
             Check(interaction.LastSize == 60 && interaction.AddedSize == 0 && interaction.Refills == 0,
@@ -528,13 +532,15 @@ class LiquidityPulse : IndicatorStub
             rows[0].Size = 50; lp.UpdateInteractionDepthLocked(now.AddMilliseconds(80));
             Check(interaction.RemovedSize == 20 && interaction.AddedSize == 10 && interaction.Refills == 1,
                 "Healthy post-recovery depth is accumulated normally");
-            Check(lp.details.Any(d => d.Contains("status=recovered")) && !lp.logs.Contains("INTERACTION_INTERRUPTED"),
-                "Brief quote crossings are quality transitions, not price interruptions");
+            Check(!lp.details.Any(d => d.Contains("status=quotes_invalid"))
+                && interaction.QuoteFlickers == 1 && lp.interactionQuoteFlickersSuppressed == 1
+                && !lp.logs.Contains("INTERACTION_INTERRUPTED"),
+                "Sub-100ms quote crossings are counted, but not emitted as quality gaps");
             for (int seconds = 5; seconds <= 35; seconds += 5)
                 lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
             int qualityOutcome = lp.logs.IndexOf("INTERACTION_OUTCOME");
             Check(qualityOutcome >= 0 && lp.details[qualityOutcome].Contains("flow_complete=0")
-                && lp.details[qualityOutcome].Contains("schema=2"),
+                && lp.details[qualityOutcome].Contains("schema=3"),
                 "Price outcomes retain explicit incomplete-flow provenance");
         }
 
@@ -597,8 +603,71 @@ class LiquidityPulse : IndicatorStub
             }
         }
         Check(lp.interactions.Count == 0 && lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 4
-            && !lp.logs.Contains("INTERACTION_INTERRUPTED"),
-            "Repeated 62ms stored-quote crossings cannot erase 30/120/600/3600-second continuous-tape outcomes");
+            && !lp.logs.Contains("INTERACTION_INTERRUPTED")
+            && lp.interactionQuoteFlickersSuppressed > 100
+            && lp.interactions.Count == 0 && lp.details.Any(d => d.Contains("flow_complete=1")
+                && d.Contains("quote_flickers=")),
+            "Repeated 62ms crossings are counted without erasing clean continuous-tape outcomes");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(10));
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(110));
+        Check(lp.interactions[0].BookGaps == 1 && lp.details.Any(d => d.Contains("status=quotes_invalid"))
+            && lp.interactionQuoteFlickersSuppressed == 0,
+            "Stored quote invalidity persisting for 100ms is retained as a genuine book-quality gap");
+        lp.lastAsk = 100.25;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(125));
+        Check(lp.interactions[0].BookGaps == 1 && lp.logs.Count(k => k == "INTERACTION_QUALITY") == 2,
+            "Sustained quote quality recovers once without being relabeled as a flicker");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(10));
+        lp.lastAsk = 100.25;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(125));
+        Check(lp.interactions[0].BookGaps == 1 && lp.interactions[0].QuoteFlickers == 0
+            && lp.details.Any(d => d.Contains("status=quotes_invalid"))
+            && lp.details.Any(d => d.Contains("status=recovered")),
+            "Sustained quote invalidity first checked at recovery is still recorded as a gap");
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(130));
+        Check(lp.interactions[0].BookGaps == 1 && lp.logs.Count(k => k == "INTERACTION_QUALITY") == 2,
+            "A sustained episode recorded at recovery is not counted twice");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        Func<int, double, MarketDataEventArgs> bidAt = (ms, bid) => new MarketDataEventArgs
+            { Time = now.AddMilliseconds(ms), MarketDataType = MarketDataType.Bid, Price = bid };
+        lp.OnMarketData(bidAt(0, 100.25));
+        lp.UpdateInteractionClockLocked(now); // detection pass; 40/80ms callbacks fall inside the 150ms throttle
+        lp.OnMarketData(bidAt(40, 100));
+        lp.OnMarketData(bidAt(80, 100.25));
+        lp.OnMarketData(new MarketDataEventArgs { Time = now.AddMilliseconds(110),
+            MarketDataType = MarketDataType.Last, Price = 100, Bid = 100, Ask = 100.25, Volume = 1 });
+        Check(lp.interactions[0].BookGaps == 0 && lp.interactions[0].QuoteFlickers == 1
+            && !lp.details.Any(d => d.Contains("status=quotes_invalid")),
+            "Separate sub-100ms bid/ask callback flickers are not merged into one sustained gap");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(10));
+        lp.EndInteractionObservationLocked(now.AddMilliseconds(50), lp.interactions[0], "departed");
+        lp.lastAsk = 100.25;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(60));
+        Check(lp.interactions[0].QuoteFlickers == 1 && lp.interactions[0].BookGaps == 0,
+            "A brief quote flicker overlapping a closed observation is retained as a flicker");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(10));
+        lp.EndInteractionObservationLocked(now.AddMilliseconds(50), lp.interactions[0], "departed");
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(110));
+        Check(lp.interactions[0].BookGaps == 1 && lp.details.Any(d => d.Contains("status=quotes_invalid")),
+            "A sustained quote issue starting during observation remains quality-flagged after END");
 
         lp = InteractionFixture(now, false);
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
@@ -632,7 +701,7 @@ class LiquidityPulse : IndicatorStub
         lp.UpdateInteractionClockLocked(now.AddSeconds(30.1));
         outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
         Check(lp.details[outcomeIndex].Contains("flow_complete=1")
-            && lp.interactions[0].BookGaps == 1,
+            && lp.interactions[0].BookGaps == 0,
             "Book uncertainty detected after a cutoff must not be retroactively injected into that horizon");
 
         lp = InteractionFixture(now, false);
