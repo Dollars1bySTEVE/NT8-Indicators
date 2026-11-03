@@ -171,6 +171,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int Barriers;
             public string BookIssue;
             public int BookGaps;
+            public int QuoteFlickers;
             public double InvalidQuoteVolume;
         }
 
@@ -266,10 +267,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly string interactionRunId = Guid.NewGuid().ToString("N");
         private static readonly int[] interactionHorizons = { 30, 120, 600, 3600 };
         private static readonly int[] interactionBarriers = { 8, 16, 32 };
+        private const double InteractionQuoteInvalidGraceMilliseconds = 100;
         private long interactionSequence;
         private long interactionLevelSequence;
         private DateTime lastInteractionTrade;
         private DateTime lastInteractionDepth;
+        private DateTime interactionQuoteInvalidSince;
+        private long interactionQuoteFlickersSuppressed;
+        private long interactionQuoteFlickerMilliseconds;
         private bool loggingTerminationInterruptions;
         private readonly HashSet<double> drawnAskWallLabels = new HashSet<double>();
         private readonly HashSet<double> drawnBidWallLabels = new HashSet<double>();
@@ -2017,20 +2022,56 @@ namespace NinjaTrader.NinjaScript.Indicators
             return null;
         }
 
-        private string InteractionBookIssueLocked()
+        private string InteractionBookIssueLocked(DateTime now)
         {
+            bool validQuotes = HasValidQuotes(lastBid, lastAsk);
+            if (!validQuotes)
+            {
+                if (interactionQuoteInvalidSince == DateTime.MinValue || now < interactionQuoteInvalidSince)
+                {
+                    interactionQuoteInvalidSince = now;
+                    foreach (LevelInteraction interaction in interactions)
+                    {
+                        if (!interaction.Observing)
+                            continue;
+                        interaction.LastSize = null;
+                        interaction.Reduced = false;
+                    }
+                }
+            }
+            else if (interactionQuoteInvalidSince != DateTime.MinValue)
+            {
+                double invalidMilliseconds = Math.Max(0, (now - interactionQuoteInvalidSince).TotalMilliseconds);
+                if (invalidMilliseconds < InteractionQuoteInvalidGraceMilliseconds)
+                {
+                    interactionQuoteFlickersSuppressed++;
+                    interactionQuoteFlickerMilliseconds += (long)Math.Round(invalidMilliseconds);
+                    foreach (LevelInteraction interaction in interactions)
+                        if (InteractionOverlapsQuoteEpisode(interaction))
+                            interaction.QuoteFlickers++;
+                }
+                interactionQuoteInvalidSince = DateTime.MinValue;
+            }
+
             if (IsBookStale() || IsDepthOlderThan(2))
                 return "depth_stale";
-            if (!HasValidQuotes(lastBid, lastAsk))
-                return "quotes_invalid";
+            if (!validQuotes)
+                return (now - interactionQuoteInvalidSince).TotalMilliseconds
+                    >= InteractionQuoteInvalidGraceMilliseconds ? "quotes_invalid" : "quotes_pending";
             return null;
         }
 
         private void UpdateInteractionBookQualityLocked(DateTime now, string issue)
         {
+            if (issue == "quotes_pending")
+                return;
             foreach (LevelInteraction interaction in interactions)
             {
-                if (!interaction.Observing || interaction.BookIssue == issue)
+                bool quoteEpisodeOverlaps = issue == "quotes_invalid"
+                    && InteractionOverlapsQuoteEpisode(interaction);
+                bool recoveringQuoteEpisode = issue == null && interaction.BookIssue == "quotes_invalid";
+                if ((!interaction.Observing && !quoteEpisodeOverlaps && !recoveringQuoteEpisode)
+                    || interaction.BookIssue == issue)
                     continue;
                 string previous = interaction.BookIssue;
                 interaction.BookIssue = issue;
@@ -2041,6 +2082,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LogInteractionLocked(now, interaction, "QUALITY", "scope=book status="
                     + (issue ?? "recovered") + " previous=" + (previous ?? "ok"));
             }
+        }
+
+        private bool InteractionOverlapsQuoteEpisode(LevelInteraction interaction)
+        {
+            return interactionQuoteInvalidSince != DateTime.MinValue
+                && interaction.Started <= interactionQuoteInvalidSince
+                && (interaction.ObservationEnded == DateTime.MinValue
+                    || interaction.ObservationEnded >= interactionQuoteInvalidSince);
         }
 
         private void EndInteractionBookObservationsLocked(DateTime now, string reason, double? price, bool isAsk)
@@ -2171,7 +2220,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             CompleteInteractionHorizonsLocked(now);
             ExpireInteractionObservationsLocked(now);
-            UpdateInteractionBookQualityLocked(now, InteractionBookIssueLocked());
+            UpdateInteractionBookQualityLocked(now, InteractionBookIssueLocked(now));
         }
 
         private void ProcessInteractionTradeLocked(DateTime now, double price, double volume,
@@ -2195,7 +2244,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             lastInteractionTrade = now;
             CompleteInteractionHorizonsLocked(now);
             ExpireInteractionObservationsLocked(now);
-            string bookIssue = InteractionBookIssueLocked();
+            string bookIssue = InteractionBookIssueLocked(now);
             UpdateInteractionBookQualityLocked(now, bookIssue);
             double tick = Instrument.MasterInstrument.TickSize;
             foreach (InteractionWatch watch in interactionWatches.Values)
@@ -2339,7 +2388,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             ExpireInteractionObservationsLocked(now);
             if (depthGap)
                 UpdateInteractionBookQualityLocked(now, "depth_gap");
-            string bookIssue = InteractionBookIssueLocked();
+            string bookIssue = InteractionBookIssueLocked(now);
             UpdateInteractionBookQualityLocked(now, bookIssue);
             foreach (LevelInteraction interaction in interactions)
             {
@@ -2420,7 +2469,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 / Instrument.MasterInstrument.TickSize * (watch.IsAsk ? -1 : 1);
             LogSessionLocked(now, "INTERACTION_" + kind, watch.IsAsk ? "ASK" : "BID", watch.Price,
                 interaction.LastSize.GetValueOrDefault(), string.Format(CultureInfo.InvariantCulture,
-                    "schema=2 run={0} level={1} interaction={2} started={3:yyyy-MM-ddTHH:mm:ss.fff} last_observation={4:yyyy-MM-ddTHH:mm:ss.fff} start_price={5} observed_price={6} net_ticks={7:F1} mfe_ticks={8:F1} mae_ticks={9:F1} tests={10} buy_at_level={11:F0} sell_at_level={12:F0} neutral_at_level={13:F0} visible={14} size_now={15} displayed_added={16} displayed_removed={17} refills={18} observing={19} book_observation={20:yyyy-MM-ddTHH:mm:ss.fff} observation_end={21} book_status={22} book_gaps={23} invalid_quote_volume={24:F0} flow_complete={25} {26}",
+                    "schema=3 run={0} level={1} interaction={2} started={3:yyyy-MM-ddTHH:mm:ss.fff} last_observation={4:yyyy-MM-ddTHH:mm:ss.fff} start_price={5} observed_price={6} net_ticks={7:F1} mfe_ticks={8:F1} mae_ticks={9:F1} tests={10} buy_at_level={11:F0} sell_at_level={12:F0} neutral_at_level={13:F0} visible={14} size_now={15} displayed_added={16} displayed_removed={17} refills={18} observing={19} book_observation={20:yyyy-MM-ddTHH:mm:ss.fff} observation_end={21} book_status={22} book_gaps={23} quote_flickers={24} invalid_quote_volume={25:F0} flow_complete={26} {27}",
                     interactionRunId, watch.Id, interaction.Id, interaction.Started, interaction.LastTrade,
                     interaction.StartPrice, interaction.LastPrice, net, interaction.FavorableTicks,
                     interaction.AdverseTicks, interaction.Tests, interaction.BuyVolume, interaction.SellVolume,
@@ -2429,7 +2478,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     interaction.AddedSize, interaction.RemovedSize, interaction.Refills,
                     interaction.Observing ? 1 : 0, interaction.LastBookObservation,
                     interaction.Observing ? "pending" : interaction.ObservationEnded.ToString("yyyy-MM-ddTHH:mm:ss.fff", CultureInfo.InvariantCulture),
-                    interaction.BookIssue ?? "ok", interaction.BookGaps, interaction.InvalidQuoteVolume,
+                    interaction.BookIssue ?? "ok", interaction.BookGaps, interaction.QuoteFlickers,
+                    interaction.InvalidQuoteVolume,
                     interaction.BookGaps == 0 && interaction.InvalidQuoteVolume == 0 ? 1 : 0,
                     extra));
         }
@@ -2451,10 +2501,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (st == ResidualZoneState.Gone) pulled++;
             }
             string detail = string.Format(CultureInfo.InvariantCulture,
-                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5} trades_processed={6} secondary_ignored={7}",
+                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5} trades_processed={6} secondary_ignored={7} quote_flickers_suppressed={8} quote_flicker_ms={9}",
                 TopWallsText(askWalls), TopWallsText(bidWalls), untested, held, pulled,
                 bookFresh ? string.Empty : " BOOK_STALE", processedTradeUpdates,
-                Interlocked.Read(ref ignoredSecondaryTradeUpdates));
+                Interlocked.Read(ref ignoredSecondaryTradeUpdates), interactionQuoteFlickersSuppressed,
+                interactionQuoteFlickerMilliseconds);
             LogSessionLocked(now, "SNAPSHOT", string.Empty, double.NaN, 0, detail);
         }
 
