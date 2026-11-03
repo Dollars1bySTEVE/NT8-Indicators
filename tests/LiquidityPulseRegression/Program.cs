@@ -24,7 +24,7 @@ var names = new HashSet<string>
     "EndInteractionObservationLocked", "CompleteInteractionHorizonsLocked", "LogInteractionLocked",
     "ResetBookLocked", "AdvanceClockLocked", "SessionLogAcceptsLocked", "InterruptInteractionsForTerminationLocked",
     "ExpireInteractionDeparturesLocked", "InteractionBookIssueLocked",
-    "UpdateInteractionBookQualityLocked", "InteractionOverlapsQuoteEpisode",
+    "UpdateInteractionBookQualityLocked", "InteractionOverlapsQuoteEpisode", "TrackInteractionQuoteValidityLocked",
     "EndInteractionBookObservationsLocked",
     "ExpireInteractionObservationsLocked"
 };
@@ -621,6 +621,34 @@ class LiquidityPulse : IndicatorStub
         lp.UpdateInteractionClockLocked(now.AddMilliseconds(125));
         Check(lp.interactions[0].BookGaps == 1 && lp.logs.Count(k => k == "INTERACTION_QUALITY") == 2,
             "Sustained quote quality recovers once without being relabeled as a flicker");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        lp.lastAsk = lp.lastBid;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(10));
+        lp.lastAsk = 100.25;
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(125));
+        Check(lp.interactions[0].BookGaps == 1 && lp.interactions[0].QuoteFlickers == 0
+            && lp.details.Any(d => d.Contains("status=quotes_invalid"))
+            && lp.details.Any(d => d.Contains("status=recovered")),
+            "Sustained quote invalidity first checked at recovery is still recorded as a gap");
+        lp.UpdateInteractionClockLocked(now.AddMilliseconds(130));
+        Check(lp.interactions[0].BookGaps == 1 && lp.logs.Count(k => k == "INTERACTION_QUALITY") == 2,
+            "A sustained episode recorded at recovery is not counted twice");
+
+        lp = InteractionFixture(now, false);
+        lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
+        Func<int, double, MarketDataEventArgs> bidAt = (ms, bid) => new MarketDataEventArgs
+            { Time = now.AddMilliseconds(ms), MarketDataType = MarketDataType.Bid, Price = bid };
+        lp.OnMarketData(bidAt(0, 100.25));
+        lp.UpdateInteractionClockLocked(now); // detection pass; 40/80ms callbacks fall inside the 150ms throttle
+        lp.OnMarketData(bidAt(40, 100));
+        lp.OnMarketData(bidAt(80, 100.25));
+        lp.OnMarketData(new MarketDataEventArgs { Time = now.AddMilliseconds(110),
+            MarketDataType = MarketDataType.Last, Price = 100, Bid = 100, Ask = 100.25, Volume = 1 });
+        Check(lp.interactions[0].BookGaps == 0 && lp.interactions[0].QuoteFlickers == 1
+            && !lp.details.Any(d => d.Contains("status=quotes_invalid")),
+            "Separate sub-100ms bid/ask callback flickers are not merged into one sustained gap");
 
         lp = InteractionFixture(now, false);
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);

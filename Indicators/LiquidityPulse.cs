@@ -923,6 +923,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     lastAsk = e.Price;
                     lastAskUpdate = now;
                 }
+                if ((e.MarketDataType == MarketDataType.Bid || e.MarketDataType == MarketDataType.Ask)
+                    && InteractionLoggingEnabled())
+                    TrackInteractionQuoteValidityLocked(now);
                 else if (e.MarketDataType == MarketDataType.Last && e.Volume > 0)
                 {
                     processedTradeUpdates++;
@@ -2024,6 +2027,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private string InteractionBookIssueLocked(DateTime now)
         {
+            bool validQuotes = TrackInteractionQuoteValidityLocked(now);
+            if (IsBookStale() || IsDepthOlderThan(2))
+                return "depth_stale";
+            if (!validQuotes)
+                return (now - interactionQuoteInvalidSince).TotalMilliseconds
+                    >= InteractionQuoteInvalidGraceMilliseconds ? "quotes_invalid" : "quotes_pending";
+            return null;
+        }
+
+        // Called on every primary bid/ask change, before detection throttling, so each validity transition is timed.
+        private bool TrackInteractionQuoteValidityLocked(DateTime now)
+        {
             bool validQuotes = HasValidQuotes(lastBid, lastAsk);
             if (!validQuotes)
             {
@@ -2050,15 +2065,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                         if (InteractionOverlapsQuoteEpisode(interaction))
                             interaction.QuoteFlickers++;
                 }
+                else if (!IsBookStale() && !IsDepthOlderThan(2))
+                {
+                    // Sustained episode first seen at recovery; already-flagged interactions are skipped.
+                    UpdateInteractionBookQualityLocked(now, "quotes_invalid");
+                }
                 interactionQuoteInvalidSince = DateTime.MinValue;
             }
-
-            if (IsBookStale() || IsDepthOlderThan(2))
-                return "depth_stale";
-            if (!validQuotes)
-                return (now - interactionQuoteInvalidSince).TotalMilliseconds
-                    >= InteractionQuoteInvalidGraceMilliseconds ? "quotes_invalid" : "quotes_pending";
-            return null;
+            return validQuotes;
         }
 
         private void UpdateInteractionBookQualityLocked(DateTime now, string issue)
