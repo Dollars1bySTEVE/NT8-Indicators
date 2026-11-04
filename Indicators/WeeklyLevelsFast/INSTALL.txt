@@ -1,0 +1,168 @@
+WEEKLY LEVELS FAST - NT8 SOURCE EDITION
+=====================================
+
+STATUS
+This is a new implementation based on the visible settings, not a decompiled
+copy of the vendor's indicator. The calculation core has automated tests.
+The full source has also been checked for C# syntax. Native NinjaTrader
+compilation, connection behavior, sessions and rendering must still be
+verified in NinjaTrader 8 on Windows. Do not rely on it for live decisions
+before comparing its levels on a simulation chart.
+
+INSTALL
+1. Close NinjaTrader.
+2. Copy WeeklyLevelsFast.cs to your NinjaTrader user-data folder:
+   Documents\NinjaTrader 8\bin\Custom\Indicators\
+   Use your actual user-data location if Documents is redirected.
+3. Start NinjaTrader. Open New > NinjaScript Editor and press F5 to compile.
+4. On an intraday price chart, add WeeklyLevelsFast from Indicators.
+5. Match the chart's instrument/contract and Trading Hours to the original.
+
+This repository contains SOURCE, not an NT8 NinjaScript import archive. Do not select
+it in Tools > Import > NinjaScript Add-On.
+
+DEFAULTS MATCHING THE SCREENSHOTS
+- IB duration: 30:00 (30 HOURS, not 30 minutes).
+- Value area: 70%.
+- IB high/mid/low; +/-50%, +/-100%, +/-150% on; +/-200% off.
+- Current week open, mid, VAH/VAL/POC, VWAP on.
+- Prior week high/low/close, open, mid, VAH/VAL/POC on.
+- Right-edge segments, 100 pixels wide, labels on, label prices off.
+- IB and prior-VA highlights off.
+- Colors, widths and dash styles are configurable under Plots.
+
+DATA MODES
+HistoricalTrades (default):
+  Requests 1-tick LAST-trade bars for current/prior-week calculations.
+  Volume profile uses reported traded volume at each trade price.
+  VWAP is sum(trade price * volume) / sum(volume).
+  Requires historical tick data from your provider. No Level II, Tick Replay,
+  or Order Flow volumetric-chart license is required by this implementation.
+  Data entitlement and availability still depend on your connection.
+
+MinuteEstimate:
+  Requests 1-minute LAST-trade bars. Each bar's volume is distributed uniformly
+  over its high-to-low tick prices. VWAP uses (high + low + close) / 3 weighted
+  by bar volume. Both are explicitly ESTIMATES; this mode cannot reproduce
+  an actual traded-volume profile or exact trade VWAP.
+  Price/IB levels use these 1-minute bars, independent of candle chart period.
+
+STARTUP / PERFORMANCE DESIGN
+- No additional synchronous tick series is added to the chart.
+- A cheap chart-bar price preview appears while a separate BarsRequest
+  loads the source data. Preview VA and VWAP are deliberately withheld.
+- Profile processing runs on a worker, not inside the historical chart-bar
+  loop or rendering callback.
+- Only the requested current/prior calendar weeks are processed.
+- Each new source bar contributes once. A developing/revisited source bar
+  replaces its old contribution instead of duplicating its volume.
+- VA is calculated when publishing a snapshot, not per historical tick.
+- Rendering reads a snapshot and draws short segments; no per-bar drawing
+  objects or repeated whole-history recalculation.
+- Live publication defaults to every 500 ms, configurable from 100-5000 ms.
+  Leave Calculate set to On each tick so the chart time boundary advances
+  promptly; use the refresh interval to control publication frequency.
+- Completed prior-week values and profiles are cached locally. When valid
+  cached prior-week data exists, the request starts at the current week.
+  Current-week tick history is still loaded at each startup.
+
+First-time tick downloads can STILL take time. NT8/provider data-loading
+infrastructure is shared, so asynchronous requests cannot guarantee that
+the platform itself will never be busy. The design avoids doing expensive
+profile work in this indicator's primary chart processing/rendering paths;
+it does not promise a measured NT8 startup improvement without native tests.
+The requested tick Bars object also consumes memory until the indicator is
+removed; aggregation does not eliminate NT8's underlying tick-data storage.
+
+WEEK / IB RULES
+- Trading week: Monday-Friday/Sunday as classified by the chart's Trading
+  Hours template's exchange trading date. A Sunday-evening futures session
+  assigned to Monday therefore belongs to the new week.
+- Week start: template's trading-day begin for Monday, converted through
+  NT8's SessionIterator. Use the same template and application time zone
+  when comparing with the original.
+- IB duration counts elapsed clock time from that start, including breaks;
+  it does not count only minutes with trading activity. A holiday with no
+  Monday session does NOT automatically move the anchor to Tuesday.
+- Tick IB includes trades at start, excludes trades exactly at end.
+- Minute IB includes bars ending at the IB boundary.
+- During the opening window the IB and extensions develop; afterward they
+  are fixed for the week.
+- Extensions are IB high + fraction * (IB high - IB low), or
+  IB low - fraction * (IB high - IB low).
+- Weekly mid = (weekly high + weekly low) / 2.
+- VA begins at the highest-volume tick (POC) and expands one adjacent tick
+  at a time toward the heavier side until it includes the selected volume
+  percentage. POC ties and equal expansion volumes choose the lower price.
+  Gaps have zero volume. There is no 2-row grouping or price smoothing.
+- "VA MID as POC" moves only that displayed line to (VAH + VAL) / 2; it does
+  not change how the value area is calculated.
+- Prior week means the immediately preceding calendar trading week, not
+  an arbitrary older week if an entire week's data is missing.
+
+The original vendor's exact VA algorithm, holiday handling, midpoint rules
+and IB anchoring cannot be inferred from these screenshots. Differences
+must be checked side by side; this is not a guaranteed numerical clone.
+
+CACHE
+Location: <NinjaTrader user-data>\cache\WeeklyLevelsFast\
+Cache identity includes contract, tick size, source mode, session-template
+name and regular-session definitions, application/template time zones, and
+IB duration. Value-area percentage can change without rebuilding a profile.
+Only weeks observed near their scheduled opening are eligible for saving.
+This catches obvious truncated beginnings; it CANNOT prove that a provider
+returned every trade or detect missing history in the middle of a week.
+Failures are shown on the chart and logged, never silently replaced by
+estimated profiles.
+
+After provider/history corrections, changes to holiday overrides, or changing
+data feeds, set "Use completed-week cache" to false and reload the indicator.
+Keep it false while correcting/comparing history. To rebuild saved caches,
+remove only the .bin files in the WeeklyLevelsFast cache subfolder while the
+indicator is not running, then enable caching again. Disabling caching alone
+does not overwrite existing files.
+
+SCOPE / LIMITATIONS
+- Intended for intraday, real-price candle/bar charts.
+- Not intended for strategies, Strategy Analyzer, optimizer, synthetic-price
+  charts such as Heiken Ashi, or market-depth analysis.
+- Only current right-edge levels are drawn. Historical per-week plot lines,
+  historical/developing VA trails, proximity modes and price-scale label
+  matching from unseen vendor options are not implemented.
+- Highlighting fills the right-edge band, not the whole chart history.
+- Overlapping labels are moved upward; if no room remains, labels are
+  omitted, but their price lines remain at the true prices.
+- Chart price preview can be incomplete when Days to load omits the weekly
+  opening, or a chart bar straddles the IB end. Background-source levels
+  replace it. Treat the preview as provisional.
+- Profiles are as complete as the historical trades supplied by your feed.
+  A late-start warning means levels may be partial. Sparse/holiday markets
+  can produce this warning even when the first actual trade is legitimate.
+- Reload after moving Playback backward, replacing historical data, or
+  changing connections. These state changes have not been platform-tested.
+- No Level II option is included: the screenshots do not define one, and
+  resting depth cannot replace traded volume for these calculations.
+- A source-data/calculation error clears the displayed levels and is logged.
+- No orders are submitted and no account or credential data is accessed.
+
+NATIVE ACCEPTANCE CHECKS BEFORE USE
+1. Compile in the installed NT8 version and check the Log tab for errors.
+2. On NQ 15-minute candles, compare week open, prior H/L/C, IB boundaries,
+   all extension formulas, VWAP and profile levels with trusted reference data.
+3. Verify Sunday-evening rollover, Friday close, the full 30-hour IB, a
+   holiday week and a daylight-saving transition with your trading template.
+4. Load two full weeks with cache disabled, reload with it enabled, then
+   compare both values and actual startup time. Do not infer platform
+   speed from the portable calculation benchmark.
+5. Exercise chart removal/reload, connection loss/reconnect, resizing,
+   workspaces, theme changes and developing 1-minute bar updates.
+6. Confirm clear warnings for missing tick history, corrupt/unwritable
+   caches and historical requests that fail.
+
+PORTABLE DEVELOPER CHECK
+With .NET SDK 10 installed:
+  dotnet run --project tests/WeeklyLevelsFast/WeeklyLevelsFast.Tests.csproj -c Release
+The tests compile only the portable calculation core, parse the entire source
+for C# syntax, exercise IB/VWAP/VA/rollover/cache behavior, check measured
+70% VA coverage on randomized profiles, and process 1,000,000 synthetic trades.
+They do not compile against NinjaTrader or test its data/rendering lifecycle.

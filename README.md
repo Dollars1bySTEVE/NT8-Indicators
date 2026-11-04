@@ -1,3 +1,14 @@
+# WeeklyLevelsFast
+
+Standalone weekly IB and extensions, current/prior-week reference levels and
+volume profiles, and weekly VWAP. No Level II required. Background profile
+processing and completed-week caching target repeated startup work.
+
+**First source version; native NT8 compilation and startup performance still need
+verification.** [Installation, source download and limitations](Indicators/WeeklyLevelsFast/README.md).
+
+---
+
 # ATRTradingControlPanel
 
 **ATR-based NinjaTrader 8 strategy with an on-chart WPF execution panel**
