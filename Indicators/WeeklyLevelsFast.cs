@@ -37,7 +37,8 @@ namespace WeeklyLevelsFastCalculation
 
     public sealed class LevelSnapshot
     {
-        public readonly double[] Levels = new double[26];
+        public const int Count = 25;
+        public readonly double[] Levels = new double[Count];
         public DateTime Week;
         public bool IbComplete;
 
@@ -176,46 +177,59 @@ namespace WeeklyLevelsFastCalculation
         public LevelSnapshot Snapshot(double percent, bool currentMidPoc, bool previousMidPoc,
             bool includeVolume)
         {
+            return Snapshot(percent, currentMidPoc, previousMidPoc, includeVolume,
+                Current == null ? DateTime.MinValue : Current.Key);
+        }
+
+        public LevelSnapshot Snapshot(double percent, bool currentMidPoc, bool previousMidPoc,
+            bool includeVolume, DateTime week)
+        {
             if (percent <= 0 || percent > 100 || double.IsNaN(percent))
                 throw new ArgumentOutOfRangeException("percent");
             LevelSnapshot result = new LevelSnapshot();
             if (Current == null)
                 return result;
-            result.Week = Current.Key;
-            result.IbComplete = lastTime >= Current.Begin.Add(ibDuration);
+            WeekData current = Current.Key == week ? Current : null;
+            WeekData previous = current != null ? Previous
+                : (Current.Key == week.AddDays(-7) ? Current : null);
+            result.Week = week;
             double[] p = result.Levels;
-            if (!double.IsInfinity(Current.IbHigh) && !double.IsInfinity(Current.IbLow))
+            if (current != null)
             {
-                p[0] = Current.IbHigh;
-                p[1] = (Current.IbHigh + Current.IbLow) / 2;
-                p[2] = Current.IbLow;
-                double range = Current.IbHigh - Current.IbLow;
-                for (int i = 0; i < 4; i++)
+                result.IbComplete = lastTime >= current.Begin.Add(ibDuration);
+                if (!double.IsInfinity(current.IbHigh) && !double.IsInfinity(current.IbLow))
                 {
-                    p[3 + i * 2] = Current.IbHigh + range * (i + 1) * 0.5;
-                    p[4 + i * 2] = Current.IbLow - range * (i + 1) * 0.5;
+                    p[0] = current.IbHigh;
+                    p[1] = (current.IbHigh + current.IbLow) / 2;
+                    p[2] = current.IbLow;
+                    double range = current.IbHigh - current.IbLow;
+                    for (int i = 0; i < 4; i++)
+                    {
+                        p[3 + i * 2] = current.IbHigh + range * (i + 1) * 0.5;
+                        p[4 + i * 2] = current.IbLow - range * (i + 1) * 0.5;
+                    }
                 }
-            }
-            p[14] = Current.Open;
-            p[25] = (Current.High + Current.Low) / 2;
-            if (includeVolume)
-            {
-                ValueArea(Current, percent, out p[15], out p[16], out p[17]);
-                if (currentMidPoc && !double.IsNaN(p[15]))
-                    p[16] = (p[15] + p[17]) / 2;
-                if (Current.Volume > 0)
-                    p[21] = Current.PriceVolume / Current.Volume;
-            }
-            if (Previous != null)
-            {
-                p[11] = Previous.High;
-                p[12] = Previous.Low;
-                p[13] = Previous.Close;
-                p[22] = Previous.Open;
-                p[24] = (Previous.High + Previous.Low) / 2;
+                p[14] = current.Open;
+                p[24] = (current.High + current.Low) / 2;
                 if (includeVolume)
                 {
-                    ValueArea(Previous, percent, out p[18], out p[19], out p[20]);
+                    ValueArea(current, percent, out p[15], out p[16], out p[17]);
+                    if (currentMidPoc && !double.IsNaN(p[15]))
+                        p[16] = (p[15] + p[17]) / 2;
+                    if (current.Volume > 0)
+                        p[21] = current.PriceVolume / current.Volume;
+                }
+            }
+            if (previous != null)
+            {
+                p[11] = previous.High;
+                p[12] = previous.Low;
+                p[13] = previous.Close;
+                p[22] = previous.Open;
+                p[23] = (previous.High + previous.Low) / 2;
+                if (includeVolume)
+                {
+                    ValueArea(previous, percent, out p[18], out p[19], out p[20]);
                     if (previousMidPoc && !double.IsNaN(p[18]))
                         p[19] = (p[18] + p[20]) / 2;
                 }
@@ -415,6 +429,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private volatile bool failed;
         private int sourceIndex = -1;
         private long cutoffTicks;
+        private long chartWeekTicks;
         private int dirty;
         private int workerScheduled;
         private System.Threading.Timer timer;
@@ -543,16 +558,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Interlocked.Exchange(ref cutoffTicks, Time[0].Ticks);
                 Interlocked.Exchange(ref dirty, 1);
             }
+            LocateSession(previewSessions, Time[0], ref previewSessionReady, true);
+            DateTime week = WeeklyLevelsFastCalculation.WeeklyEngine.Monday(
+                previewSessions.ActualTradingDayExchange);
+            if (week != previewWeek)
+            {
+                previewWeek = week;
+                previewWeekBegin = previewSessions.GetTradingDayBeginLocal(week);
+                if (week.Ticks > Interlocked.Read(ref chartWeekTicks))
+                {
+                    Interlocked.Exchange(ref chartWeekTicks, week.Ticks);
+                    Interlocked.Exchange(ref dirty, 1);
+                }
+            }
             if (!sourcePublished)
             {
-                LocateSession(previewSessions, Time[0], ref previewSessionReady, true);
-                DateTime week = WeeklyLevelsFastCalculation.WeeklyEngine.Monday(
-                    previewSessions.ActualTradingDayExchange);
-                if (week != previewWeek)
-                {
-                    previewWeek = week;
-                    previewWeekBegin = previewSessions.GetTradingDayBeginLocal(week);
-                }
                 preview.Update(CurrentBar, week, previewWeekBegin,
                     Time[0], Open[0], High[0], Low[0], Close[0], Volume[0], false);
                 previewSnapshot = preview.Snapshot(ValueAreaPercent, false, false, false);
@@ -560,7 +580,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             WeeklyLevelsFastCalculation.LevelSnapshot published = snapshot;
             if (sourcePublished && published != null)
             {
-                for (int i = 0; i < 26; i++)
+                for (int i = 0; i < WeeklyLevelsFastCalculation.LevelSnapshot.Count; i++)
                     Values[i][0] = published.Levels[i];
             }
         }
@@ -583,6 +603,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             locator.GetNextSession(last, true);
             DateTime week = WeeklyLevelsFastCalculation.WeeklyEngine.Monday(
                 locator.ActualTradingDayExchange);
+            Interlocked.Exchange(ref chartWeekTicks, week.Ticks);
             cacheIdentity = BuildCacheIdentity();
             using (SHA256 hash = SHA256.Create())
                 cachePrefix = BitConverter.ToString(hash.ComputeHash(
@@ -788,14 +809,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Fail("No source trades/bars were returned within the chart's time range.");
                     return;
                 }
+                DateTime chartWeek = new DateTime(Interlocked.Read(ref chartWeekTicks));
                 snapshot = engine.Snapshot(ValueAreaPercent, CurrentWeekVaMidAsPoc,
-                    PriorWeekVaMidAsPoc, true);
+                    PriorWeekVaMidAsPoc, true, chartWeek);
                 sourcePublished = true;
                 status = Source == WeeklyLevelsFastSource.HistoricalTrades
                     ? "Trade-volume profile" : "ESTIMATED: 1-minute profile / typical-price VWAP";
-                if (!snapshot.IbComplete)
-                    status += " | IB developing";
-                if (engine.Previous == null)
+                string missingWeek = "Source data has not reached the chart's current week ("
+                    + chartWeek.ToString("yyyy-MM-dd") + "); current-week levels withheld.";
+                if (engine.Current.Key != chartWeek)
+                {
+                    status += " | MISSING current-week source data";
+                    if (warning != missingWeek)
+                        Warn(missingWeek);
+                }
+                else
+                {
+                    if (warning == missingWeek)
+                        warning = "";
+                    if (!snapshot.IbComplete)
+                        status += " | IB developing";
+                }
+                if (double.IsNaN(snapshot.Levels[11]))
                     status += " | Prior week unavailable";
                 SavePrevious();
             }
@@ -843,7 +878,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (index <= 20) return PriorWeekValueArea;
             if (index == 21) return CurrentWeekVWAP;
             if (index == 22) return PriorWeekOpen;
-            if (index == 24) return PriorWeekMid;
+            if (index == 23) return PriorWeekMid;
             return CurrentWeekMid;
         }
 
@@ -871,8 +906,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (dxBrushes == null)
             {
-                dxBrushes = new SharpDX.Direct2D1.Brush[26];
-                brushSources = new System.Windows.Media.Brush[26];
+                dxBrushes = new SharpDX.Direct2D1.Brush[WeeklyLevelsFastCalculation.LevelSnapshot.Count];
+                brushSources = new System.Windows.Media.Brush[WeeklyLevelsFastCalculation.LevelSnapshot.Count];
                 dxStyles = new SharpDX.Direct2D1.StrokeStyle[5];
                 SharpDX.Direct2D1.DashStyle[] dashes = {
                     SharpDX.Direct2D1.DashStyle.Solid, SharpDX.Direct2D1.DashStyle.Dash,
@@ -885,7 +920,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory,
                     "Arial", LabelFontSize);
             }
-            for (int i = 0; i < 26; i++)
+            for (int i = 0; i < WeeklyLevelsFastCalculation.LevelSnapshot.Count; i++)
             {
                 if (dxBrushes[i] == null || !ReferenceEquals(brushSources[i], Plots[i].Brush))
                 {
@@ -923,7 +958,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (PriorWeekVAHighlight && PriorWeekValueArea)
                     FillBand(view.Levels[18], view.Levels[20], x1, x2, chartScale, dxBrushes[18]);
                 List<float> labelPositions = new List<float>();
-                for (int i = 0; i < 26; i++)
+                for (int i = 0; i < WeeklyLevelsFastCalculation.LevelSnapshot.Count; i++)
                 {
                     double price = view.Levels[i];
                     if (!Enabled(i) || double.IsNaN(price) || double.IsInfinity(price))

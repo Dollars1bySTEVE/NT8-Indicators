@@ -60,7 +60,9 @@ internal static class Program
         Equal(110, values.Levels[21], "Trade VWAP");
         Equal(110, values.Levels[16], "Volume POC");
         True(values.IbComplete, "IB complete after 30 hours");
-        Equal(110, values.Levels[25], "Week midpoint is high-low midpoint");
+        Equal(110, values.Levels[24], "Week midpoint is high-low midpoint");
+        True(values.Levels.Length == 25 && LevelSnapshot.Count == 25, "Snapshot matches 25 registered plots");
+        True(double.IsNaN(values.Levels[23]), "No prior-week midpoint without a prior week");
 
         Trade(exact, 2, 120, 15, 30);
         Equal(45, exact.Current.Volume, "Revisited tick volume replaces, not duplicates");
@@ -113,7 +115,23 @@ internal static class Program
         Equal(120, a.Levels[13], "Previous-week close");
         Equal(130, a.Levels[14], "New week open");
         Equal(100, a.Levels[22], "Previous-week open");
+        Equal(110, a.Levels[23], "Previous-week midpoint in PW-Mid slot");
+        Equal(130, a.Levels[24], "Current-week midpoint in WK-Mid slot");
         True(!a.IbComplete, "New IB developing");
+
+        WeeklyEngine lagging = new WeeklyEngine(1, TimeSpan.FromHours(30), true);
+        Trade(lagging, 0, 100, 10, 0);
+        Trade(lagging, 1, 120, 10, 1);
+        a = lagging.Snapshot(70, false, false, true, Monday.AddDays(7));
+        True(double.IsNaN(a.Levels[0]) && double.IsNaN(a.Levels[14]) && double.IsNaN(a.Levels[16])
+            && double.IsNaN(a.Levels[21]) && double.IsNaN(a.Levels[24]),
+            "Current-week levels withheld while source is still in the prior week");
+        True(!a.IbComplete, "Withheld week does not report a complete IB");
+        Equal(120, a.Levels[11], "Lagging source still supplies prior-week high");
+        Equal(100, a.Levels[22], "Lagging source still supplies prior-week open");
+        Equal(110, a.Levels[23], "Lagging source still supplies prior-week midpoint");
+        True(double.IsNaN(lagging.Snapshot(70, false, false, true, Monday.AddDays(14)).Levels[11]),
+            "Source two weeks behind supplies no levels");
 
         string directory = Path.Combine(Path.GetTempPath(), "weekly-levels-test-" + Guid.NewGuid().ToString("N"));
         string path = Path.Combine(directory, "week.bin");
