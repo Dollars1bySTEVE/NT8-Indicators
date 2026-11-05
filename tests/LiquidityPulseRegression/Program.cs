@@ -26,12 +26,14 @@ var names = new HashSet<string>
     "ExpireInteractionDeparturesLocked", "InteractionBookIssueLocked",
     "UpdateInteractionBookQualityLocked", "InteractionOverlapsQuoteEpisode", "TrackInteractionQuoteValidityLocked",
     "EndInteractionBookObservationsLocked",
-    "ExpireInteractionObservationsLocked"
+    "ExpireInteractionObservationsLocked", "InteractionPendingLimit", "LogSnapshotLocked", "TopWallsText"
 };
 var members = indicator.Members.Where(m => names.Contains(m switch
 {
     MethodDeclarationSyntax method => method.Identifier.Text,
     BaseTypeDeclarationSyntax type => type.Identifier.Text,
+    FieldDeclarationSyntax field when field.Declaration.Variables.Count == 1
+        => field.Declaration.Variables[0].Identifier.Text,
     _ => ""
 })).ToArray();
 if (members.Length != names.Count)
@@ -93,6 +95,10 @@ class LiquidityPulse : IndicatorStub
     static int[] interactionBarriers = { 8, 16, 32 };
     const double InteractionQuoteInvalidGraceMilliseconds = 100;
     long interactionSequence, interactionLevelSequence;
+    int interactionPendingPeak;
+    long interactionCapacityInterruptions;
+    DateTime lastSessionLogSnapshot;
+    int SessionLogSnapshotSeconds = 5;
     DateTime lastInteractionTrade, lastInteractionDepth, lastClockTime;
     DateTime interactionQuoteInvalidSince;
     long interactionQuoteFlickersSuppressed, interactionQuoteFlickerMilliseconds;
@@ -469,14 +475,14 @@ class LiquidityPulse : IndicatorStub
             "Disabled, historical and failed logging must not collect interaction state");
 
         lp = InteractionFixture(now, false);
-        for (int i = 0; i < 512; i++)
+        for (int i = 0; i < InteractionPendingLimit; i++)
         {
             var watch = new InteractionWatch { Id = "capacity" + i, Price = 100, Available = true };
             lp.interactions.Add(new LevelInteraction { Watch = watch, Id = "old" + i,
                 Started = now, LastTrade = now, StartPrice = 100, LastPrice = 100, Observing = false });
         }
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
-        Check(lp.interactions.Count == 512 && lp.details.Any(d => d.Contains("reason=capacity")),
+        Check(lp.interactions.Count == InteractionPendingLimit && lp.details.Any(d => d.Contains("reason=capacity")),
             "Capacity limits explicitly interrupt the oldest outcome instead of silently dropping it");
 
         lp = InteractionFixture(now, false);
@@ -747,14 +753,74 @@ class LiquidityPulse : IndicatorStub
                 Price = lockViaBid ? 100 : 100.25 });
             bidDepth.Time = now.AddMilliseconds(90); bidDepth.Volume = 50;
             lp.OnMarketDepth(bidDepth);
-            Check(locked.BookGaps == 1 && locked.AddedSize == 0 && locked.Refills == 0 && locked.LastSize == 50,
+            Check(locked.BookGaps == 0 && locked.QuoteFlickers == 1
+                && locked.AddedSize == 0 && locked.Refills == 0 && locked.LastSize == 50,
                 "Primary " + (lockViaBid ? "Bid" : "Ask") + " callbacks must record brief locks between depth updates");
             for (int seconds = 5; seconds <= 35; seconds += 5)
                 lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 100, 1, 0, false);
             outcomeIndex = lp.logs.IndexOf("INTERACTION_OUTCOME");
-            Check(outcomeIndex >= 0 && lp.details[outcomeIndex].Contains("flow_complete=0"),
-                "A quote lock seen only by a primary quote callback marks the horizon flow incomplete");
+            Check(outcomeIndex >= 0 && lp.details[outcomeIndex].Contains("flow_complete=1")
+                && lp.details[outcomeIndex].Contains("quote_flickers=1"),
+                "A sub-100ms quote lock seen only by quote callbacks is counted without invalidating the horizon");
         }
+
+        lp = InteractionFixture(now, false);
+        lp.LogSnapshotLocked(now, true);
+        Check(lp.details.Last().Contains("interactions_pending=0 ")
+            && lp.details.Last().Contains("interactions_pending_peak=0 ")
+            && lp.details.Last().Contains("interactions_pending_limit=1024 ")
+            && lp.details.Last().Contains("interaction_capacity_interruptions=0"),
+            "Snapshots identify the new capacity even before any interactions start");
+        for (int visit = 0; visit < 600; visit++)
+        {
+            DateTime approach = now.AddSeconds(visit * 5);
+            lp.ProcessInteractionTradeLocked(approach, 100, 1, 0, false);
+            lp.ProcessInteractionTradeLocked(approach.AddSeconds(1), 103, 1, 0, false);
+            lp.UpdateInteractionClockLocked(approach.AddSeconds(4));
+        }
+        Check(lp.interactions.Count == 600 && lp.interactionPendingPeak == 600
+            && lp.interactionCapacityInterruptions == 0
+            && !lp.details.Any(d => d.Contains("reason=capacity")),
+            "Six hundred rearmed approaches within an hour retain all pending outcomes without eviction");
+        lp.interactionWatches["B:100"].Available = false;
+        for (int seconds = 3000; seconds <= 6600; seconds += 5)
+            lp.ProcessInteractionTradeLocked(now.AddSeconds(seconds), 103, 1, 0, false);
+        Check(lp.interactions.Count == 0
+            && lp.details.Count(d => d.Contains("horizon_seconds=3600")) == 600
+            && lp.logs.Count(k => k == "INTERACTION_OUTCOME") == 2400,
+            "Every retained approach completes all four horizons on a continuous tape");
+        lp.LogSnapshotLocked(now.AddSeconds(6600), true);
+        Check(lp.details.Last().Contains("interactions_pending=0 ")
+            && lp.details.Last().Contains("interactions_pending_peak=600 ")
+            && lp.details.Last().Contains("interaction_capacity_interruptions=0"),
+            "Peak pending count persists after all outcomes complete");
+
+        lp = InteractionFixture(now, false);
+        LevelInteraction evicted = null;
+        for (int visit = 0; visit <= InteractionPendingLimit; visit++)
+        {
+            lp.interactionWatches["B:100"].Armed = true;
+            lp.ProcessInteractionTradeLocked(now.AddMilliseconds(visit), 100, 1, 0, false);
+            var latest = lp.interactions.Last();
+            if (visit == 0) evicted = latest;
+            lp.EndInteractionObservationLocked(now.AddMilliseconds(visit), latest, "departed");
+        }
+        Check(lp.interactions.Count == InteractionPendingLimit && !lp.interactions.Contains(evicted)
+            && lp.interactionPendingPeak == InteractionPendingLimit
+            && lp.interactionCapacityInterruptions == 1
+            && lp.details.Count(d => d.Contains("reason=capacity")) == 1,
+            "The hard cap remains bounded and explicitly censors only the oldest pending interaction");
+        lp.LogSnapshotLocked(now.AddSeconds(2), true);
+        Check(lp.details.Last().Contains("interactions_pending=1024 ")
+            && lp.details.Last().Contains("interactions_pending_peak=1024 ")
+            && lp.details.Last().Contains("interaction_capacity_interruptions=1"),
+            "Snapshots expose pending pressure and cumulative capacity losses");
+        lp.InterruptInteractionsLocked(now.AddSeconds(3), "trade_gap");
+        lp.LogSnapshotLocked(now.AddSeconds(7), true);
+        Check(lp.details.Last().Contains("interactions_pending=0 ")
+            && lp.details.Last().Contains("interactions_pending_peak=1024 ")
+            && lp.details.Last().Contains("interaction_capacity_interruptions=1"),
+            "Feed interruptions clear pending records without erasing instance capacity diagnostics");
 
         lp = InteractionFixture(now, false);
         lp.ProcessInteractionTradeLocked(now, 100, 1, 0, false);
