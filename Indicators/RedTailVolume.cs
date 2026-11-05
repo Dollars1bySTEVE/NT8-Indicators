@@ -64,8 +64,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double cachedTodayHigh;
         private double cachedTodayLow;
         private double cachedTodayVolume;
-        private int lastVolumeBar = -1;
-        private double lastBarVolume;
         
         protected override void OnStateChange()
         {
@@ -140,8 +138,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 cachedTodayHigh = double.MinValue;
                 cachedTodayLow = double.MaxValue;
                 cachedTodayVolume = 0;
-                lastVolumeBar = -1;
-                lastBarVolume = 0;
             }
         }
 
@@ -154,7 +150,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             }
             
-            if (BarsInProgress != 0 || CurrentBars[0] < 0)
+            if (CurrentBars[0] < 0 || Volume[0] == 0)
                 return;
                 
             // Calculate proxy buyer/seller volume using candle OHLC
@@ -255,13 +251,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     cachedTodayHigh = High[0];
                 if (Low[0] < cachedTodayLow)
                     cachedTodayLow = Low[0];
-                // Volume[0] is cumulative within a bar, not the volume of this tick.
-                cachedTodayVolume += CurrentBar == lastVolumeBar
-                    ? Volume[0] - lastBarVolume
-                    : Volume[0];
+                cachedTodayVolume += Volume[0];
             }
-            lastVolumeBar = CurrentBar;
-            lastBarVolume = Volume[0];
             
             // Use cached values
             todayVolume = cachedTodayVolume;
@@ -345,15 +336,21 @@ namespace NinjaTrader.NinjaScript.Indicators
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
             base.OnRender(chartControl, chartScale);
-
-            if (RenderTarget == null || ChartPanel == null || Bars == null || CurrentBar < 0)
+            
+            if (Bars == null || ChartControl == null || CurrentBar < 0)
                 return;
-
-            float rangeWidth = ShowDailyRangePanel ? RenderDailyRangePanel() : 0;
-            RenderVolumeStatsPanel(rangeWidth);
+            
+            // Render Daily Range Panel (Top-Left)
+            if (ShowDailyRangePanel)
+            {
+                RenderDailyRangePanel();
+            }
+            
+            // Render Volume Statistics Panel (Top-Right)
+            RenderVolumeStatsPanel();
         }
         
-        private float RenderDailyRangePanel()
+        private void RenderDailyRangePanel()
         {
             string rangeText = "";
             
@@ -389,10 +386,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 rangeText += $"[{percentOfAvgRange}%]";
             }
             
-            return RenderStatisticsText(rangeText, rangeTextColor, false, 0);
+            if (!string.IsNullOrEmpty(rangeText))
+            {
+                Draw.TextFixed(this, "DailyRangeStats", $" {rangeText} ", TextPosition.TopLeft, 
+                    rangeTextColor, new SimpleFont("Arial", 11), 
+                    Brushes.Transparent, rangeBgColor, 0);
+            }
         }
         
-        private void RenderVolumeStatsPanel(float rangeWidth)
+        private void RenderVolumeStatsPanel()
         {
             
             string labelText = "";
@@ -461,32 +463,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 labelText += $"[Buy: {currentBuyPercent:F1}%]  [Sell: {currentSellPercent:F1}%]";
             }
             
-            RenderStatisticsText(labelText, textColor, true, rangeWidth);
-        }
-
-        private float RenderStatisticsText(string text, Brush color, bool alignRight, float rangeWidth)
-        {
-            if (string.IsNullOrWhiteSpace(text) || ChartPanel.W <= 8 || ChartPanel.H <= 8)
-                return 0;
-
-            float availableWidth = ChartPanel.W - 8;
-            using (var format = new SharpDX.DirectWrite.TextFormat(
-                Core.Globals.DirectWriteFactory, "Arial", 11))
-            using (var layout = new SharpDX.DirectWrite.TextLayout(
-                Core.Globals.DirectWriteFactory, text.Trim(), format,
-                availableWidth, ChartPanel.H - 8))
-            using (var textBrush = color.ToDxBrush(RenderTarget))
+            if (!string.IsNullOrEmpty(labelText))
             {
-                float width = Math.Min(availableWidth, layout.Metrics.Width);
-                float x = alignRight ? ChartPanel.X + ChartPanel.W - width - 4 : ChartPanel.X + 4;
-                float y = ChartPanel.Y + 4;
-
-                // Keep the two readouts apart when the volume panel is narrow.
-                if (alignRight && rangeWidth > 0 && rangeWidth + width + 8 > availableWidth)
-                    y += layout.Metrics.Height + 4;
-
-                RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, textBrush);
-                return width;
+                Draw.TextFixed(this, "VolumeStats", $" {labelText} ", TextPosition.TopRight, 
+                    textColor, new SimpleFont("Arial", 11), 
+                    Brushes.Transparent, Brushes.Transparent, 0);
             }
         }
 
