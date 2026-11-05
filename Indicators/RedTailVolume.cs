@@ -477,6 +477,15 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        // Leave headroom above the tallest visible bar so the text readouts
+        // at the top of the panel do not overlap the volume bars.
+        public override void OnCalculateMinMax()
+        {
+            base.OnCalculateMinMax();
+            if (MaxValue > 0)
+                MaxValue = MaxValue * 1.25;
+        }
+
         #region Properties
         
         [NinjaScriptProperty]
