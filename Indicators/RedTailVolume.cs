@@ -230,7 +230,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             // Calculate Ripster volume statistics
             CalculateVolumeStatistics();
-            UpdateStatisticsPanels();
         }
         
         private void CalculateVolumeStatistics()
@@ -343,26 +342,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
         
-        private void UpdateStatisticsPanels()
+        protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
-            if (ChartControl == null)
+            base.OnRender(chartControl, chartScale);
+
+            if (RenderTarget == null || ChartPanel == null || Bars == null || CurrentBar < 0)
                 return;
-            
-            // Create drawing objects on the data thread, never inside OnRender.
-            if (ShowDailyRangePanel)
-            {
-                RenderDailyRangePanel();
-            }
-            else
-            {
-                RemoveDrawObject("DailyRangeStats");
-            }
-            
-            // Render Volume Statistics Panel (Top-Right)
-            RenderVolumeStatsPanel();
+
+            float rangeWidth = ShowDailyRangePanel ? RenderDailyRangePanel() : 0;
+            RenderVolumeStatsPanel(rangeWidth);
         }
         
-        private void RenderDailyRangePanel()
+        private float RenderDailyRangePanel()
         {
             string rangeText = "";
             
@@ -398,19 +389,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 rangeText += $"[{percentOfAvgRange}%]";
             }
             
-            if (!string.IsNullOrEmpty(rangeText))
-            {
-                Draw.TextFixed(this, "DailyRangeStats", $" {rangeText} ", TextPosition.TopLeft, 
-                    rangeTextColor, new SimpleFont("Arial", 11), 
-                    Brushes.Transparent, rangeBgColor, 0);
-            }
-            else
-            {
-                RemoveDrawObject("DailyRangeStats");
-            }
+            return RenderStatisticsText(rangeText, rangeTextColor, false, 0);
         }
         
-        private void RenderVolumeStatsPanel()
+        private void RenderVolumeStatsPanel(float rangeWidth)
         {
             
             string labelText = "";
@@ -479,15 +461,32 @@ namespace NinjaTrader.NinjaScript.Indicators
                 labelText += $"[Buy: {currentBuyPercent:F1}%]  [Sell: {currentSellPercent:F1}%]";
             }
             
-            if (!string.IsNullOrEmpty(labelText))
+            RenderStatisticsText(labelText, textColor, true, rangeWidth);
+        }
+
+        private float RenderStatisticsText(string text, Brush color, bool alignRight, float rangeWidth)
+        {
+            if (string.IsNullOrWhiteSpace(text) || ChartPanel.W <= 8 || ChartPanel.H <= 8)
+                return 0;
+
+            float availableWidth = ChartPanel.W - 8;
+            using (var format = new SharpDX.DirectWrite.TextFormat(
+                Core.Globals.DirectWriteFactory, "Arial", 11))
+            using (var layout = new SharpDX.DirectWrite.TextLayout(
+                Core.Globals.DirectWriteFactory, text.Trim(), format,
+                availableWidth, ChartPanel.H - 8))
+            using (var textBrush = color.ToDxBrush(RenderTarget))
             {
-                Draw.TextFixed(this, "VolumeStats", $" {labelText} ", TextPosition.TopRight, 
-                    textColor, new SimpleFont("Arial", 11), 
-                    Brushes.Transparent, Brushes.Transparent, 0);
-            }
-            else
-            {
-                RemoveDrawObject("VolumeStats");
+                float width = Math.Min(availableWidth, layout.Metrics.Width);
+                float x = alignRight ? ChartPanel.X + ChartPanel.W - width - 4 : ChartPanel.X + 4;
+                float y = ChartPanel.Y + 4;
+
+                // Keep the two readouts apart when the volume panel is narrow.
+                if (alignRight && rangeWidth > 0 && rangeWidth + width + 8 > availableWidth)
+                    y += layout.Metrics.Height + 4;
+
+                RenderTarget.DrawTextLayout(new SharpDX.Vector2(x, y), layout, textBrush);
+                return width;
             }
         }
 
