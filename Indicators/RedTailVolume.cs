@@ -64,6 +64,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double cachedTodayHigh;
         private double cachedTodayLow;
         private double cachedTodayVolume;
+        private int lastVolumeBar = -1;
         
         protected override void OnStateChange()
         {
@@ -242,7 +243,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 lastCalculatedDate = today;
                 cachedTodayHigh = High[0];
                 cachedTodayLow = Low[0];
-                cachedTodayVolume = Volume[0];
+                cachedTodayVolume = 0;
+                lastVolumeBar = CurrentBar;
             }
             else
             {
@@ -251,11 +253,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                     cachedTodayHigh = High[0];
                 if (Low[0] < cachedTodayLow)
                     cachedTodayLow = Low[0];
-                cachedTodayVolume += Volume[0];
+                if (CurrentBar != lastVolumeBar)
+                {
+                    cachedTodayVolume += Volume[1];
+                    lastVolumeBar = CurrentBar;
+                }
             }
             
             // Use cached values
-            todayVolume = cachedTodayVolume;
+            todayVolume = cachedTodayVolume + Volume[0];
             todayRange = cachedTodayHigh - cachedTodayLow;
                 
             // Calculate 30-day averages (only when we have daily bar data)
@@ -465,7 +471,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             
             if (!string.IsNullOrEmpty(labelText))
             {
-                Draw.TextFixed(this, "VolumeStats", $" {labelText} ", TextPosition.TopRight, 
+                Draw.TextFixed(this, "VolumeStats", $"\n {labelText} ", TextPosition.TopRight, 
                     textColor, new SimpleFont("Arial", 11), 
                     Brushes.Transparent, Brushes.Transparent, 0);
             }
