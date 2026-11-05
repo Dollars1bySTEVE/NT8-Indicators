@@ -268,8 +268,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private static readonly int[] interactionHorizons = { 30, 120, 600, 3600 };
         private static readonly int[] interactionBarriers = { 8, 16, 32 };
         private const double InteractionQuoteInvalidGraceMilliseconds = 100;
+        private const int InteractionPendingLimit = 1024;
         private long interactionSequence;
         private long interactionLevelSequence;
+        private int interactionPendingPeak;
+        private long interactionCapacityInterruptions;
         private DateTime lastInteractionTrade;
         private DateTime lastInteractionDepth;
         private DateTime interactionQuoteInvalidSince;
@@ -2291,10 +2294,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 });
                 if (quarantined)
                     continue;
-                if (interactions.Count >= 512)
+                if (interactions.Count >= InteractionPendingLimit)
                 {
                     LevelInteraction oldest = interactions[0];
                     LogInteractionLocked(now, oldest, "INTERRUPTED", "reason=capacity");
+                    interactionCapacityInterruptions++;
                     if (oldest.Watch.Current == oldest)
                         oldest.Watch.Current = null;
                     interactions.RemoveAt(0);
@@ -2315,6 +2319,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 watch.Armed = false;
                 watch.Visits++;
                 interactions.Add(interaction);
+                interactionPendingPeak = Math.Max(interactionPendingPeak, interactions.Count);
                 LogInteractionLocked(now, interaction, "START", string.Format(CultureInfo.InvariantCulture,
                     "visit={0} source={1} source_first_seen={2:yyyy-MM-ddTHH:mm:ss.fff} peak={3} qualifying_threshold={4} phase={5} key_level={6}",
                     watch.Visits, watch.Source, watch.FirstSeen, watch.PeakSize, watch.Threshold,
@@ -2518,11 +2523,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 else if (st == ResidualZoneState.Gone) pulled++;
             }
             string detail = string.Format(CultureInfo.InvariantCulture,
-                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5} trades_processed={6} secondary_ignored={7} quote_flickers_suppressed={8} quote_flicker_ms={9}",
+                "asks=[{0}] bids=[{1}] zones untested={2} held={3} pulled={4}{5} trades_processed={6} secondary_ignored={7} quote_flickers_suppressed={8} quote_flicker_ms={9} interactions_pending={10} interactions_pending_peak={11} interactions_pending_limit={12} interaction_capacity_interruptions={13}",
                 TopWallsText(askWalls), TopWallsText(bidWalls), untested, held, pulled,
                 bookFresh ? string.Empty : " BOOK_STALE", processedTradeUpdates,
                 Interlocked.Read(ref ignoredSecondaryTradeUpdates), interactionQuoteFlickersSuppressed,
-                interactionQuoteFlickerMilliseconds);
+                interactionQuoteFlickerMilliseconds, interactions.Count, interactionPendingPeak,
+                InteractionPendingLimit, interactionCapacityInterruptions);
             LogSessionLocked(now, "SNAPSHOT", string.Empty, double.NaN, 0, detail);
         }
 
