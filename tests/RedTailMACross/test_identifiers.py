@@ -32,13 +32,17 @@ class IndicatorIdentifierTests(unittest.TestCase):
                 + namespace
                 + r"\s*\{(.*?)(?=\nnamespace\s+NinjaTrader\.NinjaScript\.|\n#endregion)"
             )
-            match = re.search(pattern, generated, re.DOTALL)
-            self.assertIsNotNone(match, namespace)
-            declarations = re.findall(
-                r"public\s+(?:Indicators\.)?RedTailMACross\s+RedTailMACross"
-                r"\(([^)]*)\)",
-                match.group(1),
-            )
+            blocks = re.findall(pattern, generated, re.DOTALL)
+            self.assertTrue(blocks, namespace)
+            declarations = [
+                declaration
+                for block in blocks
+                for declaration in re.findall(
+                    r"public\s+(?:Indicators\.)?RedTailMACross\s+RedTailMACross"
+                    r"\(([^)]*)\)",
+                    block,
+                )
+            ]
             self.assertEqual(len(declarations), 2, namespace)
             self.assertEqual(sum("ISeries<double> input" in d for d in declarations), 1, namespace)
             for declaration in declarations:
