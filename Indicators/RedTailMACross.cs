@@ -12,6 +12,7 @@ using NinjaTrader.NinjaScript.DrawingTools;
 // RedTail MA Cross — MA crossover indicator with accuracy filters and RedTail volume gating.
 // Install: copy to  Documents\NinjaTrader 8\bin\Custom\Indicators\
 //          then     Tools > Edit NinjaScript > Indicator > F5
+// Replace the entire existing file; NinjaTrader generates its own factory code.
 //
 // RedTail buy/sell values are OHLC-based estimates, not bid/ask-classified trade volume.
 
@@ -401,60 +402,3 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
     }
 }
-
-#region NinjaScript generated code. Neither change nor remove.
-
-namespace NinjaTrader.NinjaScript.Indicators
-{
-	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-	{
-		private RedTailMACross[] cacheRedTailMACross;
-		public RedTailMACross RedTailMACross(RedTailMACrossMAType mAType, int mAPeriod, int consecutiveBars, int minSepTicks, bool useVolFilter, int volPeriod, bool useTrendFilter, int trendPeriod, bool useRedTailGate, int minBarVolPercent, bool requireBuyerWinner, int arrowTicks, bool useATROffset, double aTRMult, bool useColors, Brush longColor, Brush shortColor, string prefix, bool alertsOn, string alertPath, string longWav, string shortWav)
-		{
-			return RedTailMACross(Input, mAType, mAPeriod, consecutiveBars, minSepTicks, useVolFilter, volPeriod, useTrendFilter, trendPeriod, useRedTailGate, minBarVolPercent, requireBuyerWinner, arrowTicks, useATROffset, aTRMult, useColors, longColor, shortColor, prefix, alertsOn, alertPath, longWav, shortWav);
-		}
-
-		public RedTailMACross RedTailMACross(ISeries<double> input, RedTailMACrossMAType mAType, int mAPeriod, int consecutiveBars, int minSepTicks, bool useVolFilter, int volPeriod, bool useTrendFilter, int trendPeriod, bool useRedTailGate, int minBarVolPercent, bool requireBuyerWinner, int arrowTicks, bool useATROffset, double aTRMult, bool useColors, Brush longColor, Brush shortColor, string prefix, bool alertsOn, string alertPath, string longWav, string shortWav)
-		{
-			if (cacheRedTailMACross != null)
-				for (int idx = 0; idx < cacheRedTailMACross.Length; idx++)
-					if (cacheRedTailMACross[idx] != null && cacheRedTailMACross[idx].MAType == mAType && cacheRedTailMACross[idx].MAPeriod == mAPeriod && cacheRedTailMACross[idx].ConsecutiveBars == consecutiveBars && cacheRedTailMACross[idx].MinSepTicks == minSepTicks && cacheRedTailMACross[idx].UseVolFilter == useVolFilter && cacheRedTailMACross[idx].VolPeriod == volPeriod && cacheRedTailMACross[idx].UseTrendFilter == useTrendFilter && cacheRedTailMACross[idx].TrendPeriod == trendPeriod && cacheRedTailMACross[idx].UseRedTailGate == useRedTailGate && cacheRedTailMACross[idx].MinBarVolPercent == minBarVolPercent && cacheRedTailMACross[idx].RequireBuyerWinner == requireBuyerWinner && cacheRedTailMACross[idx].ArrowTicks == arrowTicks && cacheRedTailMACross[idx].UseATROffset == useATROffset && cacheRedTailMACross[idx].ATRMult == aTRMult && cacheRedTailMACross[idx].UseColors == useColors && cacheRedTailMACross[idx].LongColor == longColor && cacheRedTailMACross[idx].ShortColor == shortColor && cacheRedTailMACross[idx].Prefix == prefix && cacheRedTailMACross[idx].AlertsOn == alertsOn && cacheRedTailMACross[idx].AlertPath == alertPath && cacheRedTailMACross[idx].LongWav == longWav && cacheRedTailMACross[idx].ShortWav == shortWav && cacheRedTailMACross[idx].EqualsInput(input))
-						return cacheRedTailMACross[idx];
-			return CacheIndicator<RedTailMACross>(new RedTailMACross(){ MAType = mAType, MAPeriod = mAPeriod, ConsecutiveBars = consecutiveBars, MinSepTicks = minSepTicks, UseVolFilter = useVolFilter, VolPeriod = volPeriod, UseTrendFilter = useTrendFilter, TrendPeriod = trendPeriod, UseRedTailGate = useRedTailGate, MinBarVolPercent = minBarVolPercent, RequireBuyerWinner = requireBuyerWinner, ArrowTicks = arrowTicks, UseATROffset = useATROffset, ATRMult = aTRMult, UseColors = useColors, LongColor = longColor, ShortColor = shortColor, Prefix = prefix, AlertsOn = alertsOn, AlertPath = alertPath, LongWav = longWav, ShortWav = shortWav }, input, ref cacheRedTailMACross);
-		}
-	}
-}
-
-namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
-{
-	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
-	{
-		public Indicators.RedTailMACross RedTailMACross(RedTailMACrossMAType mAType, int mAPeriod, int consecutiveBars, int minSepTicks, bool useVolFilter, int volPeriod, bool useTrendFilter, int trendPeriod, bool useRedTailGate, int minBarVolPercent, bool requireBuyerWinner, int arrowTicks, bool useATROffset, double aTRMult, bool useColors, Brush longColor, Brush shortColor, string prefix, bool alertsOn, string alertPath, string longWav, string shortWav)
-		{
-			return indicator.RedTailMACross(Input, mAType, mAPeriod, consecutiveBars, minSepTicks, useVolFilter, volPeriod, useTrendFilter, trendPeriod, useRedTailGate, minBarVolPercent, requireBuyerWinner, arrowTicks, useATROffset, aTRMult, useColors, longColor, shortColor, prefix, alertsOn, alertPath, longWav, shortWav);
-		}
-
-		public Indicators.RedTailMACross RedTailMACross(ISeries<double> input , RedTailMACrossMAType mAType, int mAPeriod, int consecutiveBars, int minSepTicks, bool useVolFilter, int volPeriod, bool useTrendFilter, int trendPeriod, bool useRedTailGate, int minBarVolPercent, bool requireBuyerWinner, int arrowTicks, bool useATROffset, double aTRMult, bool useColors, Brush longColor, Brush shortColor, string prefix, bool alertsOn, string alertPath, string longWav, string shortWav)
-		{
-			return indicator.RedTailMACross(input, mAType, mAPeriod, consecutiveBars, minSepTicks, useVolFilter, volPeriod, useTrendFilter, trendPeriod, useRedTailGate, minBarVolPercent, requireBuyerWinner, arrowTicks, useATROffset, aTRMult, useColors, longColor, shortColor, prefix, alertsOn, alertPath, longWav, shortWav);
-		}
-	}
-}
-
-namespace NinjaTrader.NinjaScript.Strategies
-{
-	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
-	{
-		public Indicators.RedTailMACross RedTailMACross(RedTailMACrossMAType mAType, int mAPeriod, int consecutiveBars, int minSepTicks, bool useVolFilter, int volPeriod, bool useTrendFilter, int trendPeriod, bool useRedTailGate, int minBarVolPercent, bool requireBuyerWinner, int arrowTicks, bool useATROffset, double aTRMult, bool useColors, Brush longColor, Brush shortColor, string prefix, bool alertsOn, string alertPath, string longWav, string shortWav)
-		{
-			return indicator.RedTailMACross(Input, mAType, mAPeriod, consecutiveBars, minSepTicks, useVolFilter, volPeriod, useTrendFilter, trendPeriod, useRedTailGate, minBarVolPercent, requireBuyerWinner, arrowTicks, useATROffset, aTRMult, useColors, longColor, shortColor, prefix, alertsOn, alertPath, longWav, shortWav);
-		}
-
-		public Indicators.RedTailMACross RedTailMACross(ISeries<double> input , RedTailMACrossMAType mAType, int mAPeriod, int consecutiveBars, int minSepTicks, bool useVolFilter, int volPeriod, bool useTrendFilter, int trendPeriod, bool useRedTailGate, int minBarVolPercent, bool requireBuyerWinner, int arrowTicks, bool useATROffset, double aTRMult, bool useColors, Brush longColor, Brush shortColor, string prefix, bool alertsOn, string alertPath, string longWav, string shortWav)
-		{
-			return indicator.RedTailMACross(input, mAType, mAPeriod, consecutiveBars, minSepTicks, useVolFilter, volPeriod, useTrendFilter, trendPeriod, useRedTailGate, minBarVolPercent, requireBuyerWinner, arrowTicks, useATROffset, aTRMult, useColors, longColor, shortColor, prefix, alertsOn, alertPath, longWav, shortWav);
-		}
-	}
-}
-
-#endregion
