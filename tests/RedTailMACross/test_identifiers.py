@@ -21,32 +21,13 @@ class IndicatorIdentifierTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"\bclass\s+RedTailMACross\s*:", self.source)), 1)
         self.assertEqual(len(re.findall(r"\benum\s+RedTailMACrossMAType\b", self.source)), 1)
 
-    def test_generated_factories_are_not_duplicated(self):
-        marker = "#region NinjaScript generated code. Neither change nor remove."
-        self.assertEqual(self.source.count(marker), 1)
-        generated = self.source.split(marker, 1)[1]
-        self.assertEqual(len(re.findall(r"\bcacheRedTailMACross\s*;", generated)), 1)
-        for namespace in ("Indicators", "MarketAnalyzerColumns", "Strategies"):
-            pattern = (
-                r"namespace\s+NinjaTrader\.NinjaScript\."
-                + namespace
-                + r"\s*\{(.*?)(?=\nnamespace\s+NinjaTrader\.NinjaScript\.|\n#endregion)"
-            )
-            blocks = re.findall(pattern, generated, re.DOTALL)
-            self.assertTrue(blocks, namespace)
-            declarations = [
-                declaration
-                for block in blocks
-                for declaration in re.findall(
-                    r"public\s+(?:Indicators\.)?RedTailMACross\s+RedTailMACross"
-                    r"\(([^)]*)\)",
-                    block,
-                )
-            ]
-            self.assertEqual(len(declarations), 2, namespace)
-            self.assertEqual(sum("ISeries<double> input" in d for d in declarations), 1, namespace)
-            for declaration in declarations:
-                self.assertIn("RedTailMACrossMAType mAType", declaration)
+    def test_distribution_source_does_not_bundle_generated_factories(self):
+        self.assertNotIn("#region NinjaScript generated code.", self.source)
+        self.assertNotRegex(self.source, r"\bcacheRedTailMACross\b")
+        self.assertNotRegex(
+            self.source,
+            r"\bRedTailMACross\s+RedTailMACross\s*\(",
+        )
 
 
 if __name__ == "__main__":
